@@ -31,6 +31,16 @@ MODEM_HELPERS = {
 
 
 class PublicationBoundaryTests(unittest.TestCase):
+    def test_workflows_pin_actions_and_container_has_cross_libc_headers(self):
+        workflows = "\n".join(path.read_text() for path in
+                              (ROOT / ".github/workflows").glob("*.yml"))
+        references = re.findall(r"uses:\s+(actions/[^@\s]+)@([^\s]+)", workflows)
+        self.assertTrue(references)
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{40}", revision)
+                            for _, revision in references))
+        dockerfile = (ROOT / "autobuild/Dockerfile").read_text()
+        self.assertIn("libc6-dev-armel-cross", dockerfile)
+
     def test_test_branch_cannot_publish_a_release(self):
         workflow = (ROOT / ".github/workflows/autobuild.yml").read_text()
         validation = (ROOT / ".github/workflows/validate.yml").read_text()

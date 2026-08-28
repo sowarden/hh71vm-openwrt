@@ -3,7 +3,7 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev \
     libelf-dev python2 python3 rsync unzip zip zlib1g-dev file wget curl time \
-    subversion swig gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi lua5.1 \
+    subversion swig gcc-arm-linux-gnueabi libc6-dev-armel-cross binutils-arm-linux-gnueabi lua5.1 \
     ca-certificates ccache perl cmake pkg-config squashfs-tools xz-utils bzip2 \
     patch diffutils libtool autoconf automake && rm -rf /var/lib/apt/lists/*
 RUN mkdir /build /output /cache && chmod 1777 /build /output /cache
