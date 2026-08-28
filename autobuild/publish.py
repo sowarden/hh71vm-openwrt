@@ -207,6 +207,8 @@ def main():
         parser.error("release branch is not allowed")
     if args.commit != os.environ.get("GITHUB_SHA"):
         parser.error("release source differs from this workflow")
+    if args.command == "publish" and os.environ.get("GITHUB_REF") != "refs/heads/main":
+        parser.error("publication is restricted to main")
     if args.command == "sign":
         from common import public_key
         key = public_key(os.environ["HH71VM_FEED_PUBLIC_KEY"].encode())[1]

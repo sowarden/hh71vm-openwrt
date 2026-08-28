@@ -2,7 +2,6 @@ name: Validate public release
 
 on:
   push:
-  pull_request:
 
 permissions:
   contents: read

@@ -31,6 +31,16 @@ MODEM_HELPERS = {
 
 
 class PublicationBoundaryTests(unittest.TestCase):
+    def test_test_branch_cannot_publish_a_release(self):
+        workflow = (ROOT / ".github/workflows/autobuild.yml").read_text()
+        validation = (ROOT / ".github/workflows/validate.yml").read_text()
+        publisher = (ROOT / "autobuild/publish.py").read_text()
+        self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("if: github.ref == 'refs/heads/openwrt-autobuild'", workflow)
+        self.assertNotIn("pull_request:", workflow + validation)
+        self.assertIn('args.command == "publish"', publisher)
+        self.assertIn('os.environ.get("GITHUB_REF") != "refs/heads/main"', publisher)
+
     def test_base_image_preserves_https_dependencies(self):
         manifest = (FIRMWARE / "openwrt-rtkmipsel-rtl8197f-hh71vm.manifest").read_text()
         packages = {line.split(" - ", 1)[0] for line in manifest.splitlines()}

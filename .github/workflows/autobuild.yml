@@ -102,7 +102,7 @@ jobs:
           BUILD_TAG: ${{ steps.identity.outputs.tag }}
         run: docker image rm "hh71vm-build:$BUILD_TAG" || true
 
-  publish:
+  sign-and-release:
     needs: build
     runs-on: ubuntu-22.04
     timeout-minutes: 120
@@ -130,7 +130,17 @@ jobs:
           HH71VM_FEED_PUBLIC_KEY: ${{ vars.HH71VM_FEED_PUBLIC_KEY }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
         run: python3 autobuild/publish.py sign candidate --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"
+      - name: Retain the signed test candidate
+        if: github.ref == 'refs/heads/openwrt-autobuild'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ needs.build.outputs.tag }}-signed-test
+          path: candidate/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - name: Publish and verify immutable release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
