@@ -1,0 +1,29 @@
+#!/bin/sh
+# Register the theme and make it the default.  luci-theme-bootstrap stays installed, so
+# the stock look remains selectable under System -> System -> Language and Style.
+#
+# The default must be applied exactly once, and "is anything set yet" cannot decide that:
+# luci-base ships /etc/config/luci with mediaurlbase already pointing at bootstrap, and
+# 30_luci-theme-bootstrap sorts before this script and rewrites it anyway.  So the option
+# is never empty and a "fill only when empty" test never fires -- that was the bug.
+#
+# A sysupgrade wipes the overlay and every uci-defaults script runs again on the first boot,
+# this time on top of the restored configuration.  Setting mediaurlbase unconditionally
+# would throw the user back onto our theme after every upgrade.  Hence an explicit marker
+# in the luci config, which is part of the preserved configuration: we claim the default
+# on the first boot of a fresh installation and never again.
+uci -q batch <<-EOT
+	delete luci.themes.HH71VM
+	set luci.themes.HH71VM=/luci-static/hh71vm
+EOT
+
+if [ "$(uci -q get luci.hh71vm.theme_default_applied)" != "1" ]; then
+	uci -q batch <<-EOT
+		set luci.hh71vm=internal
+		set luci.hh71vm.theme_default_applied=1
+		set luci.main.mediaurlbase=/luci-static/hh71vm
+	EOT
+fi
+
+uci -q commit luci
+exit 0

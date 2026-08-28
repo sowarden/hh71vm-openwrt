@@ -1,0 +1,157 @@
+<%#
+ luci-theme-hh71vm -- page header.
+ Licensed to the public under the Apache License 2.0.
+
+ The element ids below are a contract with two pieces of code:
+   #indicators, #maincontent   -- luci-base's ui.js writes into them directly
+   #sidenav, #modemenu, #tabmenu, #modem-strip, #modem-drawer, #theme-toggle
+                               -- our own hh71vm.js fills them
+ We render the menu ourselves instead of loading menu-bootstrap.js, because that
+ module only knows how to build a horizontal bar.
+-%>
+
+<%
+	local sys  = require "luci.sys"
+	local util = require "luci.util"
+	local http = require "luci.http"
+	local disp = require "luci.dispatcher"
+	local ver  = require "luci.version"
+
+	-- Asset URLs carry the file's mtime, not the LuCI version: during development the
+	-- theme changes many times under one version, and a stale cached stylesheet on top
+	-- of new markup looks like a broken theme rather than a cache hit.
+	local function assetver(path)
+		local st = require("nixio.fs").stat("/www" .. path)
+		-- size as well as mtime: every file in a built image carries the same fixed
+		-- build timestamp, so two different images produce the same version and the
+		-- browser keeps serving the stylesheet it already has.  The size moves whenever
+		-- the content does.
+		return st and (st.mtime .. "-" .. st.size) or ver.luciversion
+	end
+
+	-- The view modules under resources/view/hh71vm are not fetched by us but by
+	-- luci.js's require(), which appends L.env.resource_version -- and this LuCI never
+	-- sets that: luci-base's header loads luci.js with no ?v= at all.  uhttpd then
+	-- serves the modules with a Last-Modified and no Cache-Control, so the browser is
+	-- free to keep yesterday's copy, and an edited page looks unchanged until a hard
+	-- reload.  luci.js does set env.resource_version -- to the LuCI package version,
+	-- which is the same string for every build we make, so it busts nothing.  Derive
+	-- one from our own files instead and overwrite it below.
+	local function appver()
+		local nfs = require "nixio.fs"
+		local newest, total = 0, 0
+		for _, base in ipairs({ "/www" .. resource .. "/hh71vm",
+		                        "/www" .. resource .. "/view/hh71vm" }) do
+			local iter = nfs.dir(base)
+			for name in (iter or function() return nil end) do
+				local st = nfs.stat(base .. "/" .. name)
+				if st and st.type == "reg" then
+					if st.mtime > newest then newest = st.mtime end
+					total = total + st.size
+				end
+			end
+		end
+		return (newest > 0) and (newest .. "-" .. total) or ver.luciversion
+	end
+
+	local boardinfo = util.ubus("system", "board")
+	-- context.path is the node the dispatcher actually resolved to; requestpath is
+	-- what the browser asked for and is EMPTY at the bare /cgi-bin/luci/ URL, which
+	-- is exactly where the dashboard lands right after login.  Styling keyed on
+	-- data-page has to follow the node, not the URL.
+	local node = disp.context.dispatched
+	local authed = (disp.context.authsession ~= nil)
+
+	http.prepare_content("text/html")
+-%>
+<!DOCTYPE html>
+<html lang="<%=luci.i18n.context.lang%>">
+	<head>
+		<meta charset="utf-8">
+		<title><%=striptags( (boardinfo.hostname or "?") .. ( (node and node.title) and ' - ' .. translate(node.title) or '')) %> - LuCI</title>
+		<%# width=device-width is what makes a phone lay the page out at its own width
+		    instead of pretending to be a 980px desktop and zooming out.  It only became
+		    safe once the sidebar turned into a drawer below 720px -- before that it
+		    would have left a 250px fixed sidebar on a 390px screen. %>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<%# picked before the stylesheet paints, so the page never flashes the wrong theme %>
+		<script>(function(){try{var t=localStorage.getItem('hh71vm-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+		<link rel="stylesheet" href="<%=media%>/cascade.css?v=<%=assetver(media .. "/cascade.css")%>">
+		<%# Stamp require()'d modules with a version that moves when our files do. %>
+		<script>(function(){var v="<%=appver()%>",inst;try{Object.defineProperty(window,"L",{configurable:true,get:function(){return inst;},set:function(x){inst=x;if(x&&x.env)x.env.resource_version=v;}});}catch(e){}})();</script>
+		<link rel="icon" href="<%=media%>/favicon.svg" type="image/svg+xml">
+		<% if node and node.css then %><link rel="stylesheet" href="<%=resource%>/<%=node.css%>"><% end -%>
+		<% if css then %><style title="text/css"><%= css %></style><% end -%>
+		<script src="<%=url('admin/translations', luci.i18n.context.lang)%>?v=<%=ver.luciversion%>"></script>
+		<script src="<%=resource%>/cbi.js?v=<%=ver.luciversion%>"></script>
+	</head>
+
+	<body class="lang_<%=luci.i18n.context.lang%><% if not authed then %> no-nav<% end %>" data-page="<%= pcdata(table.concat(disp.context.path or disp.context.requestpath, "-")) %>">
+
+		<aside id="sidebar">
+			<a class="sb-brand" href="<%=url('admin/status/overview')%>">
+				<span class="sb-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><path d="M12 20h.01"/></svg></span>
+				<span class="sb-name">
+					<b><%=striptags(boardinfo.hostname or "?")%></b>
+					<span><%=striptags(boardinfo.model or "OpenWrt")%></span>
+				</span>
+			</a>
+
+			<%# The modem facts the phone top bar has no room for.  Filled by the same
+			    renderStrip that fills #modem-strip, and kept out of the page by the
+			    stylesheet at every width where the strip itself can carry them. %>
+			<div class="sb-modem" id="modem-drawer"></div>
+
+			<nav class="sb-nav" id="sidenav" aria-label="<%:Navigation%>">
+				<ul id="modemenu" hidden></ul>
+			</nav>
+
+			<div class="sb-foot">
+				<a href="<%=url('admin/logout')%>">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+					<%:Logout%>
+				</a>
+			</div>
+		</aside>
+
+		<%# Only ever visible below the drawer breakpoint.  No `hidden` attribute: the
+		    stylesheet already keeps it out of the page and out of the accessibility
+		    tree -- display:none above the breakpoint, visibility:hidden while closed
+		    below it -- and an attribute on top of that would only fight the media
+		    query for who gets to set `display`. %>
+		<div id="nav-scrim"></div>
+
+		<header id="topbar">
+			<button type="button" class="icon-btn" id="nav-toggle"
+			        aria-controls="sidebar" aria-expanded="false"
+			        title="<%:Navigation%>" aria-label="<%:Navigation%>">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+			<div class="mstrip" id="modem-strip"></div>
+			<div class="tb-tools">
+				<div id="indicators"></div>
+				<button type="button" class="icon-btn" id="theme-toggle"
+				        title="<%:Switch between the light and the dark theme%>"
+				        aria-label="<%:Switch between the light and the dark theme%>"></button>
+			</div>
+		</header>
+
+		<main id="maincontent">
+			<%- if luci.sys.process.info("uid") == 0 and luci.sys.user.getuser("root") and not luci.sys.user.getpasswd("root") then -%>
+				<div class="alert-message warning">
+					<h4><%:No password set!%></h4>
+					<p><%:There is no password set on this router. Please configure a root password to protect the web interface.%></p>
+					<%# the page is part of luci-mod-system and always present; the earlier
+					    disp.lookup() guard silently swallowed the link %>
+					<a class="btn" href="<%=url('admin/system/admin')%>"><%:Go to password configuration...%></a>
+				</div>
+			<%- end -%>
+
+			<noscript>
+				<div class="alert-message warning">
+					<h4><%:JavaScript required!%></h4>
+					<p><%:You must enable JavaScript in your browser or LuCI will not work properly.%></p>
+				</div>
+			</noscript>
+
+			<div id="tabmenu"></div>

@@ -1,0 +1,34 @@
+Connecting the vendor WiFi driver Realtek (drivers/net/wireless/realtek/rtl8192cd).
+
+As with the Ethernet driver, the code is not included in the patch: it is an overlay in
+target/linux/rtkmipsel/files/drivers/net/wireless/realtek/rtl8192cd/. It was assembled
+from the vendor Realtek SDK v3.4.14b source in the D-Link DIR-842E GPL archive. The patch
+only needs to expose that directory to the kernel build system, hence the two lines.
+
+
+This is a literal analogue of the patch 950-rtk_add_rtl8192cd_wifi_support.patch from the fork
+openwrt-AC10, with one difference: for AC10 the driver is assembled inside the mac80211 package
+(backports), so there is a prefix CPTCFG_; we collect kernels in the tree, so CONFIG_.
+The context of both files in 4.14 coincided with the version AC10 verbatim - the same three lines
+source in realtek/Kconfig and the same four obj- in realtek/Makefile.
+
+The patch was generated from the Linux 4.14.275 reference tree rather than edited by
+hand, so its context matches that source revision.
+
+--- a/drivers/net/wireless/realtek/Kconfig
++++ b/drivers/net/wireless/realtek/Kconfig
+@@ -14,5 +14,6 @@
+ source "drivers/net/wireless/realtek/rtl818x/Kconfig"
+ source "drivers/net/wireless/realtek/rtlwifi/Kconfig"
+ source "drivers/net/wireless/realtek/rtl8xxxu/Kconfig"
++source "drivers/net/wireless/realtek/rtl8192cd/Kconfig"
+ 
+ endif # WLAN_VENDOR_REALTEK
+--- a/drivers/net/wireless/realtek/Makefile
++++ b/drivers/net/wireless/realtek/Makefile
+@@ -6,4 +6,5 @@
+ obj-$(CONFIG_RTL8187)		+= rtl818x/
+ obj-$(CONFIG_RTLWIFI)		+= rtlwifi/
+ obj-$(CONFIG_RTL8XXXU)		+= rtl8xxxu/
++obj-$(CONFIG_RTL8192CD)		+= rtl8192cd/
+ 

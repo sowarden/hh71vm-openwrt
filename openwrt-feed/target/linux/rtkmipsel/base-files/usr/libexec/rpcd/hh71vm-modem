@@ -1,0 +1,113 @@
+#!/usr/bin/lua
+--[[
+rpcd plugin: exposes hh71vm-modemd as the ubus object "hh71vm-modem".
+
+rpcd calls us as `hh71vm-modem list` to learn the method signatures, and as
+`hh71vm-modem call <method>` with the JSON arguments on stdin.  We do nothing but
+relay that to the daemon's unix socket, so a stuck modem can never block rpcd for
+longer than the timeout below -- the daemon answers status calls from its cache.
+]]
+
+local nixio = require "nixio"
+local json  = require "luci.jsonc"
+
+local SOCK    = "/var/run/hh71vm-modem/ctl.sock"
+-- The daemon answers every method promptly now (the operator scan runs as a job and
+-- is polled), so this only has to cover the slowest single AT command we still wait
+-- for.  It must also stay under rpcd's own timeout and under the 30 s that LuCI's
+-- /admin/ubus proxy allows -- see personal-docs/openwrt/web-ui-guide.md.
+local TIMEOUT = 28             -- seconds
+
+-- value shapes rpcd uses to type-check incoming arguments
+local METHODS = {
+	-- read-only
+	status          = {},
+	refresh         = {},
+	usage           = {},
+	urc             = {},
+	methods         = {},
+	pin_status      = {},
+	sim_info        = {},
+	cell_info       = {},
+	apn_list        = {},
+	net_mode        = {},
+	sms_list        = {},
+	sms_settings    = {},
+	sms_read        = { index = 0 },
+	phonebook_list  = { first = 0, count = 0 },
+	-- state changing
+	net_scan        = {},
+	net_scan_result = {},
+	usage_reset     = {},
+	reconnect       = {},
+	sms_delete      = { index = 0, indexes = { 0 } },
+	sms_delete_all  = {},
+	sms_mark        = { index = 0, ts = "str", read = true },
+	sms_send        = { to = "str", text = "str" },
+	sms_save        = { to = "str", text = "str" },
+	sms_settings_set = { sca = "str" },
+	apn_set         = { cid = 0, apn = "str", pdp_type = "str",
+	                    auth = 0, user = "str", pass = "str" },
+	apn_delete      = { cid = 0 },
+	pin_unlock      = { pin = "str" },
+	puk_unlock      = { puk = "str", pin = "str" },
+	pin_enable      = { pin = "str", enable = true },
+	pin_change      = { old = "str", new = "str" },
+	net_register    = { numeric = "str", act = 0, auto = true },
+	net_mode_set    = { mode = 0 },
+	radio_set       = { on = true },
+	data_connect    = { cid = 0 },
+	data_disconnect = { cid = 0 },
+	ussd            = { code = "str" },
+	phonebook_add   = { index = 0, number = "str", name = "str" },
+	phonebook_delete = { index = 0 },
+	at              = { cmds = { "str" }, timeout = 0 },
+}
+
+local function fail(msg)
+	print(json.stringify({ error = msg }))
+	os.exit(0)                 -- rpcd wants JSON on stdout, not a non-zero exit
+end
+
+local function call(method, params)
+	local s = nixio.socket("unix", "stream")
+	local ok, err = s:connect(SOCK)
+	if not ok then
+		fail("modem daemon is not running (" .. tostring(err) .. ")")
+	end
+	s:setopt("socket", "sndtimeo", 10)
+	s:setopt("socket", "rcvtimeo", TIMEOUT)
+	s:write(json.stringify({ method = method, params = params or {} }) .. "\n")
+	local buf = ""
+	while true do
+		local data = s:read(8192)
+		if not data or data == "" then break end
+		buf = buf .. data
+		if buf:find("\n") then break end
+	end
+	s:close()
+	if buf == "" then fail("no answer from modem daemon") end
+	return buf:gsub("\n.*$", "")
+end
+
+local action, method = arg[1], arg[2]
+
+if action == "list" then
+	-- An empty Lua table encodes as [], and rpcd throws away any method whose
+	-- signature is not an object -- which is every method that takes no arguments.
+	-- So the empty case is written out by hand.
+	local parts = {}
+	for name, sig in pairs(METHODS) do
+		local body = json.stringify(sig)
+		if body == "[]" then body = "{}" end
+		parts[#parts + 1] = ('"%s":%s'):format(name, body)
+	end
+	print("{" .. table.concat(parts, ",") .. "}")
+elseif action == "call" then
+	if not METHODS[method] then fail("unknown method") end
+	local input = io.read("*a") or ""
+	local params = (input ~= "" and json.parse(input)) or {}
+	io.write(call(method, params), "\n")
+else
+	fail("usage: hh71vm-modem list|call <method>")
+end

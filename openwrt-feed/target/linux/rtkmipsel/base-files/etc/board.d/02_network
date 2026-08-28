@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# HH71VM network-interface layout.
+#
+# eth0 - LAN: switch ports 0-3 plus CPU port 8 (mask 0x10f, VLAN 9). The only one
+#        physical RJ45 sits on port 0, via external gigabit PHY (see.
+#        /etc/init.d/rtl8197f-gphy).
+# eth1 — port 4 of the switch (mask 0x110, VLAN 8). NOT externally displayed on this device;
+#        left to exist so as not to diverge from the vendor table vlanconfig,
+#        but has no role.
+# eth2 - WAN: internal link to the Qualcomm side (modem) via USB/RNDIS.
+#
+# WHY eth2 AND NOT usb0. The name is given by usbnet: in usbnet_probe() the interface is called "usb%d"
+# only for two host links, and for FLAG_ETHER (rndis_host has it) and locally
+# unadministered MAC - "eth%d". The modem has MAC 00:26:23:3c:f1:37, the 0x02 bit is not set,
+# therefore the 4.14 kernel gives exactly the eth name. Observed live: `rndis_host 1-1:1.0 eth2`.
+# The number 2 is stable: eth0 and eth1 register the switch driver at an early boot stage,
+# There are no other eth devices in the system. The stock showed usb0 - it has a different core, come to us
+# it doesn't transfer. An alternative is renaming using the hotplug.d/net rule; we don't do
+# an extra moving part for the sake of name cosmetics.
+#
+# WHY IS WAN HERE. HH71VM has two independent systems: Realtek (this one) and
+# Qualcomm-modem. Only the second one goes outside, on the Internet, and they are connected internally.
+# USB-link, where Realtek is the USB-host, and the modem is the RNDIS-device.
+#
+# ADDRESS ON WAN IS STATIC, NOT DHCP. Analysis of stock `/jffs2/bin/oem_start.sh`
+# (2026-08-17) showed that the drain does not raise the DHCP client to usb0, but registers the address
+# hands:
+#     ifconfig usb0 192.168.225.111
+#     route add default gw 192.168.225.1
+#     dnrd --cache=off -s 192.168.225.1
+# That is, there is apparently no DHCP server on the modem side at all, and the previous
+# configuration `proto dhcp` would not receive an address even if the device appeared on
+# tire. We repeat the flow literally: the same address, the same gateway, aka DNS.
+# NAT is taken from the standard firewall zone wan.
+#
+# ⚠️ GATEWAY AND DNS DO NOT WORK HERE, they are exhibited in etc/uci-defaults/99-hh71vm-wan-gateway.
+# Reason: /etc/config/network generates the /bin/config_generate script from board.json, and it
+# takes exactly five fields from there - `ifname macaddr protocol ipaddr netmask`. All
+# the rest is lost in silence. They are still transmitted below: they get into board.json and serve
+# documentation, plus they will earn money themselves if this list is ever expanded.
+#
+# An early configuration used eth1 here before USB support was enabled:
+# the role of WAN formally existed, but it led to nowhere.
+#
+# Switch port masks are set by the driver itself (rtl_nic.c), here there is only a role layout.
+
+. /lib/functions/uci-defaults.sh
+
+board_config_update
+ucidef_set_interfaces_lan_wan "eth0" "eth2"
+ucidef_set_interface "wan" ifname "eth2" protocol "static" ipaddr "192.168.225.111" netmask "255.255.255.0" gateway "192.168.225.1" dns "192.168.225.1"
+board_config_flush
+
+exit 0

@@ -1,0 +1,73 @@
+--- a/iwinfo_wext.c
++++ b/iwinfo_wext.c
+@@ -262,11 +262,70 @@
+ 	return -1;
+ }
+ 
++/*
++ * HH71VM: noise level for vendor driver rtl8192cd.
++ *
++ * The standard path -- ioctl SIOCGIWSTATS -- does not work on this driver at all, and does not
++ * because there is no data: in the vendor code itself the handler is disabled,
++ *
++ *     8192cd_ioctl.c:  #if 0 // IW_HANDLER_VERSION >= 6
++ *                          .get_wireless_stats = rtl8192cd_get_wireless_stats,
++ *                      #endif
++ *
++ * and the only definition of rtl8192cd_get_wireless_stats() in 8192cd_comapi.c in its entirety
++ * commented out. Without a handler, the kernel responds to SIOCGIWSTATS with the code -EOPNOTSUPP,
++ * therefore signal, noise and quality are not just zero - they are not in the output of iwinfo at all, but
++ * /proc/net/wireless for all interfaces consists of zeros.
++ *
++ * The driver measures the noise and publishes it: /proc/<ifname>/mib_noise_level, format
++ * "noise level:[-76]", the value is immediately in dBm. Reading costs less than a millisecond (measured:
++ * 20 readings for 0,01 s), so the survey from the web muzzle is not a burden to him.
++ *
++ * signal and quality remain unavailable, and rightly so: the access point does not have its own
++ * level of the received signal, and inventing it from RSSI connected stations would mean
++ * show the user someone else's value under your name. Signal of each station
++ * assoclist is already given separately (patch 100).
++ *
++ * LIMITATION: at 5 GHz (RTL8812FE) the driver outputs "noise level:[0]" -- measurements
++ * there isn't. The zero here is not “silence”, but “no data”, so it is interpreted as a refusal, and
++ * the field is simply missing as before.
++ */
++static int wext_rtl_noise(const char *ifname, int *buf)
++{
++	FILE *f;
++	char path[64], line[128];
++	int noise = 0, ok = 0;
++
++	snprintf(path, sizeof(path), "/proc/%s/mib_noise_level", ifname);
++
++	if (!(f = fopen(path, "r")))
++		return -1;
++
++	if (fgets(line, sizeof(line), f))
++	{
++		char *p = strchr(line, '[');
++
++		if (p && sscanf(p + 1, "%d", &noise) == 1 && noise != 0)
++			ok = 1;
++	}
++
++	fclose(f);
++
++	if (!ok)
++		return -1;
++
++	*buf = noise;
++	return 0;
++}
++
+ static int wext_get_noise(const char *ifname, int *buf)
+ {
+ 	struct iwreq wrq;
+ 	struct iw_statistics stats;
+ 
++	if (wext_rtl_noise(ifname, buf) == 0)
++		return 0;
++
+ 	wrq.u.data.pointer = (caddr_t) &stats;
+ 	wrq.u.data.length  = sizeof(struct iw_statistics);
+ 	wrq.u.data.flags   = 1;

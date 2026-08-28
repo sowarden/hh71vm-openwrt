@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+firmware/*.bin binary
+firmware/*.manifest text eol=lf
+firmware/SHA256SUMS text eol=lf
+packages/*.ipk binary
+packages/Packages.gz binary
+openwrt-feed/package/utils/modem-extra-tools/files/*-arm binary

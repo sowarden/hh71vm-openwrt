@@ -1,0 +1,23 @@
+--- a/libfstools/overlay.c
++++ b/libfstools/overlay.c
+@@ -311,7 +311,19 @@
+ 
+ 		/* try hard to be in sync */
+ 		ULOG_INFO("syncronizing overlay\n");
+-		if (system("cp -a /tmp/root/upper/* / 2>/dev/null"))
++		/*
++		 * HH71VM: an empty upper directory is the NORMAL case here.  This
++		 * branch runs on the first boot of a fresh installation, when there is
++		 * nothing in the overlay yet; the shell then leaves the glob
++		 * unexpanded, cp fails on a literal "*" and mount_root reports a
++		 * failure for a perfectly healthy overlay.  Users installing our
++		 * firmware saw that error on their very first boot.
++		 *
++		 * Skipping the copy when there is nothing to copy keeps the message
++		 * for the case it was meant for: a copy that really did fail.
++		 */
++		if (system("[ -z \"$(ls -A /tmp/root/upper 2>/dev/null)\" ] || "
++			   "cp -a /tmp/root/upper/* / 2>/dev/null"))
+ 			ULOG_ERR("failed to sync jffs2 overlay\n");
+ 		break;
+ 

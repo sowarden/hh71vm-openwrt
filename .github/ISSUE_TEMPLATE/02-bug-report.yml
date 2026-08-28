@@ -1,0 +1,97 @@
+name: Reproducible bug report
+description: Report a software defect after checking known issues
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for a reproducible software defect. For a first test on a new device or revision, use the **Hardware compatibility report** instead.
+
+        Check [known issues](https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/known-issues.md) first. Attach searchable, sanitized text logs rather than screenshots.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Defect summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Exact reproduction steps
+      placeholder: |
+        1. Booted the published RAM image
+        2. ...
+        3. The failure occurred
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: Reproducibility
+      options:
+        - Every attempt
+        - Most attempts
+        - Intermittent with a measured pattern
+        - Happened once
+    validations:
+      required: true
+
+  - type: input
+    id: image-sha256
+    attributes:
+      label: RAM image SHA-256
+      value: 6b839ec1c2b1d7a2ac23550aa1bc24308c7fc71b4eac8a7c374f11e977d47a07
+    validations:
+      required: true
+
+  - type: input
+    id: device-report
+    attributes:
+      label: Related compatibility report
+      description: Link the compatibility report for this device, if available.
+      placeholder: https://github.com/sowarden/hh71vm-openwrt/issues/...
+    validations:
+      required: false
+
+  - type: textarea
+    id: uart-log
+    attributes:
+      label: Complete sanitized UART log
+      description: Drag the text log from tools/ram-boot-logs/ into this field.
+      placeholder: Attach the sanitized .log file here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: system-logs
+    attributes:
+      label: Relevant dmesg and logread output
+      description: Include the full surrounding context, not only the final error line.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and comparison
+      description: Client hardware/software, connection type, duration, and behavior under stock firmware.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Final checks
+      options:
+        - label: This is not already described in the known-issues document.
+          required: true
+        - label: I used the published nfjrom RAM image and did not attempt flash installation.
+          required: true
+        - label: I reviewed all logs and redacted sensitive device-unique data.
+          required: true

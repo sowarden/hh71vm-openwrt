@@ -1,0 +1,33 @@
+#!/bin/sh /etc/rc.common
+# Modem control daemon: holds the AT channel to the Qualcomm half and publishes
+# it on ubus (via the rpcd plugin) for the web interface.
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/sbin/hh71vm-modemd
+
+start_service() {
+	# No modem link means nothing to talk to; the daemon would just spin.
+	[ -x "$PROG" ] || return 0
+
+	procd_open_instance
+	procd_set_param command "$PROG" --foreground
+	procd_set_param respawn 3600 5 0
+	procd_set_param stderr 1
+	procd_set_param pidfile /var/run/hh71vm-modemd.pid
+	procd_close_instance
+}
+
+stop_service() {
+	rm -f /var/run/hh71vm-modem/ctl.sock
+}
+
+service_triggers() {
+	procd_add_reload_interface_trigger wan
+}
+
+reload_service() {
+	restart
+}

@@ -1,0 +1,52 @@
+UART0 of RTL8197F (not-VG) does not follow the standard layout of 16550.
+
+The receive/transmit register is located at offset +0x024 from the base UART0, and not +0x000,
+and the word length field in LCR occupies the 0 bit rather than the [1:0] bits. Driver 8250 accesses
+to registers using constants from this header, so without editing the console goes silent
+exactly at the moment when early printk passes the output to the real driver.
+
+Confirmations (not a hypothesis):
+  * vendor bspchip.h from Realtek SDK v3.6.0: BSP_UART0_THR_8197F = BASE+0x024,
+    BSP_CHAR_LEN_8 = 0x01 (not 0x03);
+  * dump ROM-loader of the device itself: procedure for displaying a symbol at the address
+    0x80000474 polls LSR and makes sb to 0xB8147024, and unconditionally -
+    There is no chip variant check in the bootloader at all. The device console is working,
+    This means our specimen is the 8197F variant (not VG), which has THR to +0x024.
+
+Edit taken from 303-rtl8197f-uart.patch fork openwrt-AC10, shortened: hunk with
+UART_IIR_ID is thrown away because for CONFIG_RTL_8197F=y it sets the same value
+0x0e, which is already in the vanilla kernel.
+
+The patch was generated from the Linux 4.14.275 reference tree rather than edited by
+hand, so its context matches that source revision.
+
+--- a/include/uapi/linux/serial_reg.h
++++ b/include/uapi/linux/serial_reg.h
+@@ -18,8 +18,13 @@
+ /*
+  * DLAB=0
+  */
++#ifdef CONFIG_RTL_8197F
++#define UART_RX		9	/* In:  Receive buffer */
++#define UART_TX		9	/* Out: Transmit buffer */
++#else
+ #define UART_RX		0	/* In:  Receive buffer */
+ #define UART_TX		0	/* Out: Transmit buffer */
++#endif
+ 
+ #define UART_IER	1	/* Out: Interrupt Enable Register */
+ #define UART_IER_MSI		0x08 /* Enable Modem status interrupt */
+@@ -109,8 +114,13 @@
+ #define UART_LCR_STOP		0x04 /* Stop bits: 0=1 bit, 1=2 bits */
+ #define UART_LCR_WLEN5		0x00 /* Wordlength: 5 bits */
+ #define UART_LCR_WLEN6		0x01 /* Wordlength: 6 bits */
++#ifdef CONFIG_RTL_8197F
++#define UART_LCR_WLEN7		0x00 /* Wordlength: 7 bits */
++#define UART_LCR_WLEN8		0x01 /* Wordlength: 8 bits */
++#else
+ #define UART_LCR_WLEN7		0x02 /* Wordlength: 7 bits */
+ #define UART_LCR_WLEN8		0x03 /* Wordlength: 8 bits */
++#endif
+ 
+ /*
+  * Access to some registers depends on register access / configuration

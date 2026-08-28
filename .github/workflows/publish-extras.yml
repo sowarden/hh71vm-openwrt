@@ -1,0 +1,69 @@
+name: Publish tested extras
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 'Build extras run ID containing the tested artifact'
+        required: true
+        type: string
+      build_run_attempt:
+        description: 'Build attempt (the last number in the artifact name)'
+        required: true
+        default: '1'
+        type: string
+      candidate_sha256:
+        description: 'SHA-256 of candidate.json from the tested artifact'
+        required: true
+        type: string
+      hardware_tested:
+        description: 'I tested every bundle from this exact artifact on an HH71VM with the matching firmware'
+        required: true
+        default: false
+        type: boolean
+      test_notes:
+        description: 'Short public test summary; no credentials or device identifiers'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: extra-tools-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && inputs.hardware_tested
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download the exact tested candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_RUN_ATTEMPT: ${{ inputs.build_run_attempt }}
+        run: |
+          python3 tools/release/publish-extras.py fetch \
+            --run-id "$BUILD_RUN_ID" --attempt "$BUILD_RUN_ATTEMPT" \
+            --directory "$RUNNER_TEMP/extras-candidate"
+      - name: Verify and publish without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+          HARDWARE_TESTED: ${{ inputs.hardware_tested }}
+          TEST_NOTES: ${{ inputs.test_notes }}
+        run: |
+          python3 tools/release/publish-extras.py publish \
+            --directory "$RUNNER_TEMP/extras-candidate" \
+            --candidate-sha256 "$CANDIDATE_SHA256" --mode tested \
+            --hardware-tested "$HARDWARE_TESTED" --test-notes "$TEST_NOTES"

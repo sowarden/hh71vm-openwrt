@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Makes the front panel indicator Wi-Fi match the actual
+# radio condition.
+#
+# Lights up if at least one radio is up. The state is taken from the flags
+# interface, and not from UCI: UCI says what they wanted, and the panel should
+# show what happened. IFF_UP - least significant bit /sys/class/net/*/flags;
+# operstate for the vendor driver is always `unknown`, you cannot rely on it.
+#
+# Only the radios themselves (wlan0, wlan1) are counted. VAP- and WDS-interfaces
+# (wlan0-va0, wlan0-wds3 and further - there are two dozen of them) always exist and
+# Radio states are not reflected.
+#
+# Called from /lib/netifd/wireless/rtl8192cd.sh on setup and teardown, i.e.
+# based on the fact of the event, and not on the timer.
+#
+
+on=0
+for dev in /sys/class/net/wlan0 /sys/class/net/wlan1; do
+	[ -e "$dev/flags" ] || continue
+	flags=$(cat "$dev/flags" 2>/dev/null) || continue
+	[ $(( flags & 1 )) -eq 1 ] && on=1
+done
+
+[ "$on" = "1" ] && exec /usr/sbin/hh71vm-panel-led wlan 255
+exec /usr/sbin/hh71vm-panel-led wlan 0

@@ -1,0 +1,12 @@
+name: Feature request
+description: Suggest an improvement for HH71VM OpenWrt
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: feature
+    attributes:
+      label: Requested feature
+      description: Describe what you would like to add and how it would help.
+    validations:
+      required: true

@@ -1,0 +1,117 @@
+--- a/iwinfo_wext.c	2026-08-17 22:02:56.490282511 +0300
++++ b/iwinfo_wext.c	2026-08-17 22:02:56.490426501 +0300
+@@ -683,10 +683,112 @@
+ 	return -1;
+ }
+ 
++/*
++ * HH71VM: encryption type for vendor driver rtl8192cd.
++ *
++ * This used to be a stub marked "No reliable crypto info in wext": Wireless
++ * Extensions indeed has no call that returns an access point's WPA mode.
++ * Consequently LuCI showed "Encryption: -" for a WPA2-PSK/CCMP network,
++ * incorrectly telling the user that the network was open.
++ *
++ * The driver prints its security configuration to /proc/<ifname>/mib_auth.
++ * Field values were checked on a live device and match those written by
++ * `iwpriv set_mib` in lib/netifd/wireless/rtl8192cd.sh:
++ *
++ * dot11EnablePSK 1 = WPA, 2 = WPA2, 3 = mixed (same bitmap,
++ * same as iwinfo_crypto_entry.wpa_version)
++ * dot11WPACipher bit MASK by suite number RSN: TKIP = BIT(1) = 2,
++ * dot11WPA2Cipher CCMP = BIT(3) = 8 (8192cd_psk.c:1654 checks
++ * BIT(suite_type - 1)). This is NOT the same as the one next door
++ * field dot11PrivacyAlgrthm, which is an enum.
++ *
++ * ATTENTION: in the same file the driver prints dot11PassPhrase in clear text.
++ * Only encryption-mode fields are read here. The password is neither parsed nor
++ * exposed anywhere.
++ */
++
++static uint8_t wext_rtl_cipher(int mask)
++{
++	uint8_t rv = 0;
++
++	if (mask & 2)
++		rv |= IWINFO_CIPHER_TKIP;
++
++	if (mask & 8)
++		rv |= IWINFO_CIPHER_CCMP;
++
++	return rv;
++}
++
+ static int wext_get_encryption(const char *ifname, char *buf)
+ {
+-	/* No reliable crypto info in wext */
+-	return -1;
++	struct iwinfo_crypto_entry *c = (struct iwinfo_crypto_entry *)buf;
++	FILE *f;
++	char path[64];
++	char line[256];
++	int psk = 0, wpa_cipher = 0, wpa2_cipher = 0;
++	int privacy = 0, keylen = 0;
++
++	snprintf(path, sizeof(path), "/proc/%s/mib_auth", ifname);
++
++	if (!(f = fopen(path, "r")))
++		return -1;
++
++	while (fgets(line, sizeof(line), f))
++	{
++		char *v;
++
++		/* The only thing that matters is that "dot11WPA2Cipher" doesn't contain
++ substrings "dot11WPACipher", so there are no intersections. */
++		if ((v = strstr(line, "dot11EnablePSK:")) != NULL)
++			psk = atoi(v + strlen("dot11EnablePSK:"));
++		else if ((v = strstr(line, "dot11WPA2Cipher:")) != NULL)
++			wpa2_cipher = atoi(v + strlen("dot11WPA2Cipher:"));
++		else if ((v = strstr(line, "dot11WPACipher:")) != NULL)
++			wpa_cipher = atoi(v + strlen("dot11WPACipher:"));
++		else if ((v = strstr(line, "dot11PrivacyAlgrthm:")) != NULL)
++			privacy = atoi(v + strlen("dot11PrivacyAlgrthm:"));
++		else if ((v = strstr(line, "dot11PrivacyKeyLen:")) != NULL)
++			keylen = atoi(v + strlen("dot11PrivacyKeyLen:"));
++	}
++
++	fclose(f);
++
++	memset(c, 0, sizeof(struct iwinfo_crypto_entry));
++
++	if (psk)
++	{
++		c->enabled     = 1;
++		c->wpa_version = (uint8_t)(psk & 3);
++		c->auth_suites = IWINFO_KMGMT_PSK;
++
++		c->pair_ciphers = wext_rtl_cipher(wpa_cipher | wpa2_cipher);
++
++		/* If the mask is empty (the mode is set, but the driver has not yet filled in the code),
++ it’s more honest to show CCMP than an empty list: WPA2 doesn’t exist without a code. */
++		if (!c->pair_ciphers)
++			c->pair_ciphers = IWINFO_CIPHER_CCMP;
++
++		c->group_ciphers = c->pair_ciphers;
++	}
++	else if (privacy > 1 && keylen > 0)
++	{
++		/* WEP: dot11PrivacyAlgrthm > 1 at zero PSK */
++		c->enabled      = 1;
++		c->auth_algs    = IWINFO_AUTH_OPEN | IWINFO_AUTH_SHARED;
++		c->auth_suites  = IWINFO_KMGMT_NONE;
++		c->pair_ciphers = (keylen > 5) ? IWINFO_CIPHER_WEP104 : IWINFO_CIPHER_WEP40;
++		c->group_ciphers = c->pair_ciphers;
++	}
++	else
++	{
++		c->enabled       = 0;
++		c->auth_suites   = IWINFO_KMGMT_NONE;
++		c->pair_ciphers  = IWINFO_CIPHER_NONE;
++		c->group_ciphers = IWINFO_CIPHER_NONE;
++	}
++
++	return 0;
+ }
+ 
+ static int wext_get_phyname(const char *ifname, char *buf)

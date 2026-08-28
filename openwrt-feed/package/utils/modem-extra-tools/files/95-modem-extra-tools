@@ -1,0 +1,5 @@
+#!/bin/sh
+# Reapply when netifd has resolved the WAN device, including after boot.
+case "$ACTION" in ifup|ifupdate) ;; *) exit 0 ;; esac
+[ "$INTERFACE" = "$(uci -q get modem-extra-tools.ttl.wan_network)" ] || exit 0
+/usr/libexec/modem-extra-tools/firewall

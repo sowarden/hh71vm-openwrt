@@ -1,0 +1,14 @@
+#!/bin/sh
+# Stock software may overwrite NAS preference at modem startup or RAT changes.
+# Only reconcile an explicitly saved selection, never reboot either processor.
+sleep 10
+while :; do
+    if [ -f /etc/modem-extra-tools/band-desired.json ]; then
+        result=$(/usr/sbin/modem-extra-tools bands reconcile --json 2>&1)
+        status=$?
+        if [ "$status" != 0 ] || printf '%s' "$result" | grep -q '"changed":true'; then
+            logger -t modem-extra-tools "$result"
+        fi
+    fi
+    sleep 60
+done

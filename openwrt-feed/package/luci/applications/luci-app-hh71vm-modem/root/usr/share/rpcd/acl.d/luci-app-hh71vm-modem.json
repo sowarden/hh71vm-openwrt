@@ -1,0 +1,56 @@
+{
+	"luci-app-hh71vm-modem": {
+		"description": "Read modem status and control the modem of the HH71VM",
+		"read": {
+			"ubus": {
+				"hh71vm-modem": [
+					"status",
+					"refresh",
+					"usage",
+					"urc",
+					"methods",
+					"pin_status",
+					"sim_info",
+					"cell_info",
+					"apn_list",
+					"net_mode",
+					"net_scan_result",
+					"sms_list",
+					"sms_settings",
+					"sms_read",
+					"phonebook_list"
+				]
+			}
+		},
+		"write": {
+			"ubus": {
+				"hh71vm-modem": [
+					"reconnect",
+					"usage_reset",
+					"sms_send",
+					"sms_save",
+					"sms_delete",
+					"sms_delete_all",
+					"sms_mark",
+					"sms_settings_set",
+					"apn_set",
+					"apn_delete",
+					"pin_unlock",
+					"puk_unlock",
+					"pin_enable",
+					"pin_change",
+					"net_scan",
+					"net_register",
+					"net_mode_set",
+					"radio_set",
+					"data_connect",
+					"data_disconnect",
+					"ussd",
+					"phonebook_add",
+					"phonebook_delete",
+					"at"
+				]
+			}
+		}
+	}
+}

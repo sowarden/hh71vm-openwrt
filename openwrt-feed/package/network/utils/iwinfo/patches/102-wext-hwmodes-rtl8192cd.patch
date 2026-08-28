@@ -1,0 +1,114 @@
+--- a/iwinfo_wext.c
++++ b/iwinfo_wext.c
+@@ -648,39 +648,91 @@
+ 	return -1;
+ }
+ 
+-static int wext_get_hwmodelist(const char *ifname, int *buf)
++/*
++ * HH71VM: set of radio modes for the vendor driver rtl8192cd.
++ *
++ * The standard implementation derives modes from the frequency list alone, so
++ * 802.11n and 802.11ac never appear in it: in Wireless Extensions do not appear
++ * call, which would give the capabilities of HT/VHT. LuCI signed because of this
++ * working network HT20 as “802.11bg”, and VHT80 as “802.11a”, that is
++ * showed the user modes that the radio has not used since 2009.
++ *
++ * The driver also does not publish its capabilities: in /proc/<ifname>/ there is only
++ * CURRENT setting (mib_11n: currBW, use40M), but there is no field with the chip model at all.
++ * Therefore, the modes are determined by the range that wext_get_freqlist gave:
++ *
++ * 2,4 GHz RTL8197F, radio in SoC b/g/n, HT20/HT40
++ * 5 GHz RTL8812FE to PCIe a/n/ac, HT20/HT40, VHT20/40/80
++ *
++ * Both lines are about hardware HH71VM, tested live (../../docs/hardware-facts.md).
++ * These are CAPABILITIES, not the current mode: this is how iwinfo understands both lists,
++ * and what is included now, LuCI takes from UCI.
++ *
++ * LIMITATION: the binding "5 GHz means 11ac" is correct for this board and incorrect for
++ * arbitrary board on rtl8192cd with 5-gigahertz radio without VHT. The patch is ours and
++ * lives in our tree; it will be possible to untie it when the driver learns
++ * giving away possibilities, not just customization.
++ */
++
++static int wext_rtl_bands(const char *ifname, int *has24, int *has5)
+ {
+ 	char chans[IWINFO_BUFSIZE] = { 0 };
+ 	struct iwinfo_freqlist_entry *e = NULL;
+ 	int len = 0;
+ 
+-	*buf = 0;
++	*has24 = 0;
++	*has5 = 0;
+ 
+-	if( !wext_get_freqlist(ifname, chans, &len) )
+-	{
+-		for( e = (struct iwinfo_freqlist_entry *)chans; e->channel; e++ )
+-		{
+-			if( e->channel <= 14 )
+-			{
+-				*buf |= IWINFO_80211_B;
+-				*buf |= IWINFO_80211_G;
+-			}
+-			else
+-			{
+-				*buf |= IWINFO_80211_A;
+-			}
+-		}
++	if( wext_get_freqlist(ifname, chans, &len) )
++		return -1;
+ 
+-		return 0;
++	for( e = (struct iwinfo_freqlist_entry *)chans; e->channel; e++ )
++	{
++		if( e->channel <= 14 )
++			*has24 = 1;
++		else
++			*has5 = 1;
+ 	}
+ 
+-	return -1;
++	return 0;
++}
++
++static int wext_get_hwmodelist(const char *ifname, int *buf)
++{
++	int has24 = 0, has5 = 0;
++
++	*buf = 0;
++
++	if( wext_rtl_bands(ifname, &has24, &has5) )
++		return -1;
++
++	if( has24 )
++		*buf |= IWINFO_80211_B | IWINFO_80211_G | IWINFO_80211_N;
++
++	if( has5 )
++		*buf |= IWINFO_80211_A | IWINFO_80211_N | IWINFO_80211_AC;
++
++	return 0;
+ }
+ 
+ static int wext_get_htmodelist(const char *ifname, int *buf)
+ {
+-	/* Stub */
+-	return -1;
++	int has24 = 0, has5 = 0;
++
++	*buf = 0;
++
++	if( wext_rtl_bands(ifname, &has24, &has5) )
++		return -1;
++
++	if( has24 )
++		*buf |= IWINFO_HTMODE_HT20 | IWINFO_HTMODE_HT40;
++
++	if( has5 )
++		*buf |= IWINFO_HTMODE_HT20 | IWINFO_HTMODE_HT40 |
++		        IWINFO_HTMODE_VHT20 | IWINFO_HTMODE_VHT40 |
++		        IWINFO_HTMODE_VHT80;
++
++	return 0;
+ }
+ 
+ /*

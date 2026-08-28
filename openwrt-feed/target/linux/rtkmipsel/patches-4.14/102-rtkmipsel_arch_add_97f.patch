@@ -1,0 +1,48 @@
+Connecting the rtl8197f architecture to the kernel tree.
+
+An analogue of the patch 102-rtkmipsel_arch_add_97f.patch from the fork openwrt-AC10 (core 3.18),
+reassembled using the reference tree 4.14.275. The only meaningful difference
+from version for 3.18: the symbol IRQ_CPU in 4.14 is called IRQ_MIPS_CPU.
+
+The patch was generated from the Linux 4.14.275 reference tree rather than edited by
+hand, so its context matches that source revision.
+
+--- a/arch/mips/Kbuild.platforms
++++ b/arch/mips/Kbuild.platforms
+@@ -35,6 +35,7 @@
+ platforms += txx9
+ platforms += vr41xx
+ platforms += xilfpga
++platforms += rtl8197f
+ 
+ # include the platform specific files
+ include $(patsubst %, $(srctree)/arch/mips/%/Platform, $(platforms))
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -630,6 +630,18 @@
+ 	select ARCH_HAS_RESET_CONTROLLER
+ 	select RESET_CONTROLLER
+ 
++config REALTEK_97F
++	bool "Realtek 97F based machines"
++	select CEVT_R4K
++	select CSRC_R4K
++	select DMA_NONCOHERENT
++	select IRQ_MIPS_CPU
++	select SYS_HAS_CPU_MIPS32_R2
++	select SYS_SUPPORTS_32BIT_KERNEL
++	select SYS_SUPPORTS_LITTLE_ENDIAN
++	select SYS_HAS_EARLY_PRINTK
++	select MIPS_MACHINE
++
+ config SGI_IP22
+ 	bool "SGI IP22 (Indy/Indigo2)"
+ 	select FW_ARC
+@@ -1041,6 +1053,7 @@
+ source "arch/mips/netlogic/Kconfig"
+ source "arch/mips/paravirt/Kconfig"
+ source "arch/mips/xilfpga/Kconfig"
++source "arch/mips/rtl8197f/Kconfig"
+ 
+ endmenu
+ 

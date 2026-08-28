@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+
+if ! uci -q get firewall.modem_extra_tools >/dev/null; then
+	uci set firewall.modem_extra_tools='include'
+fi
+uci set firewall.modem_extra_tools.path='/usr/libexec/modem-extra-tools/firewall'
+uci set firewall.modem_extra_tools.reload='1'
+uci commit firewall
+
+/usr/libexec/modem-extra-tools/firewall >/dev/null 2>&1 || true
+exit 0

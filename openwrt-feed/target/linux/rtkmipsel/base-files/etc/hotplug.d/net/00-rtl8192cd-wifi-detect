@@ -1,0 +1,18 @@
+#!/bin/sh
+# Generation of /etc/config/wireless when the radio driver rtl8192cd appears.
+# Modeled after the vendor's broadcom-wl (etc/hotplug.d/net/00-broadcom-wifi-detect): for
+# non-cfg80211 drivers do not receive the ieee80211 event, so we cling to the netdev event.
+#
+# The filter selects only the radios themselves (wlan0, wlan1), but not their VAP/WDS interfaces
+# (wlan0-va0, wlan0-wds0 and others) - otherwise `wifi config` would twitch more than twenty times.
+# The detect function itself is still idempotent.
+#
+# Loading order: /etc/init.d/boot (START=10) loads modules via kmodloader - here
+# this event comes; the network rises later (/etc/init.d/network, START=20), that is, netifd
+# at the start it already sees the finished /etc/config/wireless.
+
+case "$ACTION:$INTERFACE" in
+	add:wlan[0-9])
+		/sbin/wifi config
+	;;
+esac

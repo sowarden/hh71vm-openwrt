@@ -1,0 +1,73 @@
+#
+# Wireless LAN USB device configuration
+#
+
+##########################################################################
+# Select WiFi device on USB_HCI
+##########################################################################
+choice
+	prompt "USB Slot device"
+	depends on USB_HCI
+	default RTL_92E_SUPPORT
+
+config RTL_92E_SUPPORT
+	bool "Realtek 8192EU wireless support "
+	select RTL_ODM_WLAN_DRIVER
+	select WLAN_HAL
+	select WLAN_HAL_88XX
+	select WLAN_HAL_8192EE
+	select PHY_WLAN_EAT_40MHZ
+
+config RTL_92F_SUPPORT
+	bool "Realtek 8192FU wireless support "
+	select RTL_ODM_WLAN_DRIVER
+	select WLAN_HAL
+	select WLAN_HAL_88XX
+	select WLAN_HAL_8192FE
+	select PHY_WLAN_EAT_40MHZ
+endchoice
+
+config USB_EXT_PA
+	bool "Enable external PA"
+	default n
+
+config USB_EXT_LNA
+	bool "Enable external LNA"
+	default n
+
+config USB_ENABLE_EFUSE
+	bool "eFUSE Support"
+	select ENABLE_EFUSE
+	default n
+
+if GMAC2_USABLE
+config RTL_USE_FC_GMAC2
+	bool "USB use FC GMAC2 Support"
+	select GMAC1_USABLE
+	default y
+endif
+
+config RTL_USE_FC_MESH
+	bool
+	#"Mesh FC support"
+	depends on (RTL_MESH_SUPPORT && RTK_L34_FC_KERNEL_MODULE)
+	default y
+
+config AP_PS
+	hex
+	default 0
+
+config USB_AS_WLAN1
+	bool
+	depends on (RTL_92F_SUPPORT && SLOT_1_8192FE) || (RTL_92E_SUPPORT && SLOT_1_8192EE)
+	default y
+
+config TRIBAND_MESH
+	bool
+	depends on (RTL_TRIBAND_SUPPORT && RTL_MESH_SUPPORT)
+	default y
+
+config TRIBAND_MESH_SINGLE_IFACE
+	bool
+	depends on (TRIBAND_MESH && RTL_MESH_SINGLE_IFACE)
+	default y

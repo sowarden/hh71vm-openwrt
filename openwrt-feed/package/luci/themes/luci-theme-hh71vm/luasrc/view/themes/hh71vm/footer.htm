@@ -1,0 +1,30 @@
+<%#
+ luci-theme-hh71vm -- page footer.
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<% local ver  = require "luci.version"
+   local function assetver(path)
+     local st = require("nixio.fs").stat("/www" .. path)
+     -- size as well as mtime: every file in a built image carries the same fixed
+     -- build timestamp, so two different images produce the same version and the
+     -- browser keeps serving the stylesheet it already has.  The size moves whenever
+     -- the content does.
+     return st and (st.mtime .. "-" .. st.size) or ver.luciversion
+   end
+   local disp = require "luci.dispatcher"
+   local about = disp.lookup("admin/system/hh71vm-about") %>
+
+		</main>
+
+		<footer>
+			<span>OpenWrt <%= ver.distversion %></span>
+			<span class="divider">&middot;</span>
+			<a href="https://github.com/openwrt/luci"><%= ver.luciname %></a>
+			<span class="sep"></span>
+			<% if about then %><a href="<%=url('admin/system/hh71vm-about')%>"><%:About this port%></a><% end %>
+		</footer>
+
+		<script src="<%=media%>/hh71vm.js?v=<%=assetver(media .. "/hh71vm.js")%>"></script>
+	</body>
+</html>

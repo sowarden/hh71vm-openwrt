@@ -1,0 +1,6 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+result=$(/usr/sbin/modem-extra-tools firewall --json 2>&1)
+status=$?
+logger -t modem-extra-tools "$result"
+exit "$status"

@@ -1,0 +1,40 @@
+Controller SPI-NOR (SHEIPA) for RTL8197F.
+
+The 4.14 kernel does not know the controller that is connected to the serial flash board,
+therefore /proc/mtd is empty and there is nothing to mount root=/dev/mtdblock4 with.
+
+The driver is not newly written: drivers/spi/sheipa/ files are taken from the vendor
+OpenWrt of the same target rtkmipsel from which our BSP was removed, and end up in a tree
+via target/linux/rtkmipsel/files/. This patch only adds wiring -
+configuration symbol and assembly entry.
+
+The driver registers the normal spi_master with transfer_one_message, so over
+It runs the standard kernel stack 4.14 (MTD_SPI_NOR + MTD_M25P80). Vendor
+patched m25p80 with "user mode" is intentionally not portable: it exists for the sake of
+acceleration by 3.18 and overwrites the layer, which in 4.14 is moved to spi-nor.
+
+The controller addresses (BSP_SPIC_BASE, BSP_SPIC_AUTO_BASE) are already described in bspchip.h;
+the platform device registers arch/mips/rtl8197f/mtd.c.
+
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -527,6 +527,11 @@
+ config SPI_PXA2XX_PCI
+ 	def_tristate SPI_PXA2XX && PCI && COMMON_CLK
+
++config SPI_SHEIPA
++	bool "Realtek SHEIPA SPI Controller"
++	help
++	  This is the driver for the SHEIPA SPI Controller.
++
+ config SPI_ROCKCHIP
+ 	tristate "Rockchip SPI controller driver"
+ 	help
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -112,3 +112,5 @@
+ # SPI slave protocol handlers
+ obj-$(CONFIG_SPI_SLAVE_TIME)		+= spi-slave-time.o
+ obj-$(CONFIG_SPI_SLAVE_SYSTEM_CONTROL)	+= spi-slave-system-control.o
++
++obj-$(CONFIG_SPI_SHEIPA)		+= sheipa/

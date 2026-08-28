@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# HH71VM default WAN gateway, DNS, and IPv6 settings.
+#
+# WHY IN A SEPARATE FILE AND NOT IN board.d/02_network. `ucidef_set_interface` indeed
+# adds to /etc/board.json any keys passed, but /etc/config/network from board.json
+# already generates `/bin/config_generate`, and it reads EXACTLY five fields from there:
+#
+#     json_get_vars ifname macaddr protocol ipaddr netmask
+#
+# `gateway` and `dns` are not included in this list and are silently lost. Watched live: address
+# 192.168.225.111/24 went up to eth2, but there was no default route, and the ping was outward
+# answered “Network unreachable”.
+#
+# Scripts from /etc/uci-defaults are executed alphabetically, so "99-" is guaranteed to come after
+# “10_config_generate”, which creates the section network.wan.
+#
+# The values ​​are the same as for stock /jffs2/bin/oem_start.sh: gateway is also DNS, address is Qualcomm side.
+# Judging by the drain, there is no DHCP server on the modem side at all.
+#
+# ONLY EMPTY POINTS WILL BE FILLED. With 2026-08-25 sysupgrade honestly erases overlay, so
+# after each update, the scripts themselves uci-defaults and their marks about
+# execution - that is, this file will work again, this time on top of the restored settings
+# user. An unconditional entry would overwrite someone else's gateway with every update.
+
+[ -n "$(uci -q get network.wan.gateway)" ] || uci -q set network.wan.gateway='192.168.225.1'
+[ -n "$(uci -q get network.wan.dns)" ] || uci -q set network.wan.dns='192.168.225.1'
+
+# ip6assign on WAN is not the place. `config_generate` hangs it on ANY interface with
+# `proto static` (base-files/files/bin/config_generate: `[ -e /proc/sys/net/ipv6 ] &&
+# uci set network.$1.ip6assign='60'`), without disassembling, looks at the interface to the local network
+# or out. For us, `wan` is an internal USB/RNDIS link to the Qualcomm side, no
+# there is no need to distribute the network behind it and there is no one to delegate the prefix to.
+#
+# Visible live: eth2 received from the ULA pool fdf0:...:10::1/60 and the address remained forever in
+# state `tentative` (even reached `dadfailed`) - DAD does not complete on this link.
+uci -q delete network.wan.ip6assign
+
+uci -q commit network
+
+exit 0

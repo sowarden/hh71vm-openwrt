@@ -1,0 +1,40 @@
+Connecting the vendor Ethernet driver Realtek (drivers/net/rtl819x).
+
+The driver code itself is not included in the patch: it is an overlay in
+target/linux/rtkmipsel/files/drivers/net/rtl819x/. It was assembled from the
+vendor's Realtek SDK v3.6.0 source tree.
+The patch only has to show the directory to the kernel build system - hence the two lines.
+
+111-rlx_819x_ethernetDriver.patch is arranged in exactly the same way in the openwrt-AC10 fork:
+all his code is also in files/, and the patch consists of the same two lines.
+
+The insertion point at Kconfig is selected before `endif # NETDEVICES`, not after
+`source "drivers/net/hyperv/Kconfig"`, like AC10: in 4.14 appeared between them
+FUJITSU_ES, and binding to hyperv would provide a more fragile context.
+
+The patch was generated from the Linux 4.14.275 reference tree rather than edited by
+hand, so its context matches that source revision.
+
+--- a/drivers/net/Kconfig
++++ b/drivers/net/Kconfig
+@@ -485,4 +485,6 @@
+ 
+ source "drivers/net/hyperv/Kconfig"
+ 
++source "drivers/net/rtl819x/Kconfig"
++
+ endif # NETDEVICES
+--- a/drivers/net/Makefile
++++ b/drivers/net/Makefile
+@@ -75,3 +75,4 @@
+ obj-$(CONFIG_NTB_NETDEV) += ntb_netdev.o
+ 
+ obj-$(CONFIG_FUJITSU_ES) += fjes/
++obj-$(CONFIG_RTL_819X_SWCORE) += rtl819x/
+--- a/drivers/char/Makefile
++++ b/drivers/char/Makefile
+@@ -60,3 +60,4 @@
+ obj-$(CONFIG_TILE_SROM)		+= tile-srom.o
+ obj-$(CONFIG_XILLYBUS)		+= xillybus/
+ obj-$(CONFIG_POWERNV_OP_PANEL)	+= powernv-op-panel.o
++obj-$(CONFIG_RTL_8211F_SUPPORT)	+= rtl_nfbi/

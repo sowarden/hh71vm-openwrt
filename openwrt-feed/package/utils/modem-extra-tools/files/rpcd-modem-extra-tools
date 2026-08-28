@@ -1,0 +1,88 @@
+#!/usr/bin/lua
+-- SPDX-License-Identifier: Apache-2.0
+package.path='/usr/libexec/modem-extra-tools/?.lua;' .. package.path
+local json, c, n = require 'luci.jsonc', require 'common', require 'nixio'
+local methods={status={}, job={}, ttl_set={ipv4=0,ipv6=0,ipv6_enabled=true,network='str'},
+  ttl_disable={}, bands_refresh={}, bands_set={bands={0}}, bands_restore={}, bands_recover={},
+  imei_refresh={}, imei_restore={imei='str',confirmation=true}, imei_recover={}}
+local function invoke(args)
+  local pieces={}
+  for i,v in ipairs(args) do pieces[i]=c.quote(v) end
+  local pipe=c.need(io.popen('/usr/sbin/modem-extra-tools --json ' .. table.concat(pieces,' ') .. ' 2>/dev/null','r'),'cannot start backend')
+  local result=json.parse(pipe:read('*a') or '')
+  pipe:close(); return c.need(result,'backend returned no valid JSON')
+end
+local function current_job()
+  local job=c.json(c.runtime .. '/job.json') or {ok=true,state='idle'}
+  if job.state=='running' then
+    local result=c.json(c.runtime .. '/job-result.json')
+    if result and result.id==job.id then return result end
+    if not n.kill(job.pid,0) then return {ok=false,state='failed',
+      error='worker interrupted; inspect pending modem transactions'} end
+  end
+  return job
+end
+local function start_job(args)
+  local lock=c.lock('job')
+  c.need(current_job().state~='running','another modem job is running')
+  local id=tostring(n.getpid()) .. '-' .. tostring(os.time())
+  local pid=c.need(n.fork(),'cannot start modem worker')
+  if pid==0 then
+    n.setsid()
+    local null=n.open('/dev/null','r+')
+    n.dup(null,n.stdin); n.dup(null,n.stdout); n.dup(null,n.stderr); null:close()
+    lock:close()
+    local ok,result=pcall(invoke,args)
+    if not ok then result={ok=false,error=tostring(result)} end
+    result.id=id; result.state=result.ok and 'done' or 'failed'
+    c.atomic(c.runtime .. '/job-result.json',result)
+    os.exit(0)
+  end
+  local job={ok=true,state='running',id=id,pid=pid}
+  c.atomic(c.runtime .. '/job.json',job); lock:close(); return job
+end
+local function call(method,p)
+  if method=='status' then return invoke({'status'}) end
+  if method=='job' then return current_job() end
+  if method=='ttl_disable' then return invoke({'ttl','disable'}) end
+  if method=='ttl_set' then
+    local v4=c.uint(p.ipv4,1,255,'IPv4 TTL')
+    local v6=p.ipv6_enabled and tostring(c.uint(p.ipv6,1,255,'IPv6 Hop Limit')) or 'off'
+    local args={'ttl','set',tostring(v4),v6}
+    if p.network and p.network~='' then args[#args+1]=p.network end
+    return invoke(args)
+  end
+  if method=='bands_refresh' then return start_job({'bands','show'}) end
+  if method=='bands_restore' then return start_job({'bands','restore'}) end
+  if method=='bands_recover' then return start_job({'bands','recover'}) end
+  if method=='bands_set' then
+    c.need(type(p.bands)=='table' and #p.bands>0 and #p.bands<=64,'select 1..64 bands')
+    local values={}
+    for i,band in ipairs(p.bands) do values[i]=tostring(c.uint(band,1,64,'band')) end
+    local list=table.concat(values,','); require('bands').parse(list)
+    return start_job({'bands','set',list})
+  end
+  if method=='imei_refresh' then return start_job({'imei','show'}) end
+  if method=='imei_recover' then return start_job({'imei','recover'}) end
+  if method=='imei_restore' then
+    c.need(type(p.imei)=='string' and require('imei').valid(p.imei),'invalid IMEI')
+    c.need(p.confirmation==true,'explicit original IMEI confirmation is required')
+    return start_job({'imei','restore',p.imei,'--confirm-original-imei'})
+  end
+end
+if arg[1]=='list' then
+  local result={}
+  for method,signature in pairs(methods) do
+    local body=json.stringify(signature); if body=='[]' then body='{}' end
+    result[#result+1]='"' .. method .. '":' .. body
+  end
+  print('{' .. table.concat(result,',') .. '}')
+else
+  local ok,result=pcall(function()
+    c.need(arg[1]=='call' and methods[arg[2]],'unknown method')
+    local p=json.parse(io.read('*a') or '') or {}
+    c.need(type(p)=='table','invalid RPC parameters')
+    return call(arg[2],p)
+  end)
+  print(json.stringify(ok and result or {ok=false,error=tostring(result)}))
+end

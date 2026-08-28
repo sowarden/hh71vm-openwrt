@@ -1,0 +1,3312 @@
+#!/usr/bin/lua
+--[[
+hh71vm-modemd -- modem control daemon for the Alcatel HH71VM.
+
+The two halves of this router are separate Linux systems joined by USB/RNDIS.  All
+modem logic lives on the Qualcomm half (192.168.225.1), whose AT interpreter sits on
+/dev/smd7 and is reachable only from a shell there -- the vendor leaves telnet open
+without a password, which is our way in.
+
+Reading and writing cannot share one shell session (the modem's output would mix with
+the shell's), so we hold two:
+
+  reader  -- `exec cat /dev/smd7`, i.e. the socket becomes a raw modem read stream
+  writer  -- an ordinary shell; commands go out as `printf '\101\124...' > /dev/smd7`
+             with every byte octal-escaped, so no quoting or shell metacharacter can
+             corrupt what the modem sees (proven on the device's busybox 1.20 printf).
+
+Everything is driven from one nixio.poll loop: modem stream, control socket, timers.
+Background polling keeps a parsed snapshot in memory and in a JSON file, so the web UI
+reads instantly and never waits on the radio.  Requests from the UI arrive on a unix
+socket (see /usr/libexec/rpcd/hh71vm-modem, which turns them into a ubus object).
+
+Debug/one-shot use, no daemon needed:
+    hh71vm-modemd --at 'AT+CSQ' 'AT+COPS?'
+    hh71vm-modemd --call sms_list
+    hh71vm-modemd --foreground -v
+]]
+
+local nixio = require "nixio"
+local fs    = require "nixio.fs"
+local json  = require "luci.jsonc"
+
+local CFG = {
+	host          = "192.168.225.1",
+	port          = 23,
+	dev           = "/dev/smd7",
+	rundir        = "/var/run/hh71vm-modem",
+	wan_if        = "eth2",
+	fast_interval = 5,     -- signal/registration refresh, seconds
+	slow_interval = 30,    -- operator, APN, SIM, SMS storage
+	mode_interval = 30,    -- 2G/3G/4G selection, read over the kcap channel
+	at_timeout    = 15,    -- default per-command deadline
+	scan_timeout  = 180,   -- AT+COPS=? is slow by nature
+	-- AT+CMGS holds the AT interpreter until the network answers, and a submit the
+	-- network refuses is answered by a timer, not at once: measured on the stand
+	-- 2026-08-26, +CMS ERROR: 500 came back 246 s after the terminating Ctrl-Z.  The
+	-- old 90 s deadline expired first, the next poll then timed out against the still
+	-- busy modem, and two timeouts dropped the channel -- so one refused message cost
+	-- minutes of reconnect loops.  Waiting it out is the only thing that works: ESC
+	-- does not interrupt a submit already in flight.
+	sms_send_timeout = 330,
+	connect_wait  = 10,    -- TCP connect deadline
+	sync_window   = 1.2,   -- discard shell noise for this long after `cat` starts
+	setup_deadline = 45,   -- whole bring-up, all stages together: see M.set_stage
+	sim_reprobe   = 120,   -- shortest gap between radio power-cycles while no SIM
+}
+
+local STATUS_FILE = CFG.rundir .. "/status.json"
+local CTL_SOCK    = CFG.rundir .. "/ctl.sock"
+
+local EINPROGRESS = nixio.const.EINPROGRESS   -- 150 on MIPS, not the x86 115
+local POLLIN      = nixio.poll_flags("in")
+local POLLOUT     = nixio.poll_flags("out")
+local POLLERR     = nixio.poll_flags("err", "hup")
+
+local verbose = false
+
+local function mono()
+	local s, u = nixio.gettimeofday()
+	return s + u / 1000000
+end
+
+local function log(fmt, ...)
+	io.stderr:write(("[modemd] " .. fmt .. "\n"):format(...))
+	io.stderr:flush()
+end
+
+local function dbg(fmt, ...)
+	if verbose then log(fmt, ...) end
+end
+
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+--=========================================================================== text
+
+--- One Unicode code point as UTF-8.
+local function utf8_char(cp)
+	if cp < 0x80 then
+		return string.char(cp)
+	elseif cp < 0x800 then
+		return string.char(0xC0 + math.floor(cp / 0x40), 0x80 + cp % 0x40)
+	elseif cp < 0x10000 then
+		return string.char(0xE0 + math.floor(cp / 0x1000),
+		                   0x80 + math.floor(cp / 0x40) % 0x40,
+		                   0x80 + cp % 0x40)
+	end
+	return string.char(0xF0 + math.floor(cp / 0x40000),
+	                   0x80 + math.floor(cp / 0x1000) % 0x40,
+	                   0x80 + math.floor(cp / 0x40) % 0x40,
+	                   0x80 + cp % 0x40)
+end
+
+-- SMS bodies come back as UCS2 hex whenever the text is not plain Latin.
+local function ucs2_to_utf8(hex)
+	if #hex == 0 or #hex % 4 ~= 0 or hex:find("[^0-9A-Fa-f]") then return nil end
+	local out, i = {}, 1
+	while i <= #hex do
+		local cp = tonumber(hex:sub(i, i + 3), 16)
+		i = i + 4
+		if cp >= 0xD800 and cp <= 0xDBFF and i + 3 <= #hex then   -- surrogate pair
+			local lo = tonumber(hex:sub(i, i + 3), 16)
+			if lo and lo >= 0xDC00 and lo <= 0xDFFF then
+				cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00)
+				i = i + 4
+			end
+		end
+		out[#out + 1] = utf8_char(cp)
+	end
+	return table.concat(out)
+end
+
+local function utf8_to_ucs2(str)
+	local out, i = {}, 1
+	while i <= #str do
+		local c, cp, n = str:byte(i), nil, 0
+		if c < 0x80 then cp, n = c, 0
+		elseif c >= 0xF0 then cp, n = c - 0xF0, 3
+		elseif c >= 0xE0 then cp, n = c - 0xE0, 2
+		elseif c >= 0xC0 then cp, n = c - 0xC0, 1
+		else cp, n = 0xFFFD, 0 end
+		for k = 1, n do
+			local cc = str:byte(i + k) or 0x80
+			cp = cp * 0x40 + (cc - 0x80)
+		end
+		i = i + n + 1
+		if cp < 0x10000 then
+			out[#out + 1] = ("%04X"):format(cp)
+		else                                            -- split into surrogates
+			cp = cp - 0x10000
+			out[#out + 1] = ("%04X%04X"):format(0xD800 + math.floor(cp / 0x400),
+			                                    0xDC00 + cp % 0x400)
+		end
+	end
+	return table.concat(out)
+end
+
+local function is_ascii(str)
+	return not str:find("[\128-\255]")
+end
+
+-- The modem hands back UCS2 hex for non-Latin texts and plain text otherwise.
+local function decode_body(s)
+	s = trim(s)
+	local dec = ucs2_to_utf8(s)
+	return dec or s
+end
+
+--============================================================ SMS PDU (3GPP 23.040)
+
+--- Messages are read in PDU mode (AT+CMGF=0), not text mode.
+---
+--- Text mode is easier to parse but it throws away the user-data header, which is the
+--- only place a long message says that it is one: how many parts it has, which part
+--- this is, and which message they belong to.  Without it the daemon had to guess from
+--- segment length, sender and arrival time -- and both guesses failed in practice.  A
+--- segment whose length missed the exact fill-up figure ended the message early, so the
+--- text was cut off mid-sentence; and the order came from storage slot numbers, which
+--- the modem reuses, so the parts of a four-part message could be joined in the wrong
+--- order.  In PDU mode none of that has to be guessed.
+
+-- GSM 03.38 default alphabet.  Most of it is ASCII; only these positions differ.
+local GSM7 = {}
+local GSM7_EXT = { [0x0A] = 0x0C, [0x14] = 0x5E, [0x28] = 0x7B, [0x29] = 0x7D,
+                   [0x2F] = 0x5C, [0x3C] = 0x5B, [0x3D] = 0x7E, [0x3E] = 0x5D,
+                   [0x40] = 0x7C, [0x65] = 0x20AC }
+do
+	for i = 0, 127 do GSM7[i] = i end
+	local diff = {
+		[0x00] = 0x40,  [0x01] = 0xA3,  [0x02] = 0x24,  [0x03] = 0xA5,
+		[0x04] = 0xE8,  [0x05] = 0xE9,  [0x06] = 0xF9,  [0x07] = 0xEC,
+		[0x08] = 0xF2,  [0x09] = 0xC7,  [0x0B] = 0xD8,  [0x0C] = 0xF8,
+		[0x0E] = 0xC5,  [0x0F] = 0xE5,  [0x10] = 0x394, [0x11] = 0x5F,
+		[0x12] = 0x3A6, [0x13] = 0x393, [0x14] = 0x39B, [0x15] = 0x3A9,
+		[0x16] = 0x3A0, [0x17] = 0x3A8, [0x18] = 0x3A3, [0x19] = 0x398,
+		[0x1A] = 0x39E, [0x1C] = 0xC6,  [0x1D] = 0xE6,  [0x1E] = 0xDF,
+		[0x1F] = 0xC9,  [0x24] = 0xA4,  [0x40] = 0xA1,  [0x5B] = 0xC4,
+		[0x5C] = 0xD6,  [0x5D] = 0xD1,  [0x5E] = 0xDC,  [0x5F] = 0xA7,
+		[0x60] = 0xBF,  [0x7B] = 0xE4,  [0x7C] = 0xF6,  [0x7D] = 0xF1,
+		[0x7E] = 0xFC,  [0x7F] = 0xE0,
+	}
+	for k, v in pairs(diff) do GSM7[k] = v end
+end
+
+-- semi-octet values 0-14; 15 is the filler that pads an odd digit count
+local SEMI = "0123456789*#abc"
+
+local function hexbytes(hex)
+	hex = (tostring(hex):gsub("%s", ""))
+	if #hex == 0 or #hex % 2 ~= 0 or hex:find("[^0-9A-Fa-f]") then return nil end
+	return (hex:gsub("%x%x", function (h) return string.char(tonumber(h, 16)) end))
+end
+
+--- Pull `count` septets out of the octets starting at `from`, low bit first.
+local function gsm7_septets(s, from, count)
+	local out, acc, bits, i = {}, 0, 0, from
+	while #out < count do
+		if bits < 7 then
+			local b = s:byte(i)
+			if not b then break end
+			i = i + 1
+			acc = acc + b * 2 ^ bits
+			bits = bits + 8
+		end
+		out[#out + 1] = acc % 128
+		acc = math.floor(acc / 128)
+		bits = bits - 7
+	end
+	return out
+end
+
+local function gsm7_text(septets, skip)
+	local out, i = {}, (skip or 0) + 1
+	while i <= #septets do
+		local v = septets[i]
+		i = i + 1
+		if v == 0x1B then                       -- escape: the next septet is the char
+			local n = septets[i]
+			i = i + 1
+			out[#out + 1] = utf8_char(GSM7_EXT[n] or 0x20)
+		else
+			out[#out + 1] = utf8_char(GSM7[v] or 0x20)
+		end
+	end
+	return table.concat(out)
+end
+
+--- Originator/destination address: a length in semi-octets, a type-of-address byte,
+--- then the digits.  Type-of-number 101 means the address is text, not a number.
+--- Returns the address and the offset of the byte after it.
+local function pdu_addr(s, pos)
+	local len, toa = s:byte(pos), s:byte(pos + 1)
+	if not len or not toa then return nil end
+	local nbytes = math.floor((len + 1) / 2)
+	local body, nextpos = s:sub(pos + 2, pos + 1 + nbytes), pos + 2 + nbytes
+	local ton = math.floor(toa / 16) % 8
+	if ton == 5 then                                        -- alphanumeric
+		return gsm7_text(gsm7_septets(body, 1, math.floor(len * 4 / 7)), 0), nextpos
+	end
+	local out = {}
+	for i = 1, #body do
+		local b = body:byte(i)
+		local lo, hi = b % 16, math.floor(b / 16)
+		out[#out + 1] = SEMI:sub(lo + 1, lo + 1)
+		if hi ~= 15 then out[#out + 1] = SEMI:sub(hi + 1, hi + 1) end
+	end
+	return ((ton == 1) and "+" or "") .. table.concat(out):sub(1, len), nextpos
+end
+
+--- The service-centre timestamp, in the same shape text mode used to hand over
+--- ("yy/MM/dd,hh:mm:ss+zz", the zone in quarter hours), so nothing downstream changes.
+local function pdu_ts(s, pos)
+	local d = {}
+	for i = 0, 6 do
+		local b = s:byte(pos + i)
+		if not b then return nil end
+		d[i] = (b % 16) * 10 + math.floor(b / 16)
+	end
+	local tzb = s:byte(pos + 6)
+	local neg = (tzb % 16) >= 8                 -- the sign is bit 3 of semi-octet one
+	local tz = ((tzb % 16) % 8) * 10 + math.floor(tzb / 16)
+	return ("%02d/%02d/%02d,%02d:%02d:%02d%s%02d"):format(
+		d[0], d[1], d[2], d[3], d[4], d[5], neg and "-" or "+", tz), pos + 7
+end
+
+--- The concatenation element of the user-data header, if there is one.  Both the
+--- 8-bit (IEI 0x00) and the 16-bit (IEI 0x08) reference forms are in the wild.
+local function pdu_udh(s, pos, udhl)
+	local info, i, stop = nil, pos, pos + udhl
+	while i < stop do
+		local iei, iedl = s:byte(i), s:byte(i + 1)
+		if not iei or not iedl then break end
+		local d = i + 2
+		if iei == 0x00 and iedl >= 3 then
+			info = { ref = s:byte(d), total = s:byte(d + 1), seq = s:byte(d + 2) }
+		elseif iei == 0x08 and iedl >= 4 then
+			info = { ref = s:byte(d) * 256 + s:byte(d + 1),
+			         total = s:byte(d + 2), seq = s:byte(d + 3) }
+		end
+		i = d + iedl
+	end
+	return info
+end
+
+--- Decode one PDU exactly as +CMGL and +CMGR hand it over: service-centre address
+--- first, then the transport PDU.  Returns nil and a reason for anything we do not
+--- handle, so the caller can drop the entry rather than show rubbish.
+local function pdu_decode(hex)
+	local s = hexbytes(hex)
+	if not s or #s < 8 then return nil, "short pdu" end
+
+	-- the service centre is the one field whose length is in octets, not digits
+	local scl, smsc = s:byte(1), nil
+	if scl > 0 then
+		local toa, out = s:byte(2) or 0x81, {}
+		for i = 3, 1 + scl do
+			local b = s:byte(i) or 0xFF
+			local lo, hi = b % 16, math.floor(b / 16)
+			out[#out + 1] = SEMI:sub(lo + 1, lo + 1)
+			if hi ~= 15 then out[#out + 1] = SEMI:sub(hi + 1, hi + 1) end
+		end
+		smsc = ((math.floor(toa / 16) % 8 == 1) and "+" or "") .. table.concat(out)
+	end
+
+	local p = 2 + scl
+	local first = s:byte(p)
+	if not first then return nil, "truncated" end
+	p = p + 1
+	local mti = first % 4
+	local udhi = math.floor(first / 64) % 2 == 1
+
+	local addr, dcs, ts
+	if mti == 0 then                                        -- SMS-DELIVER, received
+		addr, p = pdu_addr(s, p)
+		if not addr then return nil, "bad address" end
+		p = p + 1                                           -- protocol identifier
+		dcs = s:byte(p); p = p + 1
+		ts, p = pdu_ts(s, p)
+	elseif mti == 1 then                                    -- SMS-SUBMIT, stored/sent
+		p = p + 1                                           -- message reference
+		addr, p = pdu_addr(s, p)
+		if not addr then return nil, "bad address" end
+		p = p + 1                                           -- protocol identifier
+		dcs = s:byte(p); p = p + 1
+		local vpf = math.floor(first / 8) % 4
+		if vpf == 2 then p = p + 1                          -- relative validity
+		elseif vpf == 1 or vpf == 3 then p = p + 7 end      -- enhanced / absolute
+	else
+		return nil, "unsupported message type"              -- status report, command
+	end
+	if not dcs or not p then return nil, "truncated" end
+
+	local udl = s:byte(p)
+	if not udl then return nil, "truncated" end
+	p = p + 1
+
+	-- data coding scheme: 00 = GSM 7-bit, 01 = 8-bit, 10 = UCS2
+	local alpha
+	if math.floor(dcs / 64) % 4 == 0 then alpha = math.floor(dcs / 4) % 4
+	elseif math.floor(dcs / 16) == 15 then alpha = math.floor(dcs / 4) % 2
+	else alpha = 0 end
+
+	local udh, udhl = nil, 0
+	if udhi then
+		udhl = s:byte(p) or 0
+		udh = pdu_udh(s, p + 1, udhl)
+		udhl = udhl + 1                                     -- the length byte counts
+	end
+
+	local text
+	if alpha == 2 then                                      -- UCS2
+		local body, out = s:sub(p + udhl, p + udl - 1), {}
+		local i = 1
+		while i + 1 <= #body do
+			local cp = body:byte(i) * 256 + body:byte(i + 1)
+			i = i + 2
+			if cp >= 0xD800 and cp <= 0xDBFF and i + 1 <= #body then
+				local lo = body:byte(i) * 256 + body:byte(i + 1)
+				if lo >= 0xDC00 and lo <= 0xDFFF then
+					cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00)
+					i = i + 2
+				end
+			end
+			out[#out + 1] = utf8_char(cp)
+		end
+		text = table.concat(out)
+	elseif alpha == 1 then                                  -- 8-bit: not text at all
+		text = (s:sub(p + udhl, p + udl - 1):gsub(".", function (c)
+			return ("%02X"):format(c:byte())
+		end))
+	else                                                    -- GSM 7-bit
+		-- the header is counted in septets too, and the text starts on the next
+		-- septet boundary after it
+		text = gsm7_text(gsm7_septets(s, p, udl), math.ceil(udhl * 8 / 7))
+	end
+
+	return { sender = addr, ts = ts, text = text, udh = udh, smsc = smsc,
+	         dcs = dcs, outgoing = (mti == 1) }
+end
+
+--=========================================================== SMS PDU: outgoing assembly (23.040)
+
+--- Sending also takes place in PDU mode. Text mode does not carry UDH, so one
+--- AT+CMGS = one part; the modem rejected anything longer with `+CMS ERROR: 305`.
+--- This code performs the inverse of pdu_decode: it constructs an SMS-SUBMIT
+--- side: SMS-SUBMIT, if necessary with a concatenation header.
+
+-- Unicode code point -> septet. Build in position order so the result does not
+-- depend on table traversal order. Position 0x1B is ESC and has no character.
+local GSM7_REV, GSM7_EXT_REV = {}, {}
+do
+	for i = 0, 127 do
+		local cp = GSM7[i]
+		if cp ~= nil and GSM7_REV[cp] == nil then GSM7_REV[cp] = i end
+	end
+	GSM7_REV[GSM7[0x1B]] = nil
+	for septet, cp in pairs(GSM7_EXT) do GSM7_EXT_REV[cp] = septet end
+end
+
+local function utf8_codepoints(str)
+	local out, i = {}, 1
+	while i <= #str do
+		local c, cp, n = str:byte(i), nil, 0
+		if c < 0x80 then cp, n = c, 0
+		elseif c >= 0xF0 then cp, n = c - 0xF0, 3
+		elseif c >= 0xE0 then cp, n = c - 0xE0, 2
+		elseif c >= 0xC0 then cp, n = c - 0xC0, 1
+		else cp, n = 0xFFFD, 0 end
+		for k = 1, n do
+			cp = cp * 0x40 + ((str:byte(i + k) or 0x80) - 0x80)
+		end
+		i = i + n + 1
+		out[#out + 1] = cp
+	end
+	return out
+end
+
+--- Text -> septets GSM 03.38. nil, if at least one character is not from this alphabet:
+--- then the caller falls back to UCS2. Extended-table characters take TWO
+--- septet (ESC + position), and this is taken into account when dividing into parts.
+local function gsm7_encode(str)
+	local out = {}
+	for _, cp in ipairs(utf8_codepoints(str)) do
+		local ext = GSM7_EXT_REV[cp]
+		if ext then
+			out[#out + 1] = 0x1B
+			out[#out + 1] = ext
+		else
+			local s = GSM7_REV[cp]
+			if not s then return nil end
+			out[#out + 1] = s
+		end
+	end
+	return out
+end
+
+--- Packing septets into octets. `fill` — how many low-order bits of the first octet are occupied
+--- alignment: with a header UDH of 6 octets (48 bits), the data must begin
+--- at the border of the septet, that is, from the 49th bit, and one bit remains for padding.
+local function gsm7_pack(septets, fill)
+	local out, acc, bits = {}, 0, fill or 0
+	for i = 1, #septets do
+		acc = acc + septets[i] * 2 ^ bits
+		bits = bits + 7
+		while bits >= 8 do
+			out[#out + 1] = acc % 256
+			acc = math.floor(acc / 256)
+			bits = bits - 8
+		end
+	end
+	if bits > 0 then out[#out + 1] = acc % 256 end
+	return out
+end
+
+local function tohex(bytes)
+	local out = {}
+	for i = 1, #bytes do out[i] = ("%02X"):format(bytes[i]) end
+	return table.concat(out)
+end
+
+--- Recipient number in TP-DA: length in digits (not octets), address type,
+--- then swapped semi-octet digit pairs, padded with 'F'.
+local function pdu_addr_encode(number)
+	local intl = number:sub(1, 1) == "+"
+	local digits = (number:gsub("^%+", ""))
+	if digits == "" or digits:find("[^0-9*#]") then return nil end
+	local body = (digits:gsub("%*", "A"):gsub("#", "B"))
+	if #body % 2 == 1 then body = body .. "F" end
+	local swapped = (body:gsub("(.)(.)", "%2%1"))
+	return ("%02X%02X%s"):format(#digits, intl and 0x91 or 0x81, swapped:upper())
+end
+
+--- Build one complete SMS-SUBMIT. Return hex with the leading SMSC octet (00 =
+--- use the modem-configured center) and the TPDU length in octets, as required by
+--- `AT+CMGS=<len>`, and the octet SMSC is NOT included in it.
+local function pdu_submit(addr_hex, dcs, udl, ud_octets, udh_octets)
+	local first = 0x11                              -- SUBMIT + TP-VP in relative form
+	local ud = ""
+	if udh_octets then
+		first = first + 0x40                        -- TP-UDHI
+		ud = tohex(udh_octets)
+	end
+	ud = ud .. tohex(ud_octets)
+	local tpdu = ("%02X00%s00%02XA7%02X%s"):format(first, addr_hex, dcs, udl, ud)
+	return "00" .. tpdu, #tpdu / 2
+end
+
+--- Divides septets into parts so that the pair ESC+symbol does not separate into two
+--- messages: the recipient would see garbage instead of the character, and our
+--- length counter would disagree with the modem.
+local function gsm7_split(septets, size)
+	local parts, i = {}, 1
+	while i <= #septets do
+		local stop = math.min(i + size - 1, #septets)
+		if septets[stop] == 0x1B and stop < #septets then stop = stop - 1 end
+		local chunk = {}
+		for k = i, stop do chunk[#chunk + 1] = septets[k] end
+		parts[#parts + 1] = chunk
+		i = stop + 1
+	end
+	return parts
+end
+
+--- The same for UCS2: we cut by 16-bit units and do not break the surrogate pair.
+local function ucs2_split(units, size_units)
+	local parts, i = {}, 1
+	while i <= #units do
+		local stop = math.min(i + size_units - 1, #units)
+		local last = units[stop]
+		if last >= 0xD800 and last <= 0xDBFF and stop < #units then stop = stop - 1 end
+		local chunk = {}
+		for k = i, stop do chunk[#chunk + 1] = units[k] end
+		parts[#parts + 1] = chunk
+		i = stop + 1
+	end
+	return parts
+end
+
+--- Concatenation reference number: one byte common to parts of one message and
+--- different for adjacent messages. The phone groups parts by (sender, reference),
+--- so immediately reusing one could merge two different messages.
+local sms_concat_ref = math.random(0, 255)
+local function next_concat_ref()
+	sms_concat_ref = (sms_concat_ref + 1) % 256
+	return sms_concat_ref
+end
+
+local SMS_MAX_PARTS = 10
+
+--- Collects the list of PDU for one message. Returns an array
+--- { { hex = ..., tpdu_len = ... }, ... } or nil and the reason.
+local function sms_build(dest, text)
+	local addr_hex = pdu_addr_encode(dest)
+	if not addr_hex then return nil, "invalid destination" end
+
+	local out = {}
+	local septets = gsm7_encode(text)
+	if septets then
+		if #septets <= 160 then
+			local hex, len = pdu_submit(addr_hex, 0x00, #septets,
+			                            gsm7_pack(septets, 0), nil)
+			out[1] = { hex = hex, tpdu_len = len }
+			return out, nil, { parts = 1, encoding = "gsm7", units = #septets }
+		end
+		-- A 6-octet UDH consumes 7 of the 160 septets
+		local chunks = gsm7_split(septets, 153)
+		if #chunks > SMS_MAX_PARTS then return nil, "message too long" end
+		local ref = next_concat_ref()
+		for n, chunk in ipairs(chunks) do
+			local udh = { 0x05, 0x00, 0x03, ref, #chunks, n }
+			local hex, len = pdu_submit(addr_hex, 0x00, 7 + #chunk,
+			                            gsm7_pack(chunk, 1), udh)
+			out[n] = { hex = hex, tpdu_len = len }
+		end
+		return out, nil, { parts = #chunks, encoding = "gsm7", units = #septets,
+		                   ref = ref }
+	end
+
+	-- UCS2: utf8_to_ucs2 has already decomposed astral symbols into surrogates
+	local hexunits = utf8_to_ucs2(text)
+	local units = {}
+	for i = 1, #hexunits, 4 do
+		units[#units + 1] = tonumber(hexunits:sub(i, i + 3), 16)
+	end
+	local function octets(chunk)
+		local o = {}
+		for _, u in ipairs(chunk) do
+			o[#o + 1] = math.floor(u / 256)
+			o[#o + 1] = u % 256
+		end
+		return o
+	end
+	if #units <= 70 then
+		local o = octets(units)
+		local hex, len = pdu_submit(addr_hex, 0x08, #o, o, nil)
+		out[1] = { hex = hex, tpdu_len = len }
+		return out, nil, { parts = 1, encoding = "ucs2", units = #units }
+	end
+	local chunks = ucs2_split(units, 67)             -- 140 - 6 octets UDH = 134 = 67 units
+	if #chunks > SMS_MAX_PARTS then return nil, "message too long" end
+	local ref = next_concat_ref()
+	for n, chunk in ipairs(chunks) do
+		local udh = { 0x05, 0x00, 0x03, ref, #chunks, n }
+		local o = octets(chunk)
+		local hex, len = pdu_submit(addr_hex, 0x08, 6 + #o, o, udh)
+		out[n] = { hex = hex, tpdu_len = len }
+	end
+	return out, nil, { parts = #chunks, encoding = "ucs2", units = #units, ref = ref }
+end
+
+--- +CMGL in PDU mode reports the status as a number where text mode spelled it out.
+--- The web UI keys the "draft" badge on the text form, so keep handing it that.
+local PDU_STATUS = { [0] = "REC UNREAD", [1] = "REC READ",
+                     [2] = "STO UNSENT", [3] = "STO SENT" }
+
+--- Put multi-part messages back together from their headers.  Segments come in
+--- storage-slot order, which is not sequence order, so each one is filed by its `seq`
+--- and the text is joined only at the end.
+local function assemble(list)
+	local out, groups = {}, {}
+	for _, m in ipairs(list) do
+		local u = m.udh
+		m.udh = nil
+		if not (u and u.total and u.total > 1 and u.seq and u.seq >= 1
+		        and u.seq <= u.total) then
+			m.parts, m.indexes = 1, { m.index }
+			out[#out + 1] = m
+		else
+			local key = (m.sender or "?") .. "|" .. u.ref .. "|" .. u.total
+			local g = groups[key]
+			if not g then
+				g = { index = m.index, sender = m.sender, status = m.status,
+				      ts = m.ts, unread = false, indexes = {},
+				      segs = {}, held = 0, total = u.total }
+				groups[key] = g
+				out[#out + 1] = g
+			end
+			if g.segs[u.seq] == nil then g.held = g.held + 1 end
+			g.segs[u.seq] = m.text or ""
+			g.indexes[#g.indexes + 1] = m.index
+			g.unread = g.unread or m.unread
+			-- a message is dated, addressed and indexed by its first segment
+			if u.seq == 1 then
+				g.ts, g.index, g.status = m.ts, m.index, m.status
+			end
+		end
+	end
+	for _, g in ipairs(out) do
+		if g.segs then
+			local parts = {}
+			for i = 1, g.total do parts[#parts + 1] = g.segs[i] or "" end
+			g.text = table.concat(parts)
+			g.parts = g.total
+			-- say so rather than showing a hole: a segment can still be in flight,
+			-- or the user may have deleted one slot of several
+			if g.held < g.total then g.missing = g.total - g.held end
+			g.segs, g.held, g.total = nil, nil, nil
+			table.sort(g.indexes)
+		end
+	end
+	return out
+end
+
+--===================================================================== telnet I/O
+
+local IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
+
+local Conn = {}
+Conn.__index = Conn
+
+function Conn.new(name)
+	return setmetatable({ name = name, state = "down", rbuf = "", wbuf = "" }, Conn)
+end
+
+function Conn:start()
+	self:close()
+	self.sock = nixio.socket("inet", "stream")
+	self.sock:setblocking(false)
+	self.rbuf, self.wbuf = "", ""
+	local ok, code = self.sock:connect(CFG.host, CFG.port)
+	if ok then
+		self.state = "up"
+	elseif code == EINPROGRESS then
+		self.state = "connecting"
+	else
+		self:close()
+		return false, code
+	end
+	self.deadline = mono() + CFG.connect_wait
+	return true
+end
+
+function Conn:close()
+	if self.sock then pcall(function() self.sock:close() end) end
+	self.sock, self.state, self.rbuf, self.wbuf = nil, "down", "", ""
+end
+
+-- Answer telnet option negotiation with a flat refusal and strip it from the stream.
+function Conn:strip_iac(data)
+	local out, reply, i = {}, {}, 1
+	while i <= #data do
+		local b = data:byte(i)
+		if b == IAC and i < #data then
+			local cmd = data:byte(i + 1)
+			if (cmd == DO or cmd == DONT or cmd == WILL or cmd == WONT) and i + 2 <= #data then
+				local opt = data:byte(i + 2)
+				if cmd == DO then
+					reply[#reply + 1] = string.char(IAC, WONT, opt)
+				elseif cmd == WILL then
+					reply[#reply + 1] = string.char(IAC, DONT, opt)
+				end
+				i = i + 3
+			elseif cmd == SB then
+				local j = data:find(string.char(IAC, SE), i, true)
+				i = j and (j + 2) or (#data + 1)
+			else
+				i = i + 2
+			end
+		else
+			out[#out + 1] = string.char(b)
+			i = i + 1
+		end
+	end
+	if #reply > 0 then self:send(table.concat(reply)) end
+	return table.concat(out)
+end
+
+function Conn:send(data)
+	self.wbuf = self.wbuf .. data
+	self:flush()
+end
+
+function Conn:flush()
+	if not self.sock or self.wbuf == "" then return end
+	local n = self.sock:write(self.wbuf)
+	if n then self.wbuf = self.wbuf:sub(n + 1) end
+end
+
+function Conn:recv()
+	if not self.sock then return nil end
+	local data, code = self.sock:read(4096)
+	if data == nil then
+		if code == nixio.const.EAGAIN then return "" end
+		return nil                       -- error
+	elseif data == "" then
+		return nil                       -- peer closed
+	end
+	return self:strip_iac(data)
+end
+
+--=================================================== Qualcomm control channel (kcap)
+-- The stock firmware does everything modem-related over TCP 2016 on the Qualcomm side,
+-- and that channel carries the very same JSON-RPC its web UI speaks, wrapped in a
+-- 44-byte binary header whose magic is "kcap".  Bare JSON gets no answer at all, which
+-- is why the channel looked opaque for a long time.
+--
+-- We use it for the one thing AT cannot do on this modem -- picking 2G/3G/4G -- and
+-- leave everything else on the AT port.  Frames:
+--     0x00 4  "kcap"                0x1c 4  zero
+--     0x04 4  total length          0x20 4  caller's context handle, echoed back
+--     0x08 4  message number        0x24 4  reply: JSON length without the NUL
+--     0x0c 4  1 = call, 2 = event   0x28 4  reply: 0x00000101
+--     0x10 4  zero                  0x2c .. JSON, NUL terminated
+--     0x14 4  0 in a call, 1 in a reply
+--     0x18 4  zero
+-- An event frame stops after 28 bytes and carries no JSON.
+
+local KCAP = { host = "192.168.225.1", port = 2016, timeout = 6, seq = 0 }
+
+function KCAP.le32(n)
+	n = n % 4294967296
+	return string.char(n % 256, math.floor(n / 256) % 256,
+	                   math.floor(n / 65536) % 256, math.floor(n / 16777216) % 256)
+end
+
+function KCAP.rd32(s, pos)
+	local a, b, c, d = s:byte(pos, pos + 3)
+	if not d then return nil end
+	return a + b * 256 + c * 65536 + d * 16777216
+end
+
+--- One call, one answer, one connection.  This runs a couple of times a minute at
+--- most, so a persistent socket would only add a state machine to the poll loop and a
+--- way to go stale while core_app restarts.
+function KCAP.call(method, params, timeout)
+	local deadline = mono() + (timeout or KCAP.timeout)
+	local sock = nixio.socket("inet", "stream")
+	sock:setblocking(false)
+
+	local function fail(err)
+		pcall(function() sock:close() end)
+		dbg("kcap %s: %s", method, err)
+		return nil, err
+	end
+
+	local ok, code = sock:connect(KCAP.host, KCAP.port)
+	if not ok and code ~= EINPROGRESS then
+		return fail("connect: " .. tostring(code))
+	end
+	if not ok then
+		local ms = math.floor(math.max(0, deadline - mono()) * 1000)
+		local cnt = nixio.poll({ { fd = sock, events = POLLOUT } }, ms)
+		if not cnt or cnt < 1 then return fail("connect timed out") end
+		local err = sock:getopt("socket", "error")
+		if err ~= 0 then return fail("connect error " .. tostring(err)) end
+	end
+
+	KCAP.seq = (KCAP.seq % 65000) + 1
+	local seq = KCAP.seq
+	-- An empty Lua table has no type of its own, and an encoder is free to write it
+	-- as [] -- core_app expects an object there, so spell the empty case out.
+	local enc = (params and next(params) ~= nil) and json.stringify(params) or "{}"
+	local body = '{"id": "12", "jsonrpc": "2.0", "method": "' .. method ..
+	             '", "params": ' .. enc .. "}\0"
+	local out = "kcap" .. KCAP.le32(44 + #body) .. KCAP.le32(seq) .. KCAP.le32(1)
+	            .. KCAP.le32(0) .. KCAP.le32(0) .. KCAP.le32(0) .. KCAP.le32(0)
+	            .. KCAP.le32(0x77000001) .. KCAP.le32(0) .. KCAP.le32(0) .. body
+	while #out > 0 do
+		if mono() > deadline then return fail("send timed out") end
+		local cnt = nixio.poll({ { fd = sock, events = POLLOUT } }, 200)
+		if cnt and cnt > 0 then
+			local n = sock:write(out)
+			if not n then return fail("write failed") end
+			out = out:sub(n + 1)
+		end
+	end
+
+	local buf = ""
+	while true do
+		while #buf >= 28 do
+			if buf:sub(1, 4) ~= "kcap" then return fail("frame out of sync") end
+			local total = KCAP.rd32(buf, 5)
+			if not total or total < 28 or total > 262144 then
+				return fail("bad frame length")
+			end
+			if #buf < total then break end
+			local frame = buf:sub(1, total)
+			buf = buf:sub(total + 1)
+			-- A slow answer to an earlier call can still be on the wire, so match the
+			-- message number: without that every call returns its neighbour's result.
+			if total > 44 and KCAP.rd32(frame, 13) == 1
+			   and KCAP.rd32(frame, 9) == seq then
+				local text = frame:sub(45, total)
+				text = text:gsub("%z+$", "")
+				local msg = json.parse(text)
+				if type(msg) ~= "table" then return fail("unparsable answer") end
+				pcall(function() sock:close() end)
+				if msg.error then
+					return nil, (msg.error.message or
+					             ("core_app error " .. tostring(msg.error.code)))
+				end
+				return msg.result or {}
+			end
+		end
+		if mono() > deadline then return fail("no answer") end
+		local cnt = nixio.poll({ { fd = sock, events = POLLIN } }, 200)
+		if cnt and cnt > 0 then
+			local data, err = sock:read(65536)
+			if data == nil then
+				if err ~= nixio.const.EAGAIN then return fail("read failed") end
+			elseif data == "" then
+				return fail("closed by core_app")
+			else
+				buf = buf .. data
+			end
+		end
+	end
+end
+
+--====================================================================== AT engine
+
+local M = {
+	link    = { state = "down", since = 0, attempts = 0, last_ok = 0, error = "starting" },
+	state   = {},                     -- parsed modem snapshot, published as JSON
+	queue   = {},                     -- user requests (from the control socket)
+	bg      = {},                     -- background poll requests
+	cur     = nil,                    -- request in flight
+	reader  = Conn.new("reader"),
+	writer  = Conn.new("writer"),
+	backoff = 1,
+	next_try = 0,
+	urc     = {},                     -- unsolicited results seen since last read
+	timers  = {},                     -- one-shot callbacks, run from the main loop
+}
+
+--- Run fn once, no sooner than `delay` seconds from now.  A request has no way to
+--- wait between two of its own commands, and the radio needs a real pause between
+--- AT+CFUN=0 and AT+CFUN=1 -- sleeping for it would stall the web UI as well.
+function M.after(delay, fn)
+	M.timers[#M.timers + 1] = { due = os.time() + delay, fn = fn }
+end
+
+local function esc_printf(payload)
+	-- every byte octal-escaped: the shell then cannot mangle anything
+	return (payload:gsub(".", function(c) return ("\\%03o"):format(c:byte()) end))
+end
+
+--- The Qualcomm-side shell truncates input lines longer than 1023 bytes: they simply
+--- doesn't reach `sh`, and the unclosed quote leaves it in continuation mode.
+--- Measured on device 2026-08-26 by binary search: payload 250 bytes
+--- arrives; 251 does not (0x1B + 4 characters per byte after esc_printf).
+---
+--- Before this fix everything was sent in one line, so any multipart message
+--- was split mid-command: one segment PDU is 310 characters, and the modem stayed at the
+--- "> ", and the channel was declared dead after two timeouts.
+local SHELL_LINE_MAX = 1023
+
+function M.write_raw(payload)
+	if M.writer.state ~= "up" then return false end
+	local prefix = "printf '"
+	local suffix = ("' > %s"):format(CFG.dev)
+	-- four characters per byte after esc_printf
+	local per = math.floor((SHELL_LINE_MAX - #prefix - #suffix) / 4)
+	if #payload == 0 then
+		M.writer:send(prefix .. suffix .. "\n")
+		return true
+	end
+	local i = 1
+	while i <= #payload do
+		-- The modem reads a byte stream, so boundaries between these writes do not matter:
+		-- it receives the same concatenated payload.
+		M.writer:send(prefix .. esc_printf(payload:sub(i, i + per - 1)) .. suffix .. "\n")
+		i = i + per
+	end
+	return true
+end
+
+--- Build a request.  steps = { {cmd=..., term="final"|"prompt", parse=fn, timeout=n}, }
+local function request(name, steps, cb)
+	return { name = name, steps = steps, idx = 0, lines = {}, cb = cb, raw = "" }
+end
+
+function M.enqueue(req, front)
+	if front then table.insert(M.queue, 1, req) else M.queue[#M.queue + 1] = req end
+end
+
+local FINAL = {
+	["OK"] = true, ["ERROR"] = true, ["NO CARRIER"] = true,
+	["ABORTED"] = true, ["BUSY"] = true, ["NO ANSWER"] = true,
+}
+
+local function is_final(line)
+	if FINAL[line] then return true end
+	if line:match("^%+CME ERROR:") or line:match("^%+CMS ERROR:") then return true end
+	return false
+end
+
+-- Codes that are always unsolicited, whatever else is going on.
+local URC_ALWAYS = {
+	["+CMTI"] = true, ["+CMT"] = true, ["+CUSD"] = true,
+	["+CDS"] = true, ["+CBM"] = true, ["+CGEV"] = true,
+}
+
+-- Codes that exist in both roles: "+CEREG: 1" arrives on its own when registration
+-- changes, but "+CEREG: 2,1,..." is the answer to AT+CEREG?.  Only context tells them
+-- apart, so ask what we are waiting for.  (Treating the answer as unsolicited is what
+-- kept registration state empty before.)
+local URC_MAYBE = { ["+CREG"] = true, ["+CEREG"] = true, ["+CGREG"] = true }
+
+local function is_urc(line)
+	local tag = line:match("^([%+%$]%a+)")
+	if not tag then return false end
+	if URC_ALWAYS[tag] then return true end
+	if not URC_MAYBE[tag] then return false end
+	local r = M.cur
+	local s = r and r.steps[r.idx]
+	if s and s.cmd:upper():find(tag:upper(), 1, true) then return false end
+	return true
+end
+
+function M.step_send()
+	local r = M.cur
+	r.idx = r.idx + 1
+	local s = r.steps[r.idx]
+	if not s then
+		M.finish(true)
+		return
+	end
+	r.lines = {}
+	r.raw = ""
+	r.deadline = mono() + (s.timeout or CFG.at_timeout)
+	local payload = s.cmd
+	if s.term ~= "raw_bytes" then payload = payload .. "\r" end
+	dbg("-> %s", (s.cmd:gsub("[\r\n\26]", "?")))
+	if not M.write_raw(payload) then
+		M.finish(false, "channel down")
+	end
+end
+
+function M.finish(ok, err)
+	local r = M.cur
+	M.cur = nil
+	if ok then M.timeouts = 0 end
+	if not r then return end
+	if r.cb then
+		local good, e = pcall(r.cb, ok, r.result or {}, err)
+		if not good then log("callback %s failed: %s", r.name, tostring(e)) end
+	end
+end
+
+function M.start_next()
+	if M.cur or M.link.state ~= "ready" then return end
+	local r = table.remove(M.queue, 1)
+	if not r then return end
+	M.cur = r
+	r.result = {}
+	M.step_send()
+end
+
+--- Feed one line of modem output into the state machine.
+function M.on_line(line)
+	line = line:gsub("\r", "")
+	if line == "" then return end
+	M.link.last_ok = mono()
+
+	if is_urc(line) then
+		dbg("<~ URC %s", line)
+		M.on_urc(line)
+		return
+	end
+	dbg("<- %s", line)
+
+	local r = M.cur
+	if not r then return end                     -- late output, no owner
+	local s = r.steps[r.idx]
+	if not s then return end
+	if line == s.cmd then return end             -- the modem's own echo
+
+	if is_final(line) then
+		local ok = (line == "OK")
+		r.result[r.idx] = { cmd = s.cmd, lines = r.lines, final = line, ok = ok }
+		if s.parse then
+			local good, e = pcall(s.parse, r.lines, ok, line)
+			if not good then log("parse %s failed: %s", s.cmd, tostring(e)) end
+		end
+		if not ok and not s.tolerate then
+			M.finish(false, line)
+		else
+			M.step_send()
+		end
+	else
+		r.lines[#r.lines + 1] = line
+	end
+end
+
+function M.on_urc(line)
+	M.urc[#M.urc + 1] = { t = os.time(), line = line }
+	while #M.urc > 32 do table.remove(M.urc, 1) end
+
+	local idx = line:match("^%+CMTI:%s*\"?[^,]*\"?,%s*(%d+)")
+	if idx then
+		-- provisional: the message is not in our read-state store until the list is
+		-- next fetched, so count it separately rather than guessing a key for it.
+		-- A long text arrives as one +CMTI per segment, hence the delay before the
+		-- real read: four notifications must produce one +CMGL, not four.
+		M.sms_pending = (M.sms_pending or 0) + 1
+		M.sms_sync_due = os.time() + 4
+		M.state.sms = M.state.sms or {}
+		M.state.sms.last_index = tonumber(idx)
+		M.state.sms.last_arrival = os.time()
+		log("new SMS at index %s", idx)
+		M.publish()
+	end
+	if line:match("^%+CUSD:") and M.ussd_wait then
+		M.ussd_wait(line)
+	end
+end
+
+--- The "> " prompt of +CMGS/+CMGW never ends with a newline, so it is matched raw.
+function M.on_raw(chunk)
+	local r = M.cur
+	if not r then return end
+	local s = r.steps[r.idx]
+	if s and s.term == "prompt" then
+		r.raw = r.raw .. chunk
+		if r.raw:find(">") then
+			r.result[r.idx] = { cmd = s.cmd, prompt = true, ok = true }
+			M.step_send()
+			return true                  -- caller drops the buffered echo before the body
+		end
+	end
+end
+
+function M.tick_timeout()
+	if M.cur and mono() > M.cur.deadline then
+		local name = M.cur.name
+		M.finish(false, "timeout")
+		M.timeouts = (M.timeouts or 0) + 1
+		log("timeout on %s (%d in a row)", name, M.timeouts)
+		if M.timeouts >= 2 then M.drop("modem not answering") end
+	end
+end
+
+--================================================================== channel setup
+
+function M.drop(why)
+	if M.link.state ~= "down" then log("channel down: %s", why) end
+	M.reader:close()
+	M.writer:close()
+	M.link.state = "down"
+	M.link.error = why
+	M.timeouts = 0
+	if M.cur then M.finish(false, "channel down") end
+	while #M.queue > 0 do
+		local r = table.remove(M.queue, 1)
+		if r.cb then pcall(r.cb, false, {}, "channel down") end
+	end
+	M.backoff = math.min((M.backoff or 1) * 2, 30)
+	M.next_try = mono() + M.backoff
+	M.publish()
+end
+
+--- Move to the next bring-up stage and time the one we are leaving.
+---
+--- Every stage had its own deadline and none of them was ever reported, so a channel that
+--- took half a minute to come up looked exactly like one that took two seconds -- there was
+--- no way to tell which stage the wait was in.  Now each stage is timed, the whole bring-up
+--- has a single deadline on top of the per-stage ones, and on_ready() prints the breakdown.
+function M.set_stage(name, deadline)
+	local t = mono()
+	if M.stage and M.stage_at then
+		M.stage_ms[M.stage] = math.floor((t - M.stage_at) * 1000 + 0.5)
+		M.stage_order[#M.stage_order + 1] = M.stage
+	end
+	M.stage = name
+	M.stage_at = t
+	if deadline then M.stage_deadline = t + deadline end
+end
+
+function M.connect()
+	M.link.attempts = M.link.attempts + 1
+	M.setup_started = mono()
+	M.stage, M.stage_at = nil, nil
+	M.stage_ms, M.stage_order = {}, {}
+	M.link.state = "connecting"
+	M.link.error = nil
+	local ok, err = M.writer:start()
+	if not ok then
+		M.drop("writer connect failed (" .. tostring(err) .. ")")
+		return
+	end
+	ok, err = M.reader:start()
+	if not ok then
+		M.drop("reader connect failed (" .. tostring(err) .. ")")
+		return
+	end
+	M.set_stage("tcp", CFG.connect_wait)
+end
+
+local CLEAN_MARK = "MODEMD_CLEAN_OK"
+
+--- A `cat /dev/smd7` left over from an earlier run would steal the modem's output, so
+--- the writer kills any it finds.  That has to FINISH before the reader starts its own
+--- `cat`: doing both at once means the cleanup kills the reader we just armed, which is
+--- exactly what happened on the first run.  The marker tells us the shell is done with
+--- it -- written with a quote in the middle so that the shell's echo of the command
+--- line does not itself match the marker we are waiting for.
+function M.clean_sessions()
+	M.writer:send("for p in $(ps | grep '[c]at " .. CFG.dev ..
+	              "' | awk '{print $1}'); do kill $p; done 2>/dev/null; echo " ..
+	              "MODEMD_C''LEAN_OK\n")
+	M.writer.rbuf = ""
+	M.clean_seen = false
+	M.set_stage("clean", 8)
+end
+
+--- Turn the reader session into a raw modem stream: from here on that socket carries
+--- nothing but what the modem says.
+function M.arm_sessions()
+	M.reader:send("exec cat " .. CFG.dev .. "\n")
+	M.sync_until = mono() + CFG.sync_window
+	M.set_stage("sync")
+end
+
+--- The session settings the modem has to carry for the whole run.  A function and
+--- not a literal inside on_ready(), because a channel that came up with no SIM gets
+--- every one of these rejected -- and `tolerate` then hides that for the rest of the
+--- session -- so the same block has to be runnable again later.
+local function setup_request()
+	-- Session setup: verbose errors and -- the important one -- +CMTI notifications,
+	-- so we learn about new messages without +CMGL, which would clear the "unread"
+	-- flag on every poll.
+	-- AT+CEREG=2 / AT+CGREG=2 add the cell identity and tracking area to the
+	-- registration answer; without them the UI has no cell to show.
+	return request("setup", {
+		{ cmd = "ATE1", tolerate = true },
+		{ cmd = "AT+CMEE=2", tolerate = true },
+		-- text mode is what the send path wants; reading is done in PDU mode and
+		-- every SMS job sets the mode it needs before it starts
+		{ cmd = "AT+CMGF=1", tolerate = true },
+		-- the character set lives in the modem, not in us: a previous run that left it
+		-- on UCS2 would otherwise hand us hex operator names for the rest of time
+		{ cmd = 'AT+CSCS="IRA"', tolerate = true },
+		{ cmd = "AT+CNMI=2,1,0,0,0", tolerate = true },
+		{ cmd = "AT+CEREG=2", tolerate = true },
+		{ cmd = "AT+CGREG=2", tolerate = true },
+	})
+end
+
+M.setup_request = setup_request
+
+function M.on_ready()
+	M.link.state = "ready"
+	M.link.since = os.time()
+	M.link.error = nil
+	-- The silence watchdog measures time since the last line from the modem, and lines
+	-- also arrive while the channel is still being set up.  When setup takes longer than
+	-- the watchdog's two minutes -- it does, when the USB link comes up late at boot --
+	-- a stale mark makes the freshly ready channel look dead on its first turn through
+	-- the loop, and the daemon drops it immediately after announcing it.  Start the
+	-- count here instead.
+	M.link.last_ok = mono()
+	M.backoff = 1
+	M.timeouts = 0
+	M.set_stage("ready")
+	M.link.setup_ms = math.floor((mono() - (M.setup_started or mono())) * 1000 + 0.5)
+	local parts = {}
+	for _, name in ipairs(M.stage_order or {}) do
+		parts[#parts + 1] = ("%s %dms"):format(name, M.stage_ms[name] or 0)
+	end
+	M.link.stages = table.concat(parts, ", ")
+	log("channel ready in %dms (%s; attempt %d)",
+	    M.link.setup_ms, M.link.stages, M.link.attempts)
+	-- The modem could remain at the "> " prompt from the dangling AT+CMGS/AT+CMGW - then it
+	-- accepts as MESSAGE BODY everything we send next, and the channel looks dead:
+	-- this happened with the first long SMS on 2026-08-26 and required manual recovery.
+	-- ESC cancels unfinished input but produces no reply, so it is not a request step;
+	-- send it once before setup instead.
+	M.write_raw("\027")
+	M.enqueue(setup_request(), true)
+	-- bg_static is defined further down, in the polling section
+	if M.bg_static then M.enqueue(M.bg_static()) end
+	M.bg_due_fast, M.bg_due_slow = 0, 0
+	-- after the first poll round, so the count is right before anyone looks at it
+	M.sms_sync_due = os.time() + 8
+end
+
+--====================================================================== parsers
+
+local S = M.state
+
+M.parsers = {}
+
+local function set(tbl, key, value)
+	S[tbl] = S[tbl] or {}
+	S[tbl][key] = value
+end
+
+function M.parsers.ati_lines(lines)
+	for _, l in ipairs(lines) do
+		local k, v = l:match("^(%a[%w ]-):%s*(.+)$")
+		if k == "Model" then set("device", "model", v)
+		elseif k == "Revision" then set("device", "revision", v)
+		elseif k == "Manufacturer" then set("device", "vendor", v)
+		elseif k == "IMEI" then set("device", "imei", v) end
+	end
+end
+
+-- RSSI in dBm from the 0..31 scale of +CSQ, and 0..5 "bars" the UI can draw.
+local function csq_to_dbm(csq)
+	if not csq or csq == 99 then return nil end
+	return -113 + 2 * csq
+end
+
+local function bars_from(rsrp, dbm)
+	local v = rsrp or dbm
+	if not v then return 0 end
+	if rsrp then
+		if rsrp >= -85 then return 5
+		elseif rsrp >= -95 then return 4
+		elseif rsrp >= -105 then return 3
+		elseif rsrp >= -115 then return 2
+		elseif rsrp >= -125 then return 1 end
+		return 0
+	end
+	if dbm >= -65 then return 5
+	elseif dbm >= -75 then return 4
+	elseif dbm >= -85 then return 3
+	elseif dbm >= -95 then return 2
+	elseif dbm >= -105 then return 1 end
+	return 0
+end
+
+local function recalc_bars()
+	local sig = S.signal or {}
+	sig.bars = bars_from(sig.rsrp, sig.rssi_dbm)
+	S.signal = sig
+end
+
+--- The modem writes IPv6 as sixteen dotted decimals.  Nobody can read that, so fold it
+--- back into normal notation, longest zero run collapsed as the RFC wants.
+local function dotted_to_ipv6(s)
+	local b = {}
+	for n in s:gmatch("(%d+)") do b[#b + 1] = tonumber(n) end
+	if #b ~= 16 then return nil end
+	local g, all_zero = {}, true
+	for i = 1, 16, 2 do
+		local v = b[i] * 256 + b[i + 1]
+		if v ~= 0 then all_zero = false end
+		g[#g + 1] = ("%x"):format(v)
+	end
+	if all_zero then return nil end
+	local bs, bn, i = nil, 1, 1
+	while i <= 8 do
+		if g[i] == "0" then
+			local j = i
+			while j < 8 and g[j + 1] == "0" do j = j + 1 end
+			if j - i + 1 > bn then bs, bn = i, j - i + 1 end
+			i = j + 1
+		else
+			i = i + 1
+		end
+	end
+	if not bs then return table.concat(g, ":") end
+	return table.concat(g, ":", 1, bs - 1) .. "::" ..
+	       ((bs + bn <= 8) and table.concat(g, ":", bs + bn, 8) or "")
+end
+
+local function dots(s) return select(2, s:gsub("%.", "")) end
+
+--- Radio levels arrive with two decimals ("-098.10").  The JSON encoder prints a
+--- rounded double with all seventeen digits it has, so -117.9 comes out as
+--- -117.90000000000001; whole dB is what a UI shows anyway, so round here.
+local function round(v)
+	if type(v) ~= "number" then return v end
+	return math.floor(v + 0.5)
+end
+
+--- Pull the first usable IPv4 / IPv6 out of a field that may hold both, space separated.
+local function v4_of(s)
+	for tok in s:gmatch("[%d%.]+") do
+		if dots(tok) == 3 and tok ~= "0.0.0.0" then return tok end
+	end
+end
+
+local function v6_of(s)
+	for tok in s:gmatch("[%d%.]+") do
+		if dots(tok) == 15 then
+			local a = dotted_to_ipv6(tok)
+			if a then return a end
+		end
+	end
+end
+
+-- Downlink EARFCN -> LTE band (3GPP 36.101 table 5.7.3-1).  The modem will not tell us
+-- the band, but it does tell us the channel, and the mapping is fixed.
+local EARFCN_BANDS = {
+	{0,599,1}, {600,1199,2}, {1200,1949,3}, {1950,2399,4}, {2400,2649,5},
+	{2650,2749,6}, {2750,3449,7}, {3450,3799,8}, {3800,4149,9}, {4150,4749,10},
+	{4750,4949,11}, {5010,5179,12}, {5180,5279,13}, {5280,5379,14}, {5730,5849,17},
+	{5850,5999,18}, {6000,6149,19}, {6150,6449,20}, {6450,6599,21}, {6600,7399,22},
+	{7500,7699,23}, {7700,8039,24}, {8040,8689,25}, {8690,9039,26}, {9040,9209,27},
+	{9210,9659,28}, {9660,9769,29}, {9770,9869,30}, {9870,9919,31}, {9920,10359,32},
+	{36000,36199,33}, {36200,36349,34}, {36350,36949,35}, {36950,37549,36},
+	{37550,37749,37}, {37750,38249,38}, {38250,38649,39}, {38650,39649,40},
+	{39650,41589,41}, {41590,43589,42}, {43590,45589,43}, {45590,46589,44},
+}
+
+local function band_of(earfcn)
+	if not earfcn then return nil end
+	for _, r in ipairs(EARFCN_BANDS) do
+		if earfcn >= r[1] and earfcn <= r[2] then return r[3] end
+	end
+end
+
+function M.parsers.csq(lines)
+	for _, l in ipairs(lines) do
+		local rssi, ber = l:match("^%+CSQ:%s*(%d+),%s*(%d+)")
+		if rssi then
+			rssi = tonumber(rssi)
+			set("signal", "csq", rssi)
+			set("signal", "rssi_dbm", csq_to_dbm(rssi))
+			set("signal", "ber", tonumber(ber))
+			recalc_bars()
+		end
+	end
+end
+
+local ACT_NAME = {
+	[0] = "GSM", [1] = "GSM Compact", [2] = "UTRAN", [3] = "GSM/EDGE",
+	[4] = "UTRAN/HSDPA", [5] = "UTRAN/HSUPA", [6] = "UTRAN/HSPA",
+	[7] = "LTE", [8] = "EC-GSM-IoT", [9] = "LTE Cat-M1", [10] = "NB-IoT",
+}
+
+--- Some modems answer AT+COPS? with the network name written twice ("lifecell
+--- lifecell"): the long and the short EONS name are identical and the firmware
+--- concatenates them instead of picking one.  Both AT+COPS=3,0 and =3,1 give the
+--- same doubled string on this modem, and the SPN commands (+CSPN, $QCSPN, +QSPN)
+--- all answer ERROR, so there is nothing better to read -- fold the repetition here.
+local function dedup_name(s)
+	if not s or s == "" then return s end
+	local words = {}
+	for w in s:gmatch("%S+") do words[#words + 1] = w end
+	if #words < 2 or #words % 2 ~= 0 then
+		-- "X X X ..." -- every word the same
+		local same = true
+		for i = 2, #words do
+			if words[i]:lower() ~= words[1]:lower() then same = false break end
+		end
+		if same and #words > 1 then return words[1] end
+		return s
+	end
+	-- "A B A B" -- the second half repeats the first
+	local half = math.floor(#words / 2)
+	for i = 1, half do
+		if words[i]:lower() ~= words[half + i]:lower() then return s end
+	end
+	return table.concat(words, " ", 1, half)
+end
+
+function M.parsers.cops(lines)
+	for _, l in ipairs(lines) do
+		local mode, fmt, name, act = l:match('^%+COPS:%s*(%d+),?%s*(%d*),?%s*"?([^",]*)"?,?%s*(%d*)')
+		if mode then
+			set("net", "cops_mode", tonumber(mode))
+			set("net", "auto", tonumber(mode) == 0)
+			if name and name ~= "" then
+				set("net", "operator", dedup_name(trim(name)))
+			end
+			act = tonumber(act)
+			if act then
+				set("net", "act", act)
+				set("net", "act_name", ACT_NAME[act] or ("ACT " .. act))
+			end
+		elseif l:match("^%+COPS:%s*%d+%s*$") then
+			-- "+COPS: 0" with nothing after it is the answer when the modem is not
+			-- camped on anyone.  Leaving the previous name in place is how the UI
+			-- kept showing an operator after the SIM was pulled out.
+			set("net", "cops_mode", tonumber(l:match("(%d+)")))
+			set("net", "operator", nil)
+		end
+	end
+end
+
+local REG_STATE = {
+	[0] = "not registered", [1] = "registered", [2] = "searching",
+	[3] = "denied", [4] = "unknown", [5] = "roaming",
+}
+
+--- With AT+CEREG=2 the answer carries the cell as well:
+---   +CEREG: <n>,<stat>,"<tac>",["<rac>",]"<ci>",<AcT>
+--- The middle field is not present on every firmware, so take the *last* quoted value
+--- as the cell identity rather than counting from the left.
+function M.parsers.cereg(lines)
+	for _, l in ipairs(lines) do
+		local st = l:match("^%+CEREG:%s*%d+,%s*(%d+)")
+		if st then
+			st = tonumber(st)
+			set("net", "reg", st)
+			set("net", "reg_name", REG_STATE[st] or "?")
+			set("net", "registered", st == 1 or st == 5)
+			-- stat 5 is "registered, roaming"; every other stat is either not
+			-- registered at all or registered at home, and neither roams
+			set("net", "roaming", st == 5)
+
+			local quoted = {}
+			for q in l:gmatch('"([^"]*)"') do quoted[#quoted + 1] = q end
+			if #quoted >= 2 then
+				set("net", "tac", quoted[1])
+				local ci = quoted[#quoted]
+				set("net", "ci", ci)
+				local num = tonumber(ci, 16)
+				if num then
+					-- an LTE cell identity is 28 bits: eNodeB in the top 20, sector
+					-- in the bottom 8
+					set("net", "enb", math.floor(num / 256))
+					set("net", "sector", num % 256)
+				end
+			end
+			local act = tonumber(l:match(",(%d+)%s*$") or "")
+			if act and #quoted >= 2 then
+				set("net", "act", act)
+				set("net", "act_name", ACT_NAME[act] or ("ACT " .. act))
+			end
+		end
+	end
+end
+
+function M.parsers.sysmode(lines)
+	for _, l in ipairs(lines) do
+		local v = trim(l)
+		if v ~= "" and not v:match("^%+") then set("net", "sysmode", v) end
+	end
+end
+
+function M.parsers.sysinfo(lines)
+	for _, l in ipairs(lines) do
+		local a, b, c, d, e = l:match("^%^SYSINFO:%s*(%d+),(%d+),(%d+),(%d+),(%d+)")
+		if a then
+			set("net", "srv_status", tonumber(a))
+			set("net", "srv_domain", tonumber(b))
+			-- No "or S.net.roaming" here: that made the flag one-way.  Once the
+			-- modem had reported roaming once, nothing could ever clear it again,
+			-- which is how a device with no SIM in it ended up displaying
+			-- "not registered (roaming)".
+			set("net", "roaming", tonumber(c) == 1)
+			set("net", "sim_state", tonumber(e))
+		end
+	end
+end
+
+-- $QCRSRP: <pci>,<earfcn>,"<dBm>",...  first triple is the serving cell
+local function parse_triples(lines, tag)
+	local list = {}
+	for _, l in ipairs(lines) do
+		local body = l:match("^%$" .. tag .. ":%s*(.+)$")
+		if body then
+			local f = {}
+			for item in (body .. ","):gmatch("([^,]*),") do f[#f + 1] = trim(item) end
+			for i = 1, #f - 2, 3 do
+				local pci, earfcn = tonumber(f[i]), tonumber(f[i + 1])
+				-- the extra parentheses matter: gsub returns a count as its second
+				-- value, which tonumber would otherwise take as a number base
+				local val = tonumber(((f[i + 2] or ""):gsub('"', '')))
+				if pci and val then
+					list[#list + 1] = { pci = pci, earfcn = earfcn, value = val,
+					                    band = band_of(earfcn) }
+				end
+			end
+		end
+	end
+	return list
+end
+
+function M.parsers.rsrp(lines)
+	local l = parse_triples(lines, "QCRSRP")
+	if #l > 0 then
+		set("signal", "rsrp", round(l[1].value))
+		set("signal", "pci", l[1].pci)
+		set("signal", "earfcn", l[1].earfcn)
+		set("signal", "band", band_of(l[1].earfcn))
+		local nb = {}
+		for i = 2, #l do
+			nb[#nb + 1] = { pci = l[i].pci, earfcn = l[i].earfcn,
+			                band = l[i].band, rsrp = round(l[i].value) }
+		end
+		set("signal", "neighbours", nb)
+		recalc_bars()
+	end
+end
+
+function M.parsers.rsrq(lines)
+	local l = parse_triples(lines, "QCRSRQ")
+	if #l > 0 then set("signal", "rsrq", round(l[1].value)) end
+end
+
+function M.parsers.cpin(lines, ok, final)
+	for _, l in ipairs(lines) do
+		local v = l:match("^%+CPIN:%s*(.+)$")
+		if v then
+			v = trim(v)
+			set("sim", "status", v)
+			set("sim", "ready", v == "READY")
+			set("sim", "pin_required", v:match("SIM PIN") ~= nil)
+			set("sim", "puk_required", v:match("SIM PUK") ~= nil)
+			-- The modem answered about the card, so whatever went wrong last time
+			-- is over.  Without this the UI showed "READY" and a stale
+			-- "+CME ERROR: SIM not inserted" from the previous attempt side by side.
+			set("sim", "error", nil)
+		end
+	end
+	if not ok then
+		set("sim", "status", "absent")
+		set("sim", "ready", false)
+		set("sim", "error", final)
+		-- An empty slot has no identity.  These come from their own commands, which
+		-- simply stop answering once the card is out, so nothing else clears them
+		-- and the UI would keep showing the ICCID and IMSI of a card that is gone.
+		set("sim", "iccid", nil)
+		set("sim", "imsi", nil)
+		set("sim", "mcc", nil)
+		set("sim", "pin_enabled", nil)
+		set("sim", "number", nil)
+		set("sim", "pinstat", nil)
+	end
+	-- Registration is a property of a SIM being in the slot.  +CEREG and +COPS do
+	-- not always answer at all without one (the modem replies +CME ERROR, which
+	-- `tolerate` swallows), so without this the fields keep whatever they held when
+	-- the SIM was last present.
+	if S.sim and S.sim.ready == false then
+		set("net", "registered", false)
+		set("net", "roaming", false)
+		set("net", "operator", nil)
+		set("net", "attached", false)
+	end
+end
+
+function M.parsers.pinstat(lines)
+	for _, l in ipairs(lines) do
+		local body = l:match("^%$QCPINSTAT:%s*(.+)$")
+		if body then set("sim", "pinstat", trim(body)) end
+	end
+end
+
+--- The modem's own copy of the notification setting.  Read on every slow poll, not
+--- because it changes often, but because when it does the only visible symptom is
+--- that SMS silently stop arriving in the UI until a reboot.
+function M.parsers.cnmi(lines)
+	for _, l in ipairs(lines) do
+		local v = l:match("^%\+CNMI:%s*(.+)$")
+		if v then
+			S.sms = S.sms or {}
+			S.sms.cnmi = trim(v)
+		end
+	end
+end
+
+function M.parsers.cgdcont(lines)
+	local list = {}
+	for _, l in ipairs(lines) do
+		local cid, pdp, apn = l:match('^%+CGDCONT:%s*(%d+),"([^"]*)","([^"]*)"')
+		if cid then
+			cid = tonumber(cid)
+			list[#list + 1] = {
+				cid = cid, pdp_type = pdp, apn = apn,
+				active = (M.cgact or {})[tostring(cid)] or false,
+				auth = (M.cgauth or {})[tostring(cid)],
+				auth_name = (M.cgauth_name or {})[tostring(cid)],
+			}
+		end
+	end
+	if #list > 0 then
+		S.apn = { count = #list, list = list }
+		-- the profile the data call actually runs on, not simply the first one
+		local active = list[1]
+		for _, e in ipairs(list) do
+			if e.active and e.apn ~= "" then active = e break end
+		end
+		set("data", "apn", active.apn)
+		set("data", "pdp_type", active.pdp_type)
+		set("data", "profile_cid", active.cid)
+	end
+end
+
+--- +CGACT: <cid>,<state> for every defined context.
+function M.parsers.cgact(lines)
+	local m = {}
+	for _, l in ipairs(lines) do
+		local cid, st = l:match("^%+CGACT:%s*(%d+),%s*(%d+)")
+		if cid then m[cid] = (tonumber(st) == 1) end
+	end
+	M.cgact = m
+	for _, e in ipairs((S.apn or {}).list or {}) do
+		e.active = m[tostring(e.cid)] or false
+	end
+end
+
+local AUTH_NAME = { [0] = "none", [1] = "PAP", [2] = "CHAP", [3] = "PAP/CHAP" }
+
+local function copy_list(t)
+	local out = {}
+	for i, v in ipairs(t or {}) do out[i] = v end
+	return out
+end
+
+--- $QCPDPP: <cid>,<auth type> -- the Qualcomm stand-in for +CGAUTH, which this
+--- firmware does not implement.
+function M.parsers.qcpdpp(lines)
+	local m, names = {}, {}
+	for _, l in ipairs(lines) do
+		local cid, a = l:match("^%$QCPDPP:%s*(%d+),%s*(%d+)")
+		if cid then
+			m[cid] = tonumber(a)
+			names[cid] = AUTH_NAME[tonumber(a)] or tostring(a)
+		end
+	end
+	M.cgauth, M.cgauth_name = m, names
+	for _, e in ipairs((S.apn or {}).list or {}) do
+		e.auth = m[tostring(e.cid)]
+		e.auth_name = names[tostring(e.cid)]
+	end
+end
+
+--- Every defined context answers +CGPADDR, most of them with all zeros.  Taking the
+--- last line -- which the first version did -- therefore reported "0.0.0.0" while the
+--- link was up: pick the first context that actually holds an address instead.
+function M.parsers.cgpaddr(lines)
+	local per = {}
+	for _, l in ipairs(lines) do
+		local cid, body = l:match("^%+CGPADDR:%s*(%d+),%s*(.+)$")
+		if cid then
+			local e = { cid = tonumber(cid) }
+			for a in (body .. ","):gmatch('%s*"?([^",]*)"?,') do
+				a = trim(a)
+				if dots(a) == 3 and a ~= "0.0.0.0" then e.ipv4 = a
+				elseif dots(a) == 15 then e.ipv6 = dotted_to_ipv6(a) end
+			end
+			if e.ipv4 or e.ipv6 then per[#per + 1] = e end
+		end
+	end
+	if #per > 0 then
+		set("data", "cid", per[1].cid)
+		set("data", "ipv4", per[1].ipv4)
+		set("data", "ipv6", per[1].ipv6)
+		set("data", "connected", true)
+	else
+		set("data", "ipv4", nil)
+		set("data", "ipv6", nil)
+		set("data", "connected", false)
+	end
+end
+
+--- +CGCONTRDP is where the gateway and the DNS servers live.  The field layout is
+--- positional (3GPP 27.007): address, gateway, primary DNS, secondary DNS -- and this
+--- firmware puts the IPv4 and IPv6 forms of each in the same field, space separated.
+function M.parsers.cgcontrdp(lines)
+	for _, l in ipairs(lines) do
+		local body = l:match("^%+CGCONTRDP:%s*(.+)$")
+		if body then
+			local f = {}
+			for item in (body .. ","):gmatch("([^,]*),") do f[#f + 1] = trim(item) end
+			if #f >= 6 then
+				local cid = tonumber(f[1])
+				local a = {}
+				for i = 4, #f do a[#a + 1] = f[i] end
+				local n = #a
+				local rd = { cid = cid, apn = f[3], dns = {}, dns6 = {} }
+				for _, idx in ipairs({ n - 1, n }) do
+					local s4, s6 = v4_of(a[idx] or ""), v6_of(a[idx] or "")
+					if s4 then rd.dns[#rd.dns + 1] = s4 end
+					if s6 then rd.dns6[#rd.dns6 + 1] = s6 end
+				end
+				rd.gw = v4_of(a[n - 2] or "") or v6_of(a[n - 2] or "")
+				rd.ipv4 = v4_of(a[1] or "")
+				rd.ipv6 = v6_of(a[1] or "") or v6_of(a[2] or "")
+				if not S.data or not S.data.cid or S.data.cid == cid then
+					set("data", "gw", rd.gw)
+					set("data", "dns", copy_list(rd.dns))
+					set("data", "dns6", copy_list(rd.dns6))
+				end
+			end
+		end
+	end
+end
+
+function M.parsers.cpms(lines)
+	for _, l in ipairs(lines) do
+		local m1, u1, t1 = l:match('^%+CPMS:%s*"([^"]*)",(%d+),(%d+)')
+		if m1 then
+			S.sms = S.sms or {}
+			S.sms.storage = m1
+			S.sms.used = tonumber(u1)
+			S.sms.total = tonumber(t1)
+		end
+	end
+end
+
+--- AT+COPS=3,2 switches the answer to the numeric operator id; the caller has to put
+--- the format back afterwards, so this only ever runs inside the one-shot block.
+function M.parsers.cops_numeric(lines)
+	for _, l in ipairs(lines) do
+		local num = l:match('^%+COPS:%s*%d+,%s*2,%s*"(%d+)"')
+		if num then
+			set("net", "operator_numeric", num)
+			set("net", "mcc", num:sub(1, 3))
+			set("net", "mnc", num:sub(4))
+		end
+	end
+end
+
+function M.parsers.cimi(lines)
+	for _, l in ipairs(lines) do
+		local v = trim(l)
+		if v:match("^%d%d%d%d%d+$") then
+			set("sim", "imsi", v)
+			set("sim", "mcc", v:sub(1, 3))
+		end
+	end
+end
+
+function M.parsers.iccid(lines)
+	for _, l in ipairs(lines) do
+		local v = l:match("^%+?ICCID:%s*(%w+)") or trim(l):match("^(%d%d%d%d%d%d+%w*)$")
+		if v then set("sim", "iccid", v) end
+	end
+end
+
+function M.parsers.simstat(lines)
+	for _, l in ipairs(lines) do
+		local _, txt = l:match("^%$QCSIMSTAT:%s*(%d+),%s*(.+)$")
+		if txt then set("sim", "init", trim(txt)) end
+	end
+end
+
+--- +CLCK: <status> -- whether the SIM asks for a PIN at power-on.
+function M.parsers.clck(lines)
+	for _, l in ipairs(lines) do
+		local v = l:match("^%+CLCK:%s*(%d+)")
+		if v then set("sim", "pin_enabled", tonumber(v) == 1) end
+	end
+end
+
+function M.parsers.cnum(lines)
+	for _, l in ipairs(lines) do
+		local num = l:match('^%+CNUM:%s*[^,]*,%s*"([^"]*)"')
+		if num and num ~= "" then set("sim", "number", num) end
+	end
+end
+
+function M.parsers.cfun(lines)
+	for _, l in ipairs(lines) do
+		local v = l:match("^%+CFUN:%s*(%d+)")
+		if v then
+			S.radio = S.radio or {}
+			S.radio.cfun = tonumber(v)
+			S.radio.on = tonumber(v) == 1
+		end
+	end
+end
+
+function M.parsers.cgatt(lines)
+	for _, l in ipairs(lines) do
+		local v = l:match("^%+CGATT:%s*(%d+)")
+		if v then set("net", "attached", tonumber(v) == 1) end
+	end
+end
+
+-- Which radio technologies the modem may use.  AT cannot set this here: +WS46 answers
+-- OK and keeps the old value, and every vendor command ($QCRAT, ^SYSCFG, ^SYSCFGEX,
+-- +CNMP, !SELRAT, +GTRAT, +ZSNT, +XACT, $NWRAT) answers ERROR.  The stock UI never
+-- went through AT either -- it asks core_app on the Qualcomm side, and so do we.
+local NET_MODE_NAME = {
+	[0] = "Automatic (2G/3G/4G)", [1] = "2G only", [2] = "3G only", [3] = "4G only",
+}
+
+-- GetNetworkModeListType answers "unknown error" on this firmware, so the stock UI
+-- hard-codes these four (build.js, formOptions.NetworkMode) and we do the same.
+local NET_MODES = {
+	{ value = 0, name = NET_MODE_NAME[0] }, { value = 1, name = NET_MODE_NAME[1] },
+	{ value = 2, name = NET_MODE_NAME[2] }, { value = 3, name = NET_MODE_NAME[3] },
+}
+
+--- Board detection can only name the family: nothing on the Realtek half records
+--- which model this is, and the same image runs on an HH71 without the VM.  The
+--- Qualcomm half knows -- GetSystemInfo returns the hardware string the stock UI
+--- shows -- so refine what the boot script wrote once we can ask.
+function M.refresh_model()
+	local info = KCAP.call("GetSystemInfo")
+	local hw = info and info.HwVersion
+	if type(hw) ~= "string" then return false end
+	hw = trim(hw)
+	if hw == "" then return false end
+	local model = "Alcatel LINKHUB " .. hw
+	local cur = fs.readfile("/tmp/sysinfo/model")
+	if cur and trim(cur) == model then return true end
+	fs.mkdir("/tmp/sysinfo")
+	fs.writefile("/tmp/sysinfo/model", model .. "\n")
+	log("model from the modem side: %s", model)
+	return true
+end
+
+--- Read the mode over the kcap channel into the published snapshot.
+function M.net_mode_refresh()
+	local ns, err = KCAP.call("GetNetworkSettings")
+	S.net = S.net or {}
+	if not ns or ns.NetworkMode == nil then
+		S.net.mode_error = err or "no answer"
+		return nil, S.net.mode_error
+	end
+	S.net.mode_error = nil
+	set("net", "mode", ns.NetworkMode)
+	set("net", "mode_name", NET_MODE_NAME[ns.NetworkMode]
+	                        or ("mode " .. tostring(ns.NetworkMode)))
+	set("net", "modes", NET_MODES)
+	return ns
+end
+
+
+--- +CCLK: "yy/MM/dd,hh:mm:ss+zz" -- the network's idea of the time, quarter hours.
+function M.parsers.cclk(lines)
+	for _, l in ipairs(lines) do
+		local v = l:match('^%+CCLK:%s*"([^"]*)"')
+		if v then
+			set("net", "time", v)
+			local tz = v:match("([%+%-]%d+)$")
+			if tz then set("net", "tz_minutes", tonumber(tz) * 15) end
+		end
+	end
+end
+
+function M.parsers.csca(lines)
+	for _, l in ipairs(lines) do
+		local v = l:match('^%+CSCA:%s*"([^"]*)"')
+		if v then
+			S.sms = S.sms or {}
+			S.sms.sca = v
+		end
+	end
+end
+
+function M.parsers.cpbs(lines)
+	for _, l in ipairs(lines) do
+		local st, used, total = l:match('^%+CPBS:%s*"([^"]*)",(%d+),(%d+)')
+		if st then
+			S.phonebook = { storage = st, used = tonumber(used), total = tonumber(total) }
+		end
+	end
+end
+
+--============================================================== traffic counters
+
+local function read_counters()
+	local f = io.open("/proc/net/dev", "r")
+	if not f then return nil end
+	local rx, tx
+	for line in f:lines() do
+		local ifn, body = line:match("^%s*([%w%.%-]+):%s*(.+)$")
+		if ifn == CFG.wan_if then
+			local fields = {}
+			for v in body:gmatch("%d+") do fields[#fields + 1] = tonumber(v) end
+			rx, tx = fields[1], fields[9]
+		end
+	end
+	f:close()
+	if not rx then return nil end
+	return rx, tx
+end
+
+function M.update_usage()
+	local rx, tx = read_counters()
+	if not rx then return end
+	M.usage_base = M.usage_base or { rx = rx, tx = tx, t = os.time() }
+	if rx < M.usage_base.rx or tx < M.usage_base.tx then      -- counters reset
+		M.usage_base = { rx = rx, tx = tx, t = os.time() }
+	end
+	S.usage = {
+		rx_total = rx, tx_total = tx,
+		rx = rx - M.usage_base.rx, tx = tx - M.usage_base.tx,
+		since = M.usage_base.t, iface = CFG.wan_if,
+	}
+end
+
+--=================================================================== background
+
+local function bg_fast()
+	return request("poll-fast", {
+		{ cmd = "AT+CSQ",     parse = M.parsers.csq,    tolerate = true },
+		{ cmd = "AT+CEREG?",  parse = M.parsers.cereg,  tolerate = true },
+	}, function() M.publish() end)
+end
+
+local function bg_slow()
+	return request("poll-slow", {
+		{ cmd = "AT+CPIN?",       parse = M.parsers.cpin,    tolerate = true },
+		{ cmd = "AT+COPS?",       parse = M.parsers.cops,    tolerate = true },
+		{ cmd = "AT+CFUN?",       parse = M.parsers.cfun,    tolerate = true },
+		{ cmd = "AT+CGATT?",      parse = M.parsers.cgatt,   tolerate = true },
+		{ cmd = "AT$QCSYSMODE?",  parse = M.parsers.sysmode, tolerate = true },
+		{ cmd = "AT^SYSINFO",     parse = M.parsers.sysinfo, tolerate = true },
+		{ cmd = "AT$QCRSRP?",     parse = M.parsers.rsrp,    tolerate = true },
+		{ cmd = "AT$QCRSRQ?",     parse = M.parsers.rsrq,    tolerate = true },
+		{ cmd = "AT$QCPDPP?",     parse = M.parsers.qcpdpp,  tolerate = true },
+		{ cmd = "AT+CGACT?",      parse = M.parsers.cgact,   tolerate = true },
+		{ cmd = "AT+CGDCONT?",    parse = M.parsers.cgdcont, tolerate = true },
+		{ cmd = "AT+CGPADDR",     parse = M.parsers.cgpaddr, tolerate = true },
+		{ cmd = "AT+CGCONTRDP",   parse = M.parsers.cgcontrdp, tolerate = true },
+		{ cmd = "AT+CPMS?",       parse = M.parsers.cpms,    tolerate = true },
+		{ cmd = "AT+CCLK?",       parse = M.parsers.cclk,    tolerate = true },
+		{ cmd = "AT+CNMI?",       parse = M.parsers.cnmi,    tolerate = true },
+	}, function()
+		M.check_session()
+		M.publish()
+	end)
+end
+
+--- Facts that do not change while the modem is up: asked once per channel, not on a
+--- timer.  Keeping them out of the slow poll saves a dozen AT round trips a minute.
+local function bg_static()
+	return request("poll-static", {
+		{ cmd = "ATI",           parse = M.parsers.ati_lines, tolerate = true },
+		{ cmd = "AT+CIMI",       parse = M.parsers.cimi,    tolerate = true },
+		{ cmd = "AT+ICCID",      parse = M.parsers.iccid,   tolerate = true },
+		{ cmd = "AT+CNUM",       parse = M.parsers.cnum,    tolerate = true },
+		{ cmd = "AT$QCSIMSTAT?", parse = M.parsers.simstat, tolerate = true },
+		{ cmd = 'AT+CLCK="SC",2', parse = M.parsers.clck,   tolerate = true },
+		{ cmd = "AT+CSCA?",      parse = M.parsers.csca,    tolerate = true },
+		{ cmd = "AT+CPBS?",      parse = M.parsers.cpbs,    tolerate = true },
+		{ cmd = "AT+COPS=3,2",   tolerate = true },
+		{ cmd = "AT+COPS?",      parse = M.parsers.cops_numeric, tolerate = true },
+		{ cmd = "AT+COPS=3,0",   tolerate = true },
+		{ cmd = "AT+COPS?",      parse = M.parsers.cops,    tolerate = true },
+	}, function() M.publish() end)
+end
+
+M.bg_static = bg_static
+
+--- True while the modem says there is no SIM at all -- not a locked one, and not a
+--- working one we would be about to knock off the network.
+local function sim_slot_empty()
+	local S = M.state
+	local sim = S.sim or {}
+	if sim.ready then return false end
+	-- "SIM PIN"/"SIM PUK" mean the card is in the slot and only waiting to be unlocked
+	if sim.pin_required or sim.puk_required then return false end
+	if sim.status ~= "absent" then return false end
+	-- never touch the radio while it is carrying something
+	if (S.net or {}).registered then return false end
+	if (S.data or {}).connected then return false end
+	return true
+end
+
+--- Two faults leave the session half-configured for hours, and neither announces
+--- itself, so the slow poll is where we notice and repair them.
+---
+--- 1. +CNMI back at zero: the modem still receives SMS but stops sending +CMTI, and
+---    since we deliberately do not poll with +CMGL (it clears the unread flag), the
+---    UI keeps showing yesterday's list until a reboot.
+--- 2. A SIM put in after boot: the modem does not notice it by itself and keeps
+---    answering "SIM not inserted" to every +CPIN? until the radio is power-cycled.
+---    There is no event to wait for, so an empty slot has to be re-probed.
+function M.check_session()
+	local S = M.state
+	local now = os.time()
+
+	local cnmi = (S.sms or {}).cnmi
+	if cnmi and not cnmi:match("^%s*2%s*,%s*1") and now >= (M.cnmi_fix_after or 0) then
+		M.cnmi_fix_after = now + 60
+		log("CNMI is %s, not 2,1 -- new SMS are not being announced, restoring setup", cnmi)
+		M.enqueue(setup_request())
+		M.sms_sync_due = now + 6      -- collect whatever arrived while we were deaf
+	end
+
+	if not sim_slot_empty() then
+		M.sim_empty_rounds = 0
+		return
+	end
+	M.sim_empty_rounds = (M.sim_empty_rounds or 0) + 1
+	-- a couple of polls of agreement first: one stray +CME ERROR must not cost the
+	-- user their connection
+	if M.sim_empty_rounds < 3 or now < (M.sim_reprobe_after or 0) then return end
+	M.sim_reprobe_after = now + CFG.sim_reprobe
+	log("no SIM for %d polls, power-cycling the radio to re-read the slot", M.sim_empty_rounds)
+	M.enqueue(request("sim-reprobe-off", {
+		{ cmd = "AT+CFUN=0", timeout = 25, tolerate = true },
+	}, function()
+		-- the radio needs the pause; CFUN=1 straight after the OK finds nothing
+		M.after(8, function()
+			M.enqueue(request("sim-reprobe-on", {
+				{ cmd = "AT+CFUN=1", timeout = 25, tolerate = true },
+			}, function()
+				-- CFUN=1 brings the radio back with default session settings, so the
+				-- whole of on_ready()'s block has to run again -- this is also what
+				-- repairs a boot that happened with no SIM in the slot
+				M.enqueue(setup_request())
+				if M.bg_static then M.enqueue(M.bg_static()) end
+				M.bg_due_fast, M.bg_due_slow = 0, 0
+				M.sms_sync_due = os.time() + 8
+			end))
+		end)
+	end))
+end
+
+function M.publish()
+	M.update_usage()
+	if M.sms_unread_fn then M.sms_unread_fn() end
+	S.ts = os.time()
+	S.link = {
+		state = M.link.state, since = M.link.since,
+		error = M.link.error, attempts = M.link.attempts,
+		setup_ms = M.link.setup_ms, stages = M.link.stages,
+	}
+	local body = json.stringify(S)
+	local tmp = STATUS_FILE .. ".tmp"
+	local f = io.open(tmp, "w")
+	if f then
+		f:write(body)
+		f:close()
+		fs.move(tmp, STATUS_FILE)
+	end
+end
+
+--=========================================================== SMS read/unread state
+-- AT+CMGL clears the modem's own "unread" flag on every message it returns, so that
+-- flag cannot survive the first time the user opens the message list.  We therefore
+-- keep the state ourselves, keyed by index plus timestamp (indexes are reused after a
+-- delete), seeded from the modem's flag the first time a message is seen.
+
+local SMS_SEEN_FILE = "/etc/hh71vm-modem/sms-seen.json"
+
+local SMS = { seen = {}, loaded = false }
+
+local function sms_key(index, ts)
+	return tostring(index) .. "|" .. tostring(ts or "")
+end
+
+function SMS.load()
+	if SMS.loaded then return end
+	SMS.loaded = true
+	local f = io.open(SMS_SEEN_FILE, "r")
+	if not f then return end
+	local body = f:read("*a")
+	f:close()
+	local t = body and json.parse(body)
+	if type(t) == "table" and type(t.seen) == "table" then SMS.seen = t.seen end
+end
+
+function SMS.save()
+	local dir = SMS_SEEN_FILE:match("^(.*)/[^/]*$")
+	if dir then fs.mkdirr(dir) end
+	local f = io.open(SMS_SEEN_FILE .. ".tmp", "w")
+	if not f then return end
+	f:write(json.stringify({ seen = SMS.seen }))
+	f:close()
+	fs.move(SMS_SEEN_FILE .. ".tmp", SMS_SEEN_FILE)
+end
+
+--- How many messages the store knows about.  Deliberately not the same number as
+--- AT+CPMS reports: that counts storage slots, and one long text takes several of
+--- them, so the modem says "6" where the user sees two messages.
+function SMS.count_all()
+	SMS.load()
+	local n = 0
+	for _ in pairs(SMS.seen) do n = n + 1 end
+	return n
+end
+
+function SMS.count_unread()
+	SMS.load()
+	local n = 0
+	for _, v in pairs(SMS.seen) do if v == "unread" then n = n + 1 end end
+	return n
+end
+
+--- Fold a freshly listed set into the store, drop entries for messages that are gone,
+--- and stamp each message with our own read flag.  Returns the unread count.
+function SMS.merge(msgs)
+	SMS.load()
+	local keep, unread = {}, 0
+	for _, m in ipairs(msgs) do
+		local k = sms_key(m.index, m.ts)
+		local st = SMS.seen[k]
+		if st == nil then st = m.unread and "unread" or "read" end
+		keep[k] = st
+		m.unread = (st == "unread")
+		if m.unread then unread = unread + 1 end
+	end
+	SMS.seen = keep
+	SMS.save()
+	return unread
+end
+
+function SMS.mark(index, ts, state)
+	SMS.load()
+	local changed = false
+	if ts and ts ~= "" then
+		local k = sms_key(index, ts)
+		if SMS.seen[k] ~= state then SMS.seen[k] = state; changed = true end
+	else
+		local pfx = tostring(index) .. "|"
+		for k in pairs(SMS.seen) do
+			if k:sub(1, #pfx) == pfx and SMS.seen[k] ~= state then
+				SMS.seen[k] = state; changed = true
+			end
+		end
+	end
+	if changed then SMS.save() end
+	return changed
+end
+
+function SMS.forget(index)
+	SMS.load()
+	local pfx = tostring(index) .. "|"
+	for k in pairs(SMS.seen) do
+		if k:sub(1, #pfx) == pfx then SMS.seen[k] = nil end
+	end
+	SMS.save()
+end
+
+local function sms_refresh_unread()
+	S.sms = S.sms or {}
+	-- +CMTI fires once per *slot*, and a long text fills several, so the count of
+	-- outstanding notifications is not a count of messages.  Until the next sync
+	-- merges them, say that at least one arrived rather than inflating the badge.
+	local pending = (M.sms_pending or 0) > 0
+	S.sms.pending = pending
+	S.sms.unread = SMS.count_unread() + (pending and 1 or 0)
+	local n = SMS.count_all()
+	-- An empty store with occupied slots means the list has never been fetched in
+	-- this session; say "unknown" rather than "none", which would be a lie.
+	S.sms.count = (n == 0 and (S.sms.used or 0) > 0) and nil or n
+end
+
+M.sms_unread_fn = sms_refresh_unread
+
+--================================================================ control socket
+
+local API = {}
+
+--- An answer can run to tens of kilobytes (an SMS list, an operator scan) while the
+--- client socket is non-blocking, so a single write would truncate the JSON without
+--- saying so.  Switch to blocking and write until it is all out.
+local function reply(cli, obj)
+	if cli.dead then return end
+	local ok, body = pcall(json.stringify, obj)
+	if not ok then body = '{"error":"encode failed"}' end
+	body = body .. "\n"
+	pcall(function()
+		cli.sock:setblocking(true)
+		while #body > 0 do
+			local n = cli.sock:write(body)
+			if not n or n <= 0 then break end
+			body = body:sub(n + 1)
+		end
+		cli.sock:close()
+	end)
+	cli.dead = true
+end
+
+local function need_link(cli)
+	if M.link.state ~= "ready" then
+		reply(cli, { error = "modem channel " .. M.link.state,
+		             detail = M.link.error })
+		return false
+	end
+	return true
+end
+
+--- Run AT steps for a control client and answer with the collected lines.
+local function run_for(cli, name, steps, shape)
+	if not need_link(cli) then return end
+	M.enqueue(request(name, steps, function(ok, result, err)
+		if shape then
+			local out = shape(ok, result, err) or {}
+			if out.ok == nil then out.ok = ok end
+			reply(cli, out)
+		else
+			local lines = {}
+			for _, st in ipairs(result) do
+				for _, l in ipairs(st.lines or {}) do lines[#lines + 1] = l end
+			end
+			reply(cli, { ok = ok, error = err, lines = lines })
+		end
+	end))
+	M.start_next()
+end
+
+function API.status(cli)
+	M.update_usage()
+	if M.sms_unread_fn then M.sms_unread_fn() end
+	S.ts = os.time()
+	S.link = { state = M.link.state, since = M.link.since,
+	           error = M.link.error, attempts = M.link.attempts }
+	reply(cli, S)
+end
+
+function API.refresh(cli, args)
+	if not need_link(cli) then return end
+	local r = bg_slow()
+	r.cb = function(ok, _, err)
+		M.publish()
+		API.status(cli)
+	end
+	M.enqueue(r, true)
+	M.start_next()
+end
+
+--- Arbitrary AT is an administrative privilege, but it still shares the one AT engine
+--- with the poller and every other page.  Without bounds a single request can hold that
+--- engine long past the lifetime of the rpcd call that asked for it, and everything
+--- else queues behind it.  Hence a ceiling on the batch, on each command and on the
+--- caller-supplied timeout; the LuCI proxy gives up at 30 s anyway.
+local AT_MAX_CMDS    = 32
+local AT_MAX_CMD_LEN = 512
+local AT_MAX_TIMEOUT = 120
+
+function API.at(cli, args)
+	local cmds = args.cmds or (args.cmd and { args.cmd })
+	if type(cmds) ~= "table" or #cmds == 0 then
+		return reply(cli, { error = "no commands given" })
+	end
+	if #cmds > AT_MAX_CMDS then
+		return reply(cli, { error = ("too many commands: %d, limit is %d")
+		            :format(#cmds, AT_MAX_CMDS) })
+	end
+	local timeout = tonumber(args.timeout) or CFG.at_timeout
+	if timeout <= 0 or timeout > AT_MAX_TIMEOUT then
+		return reply(cli, { error = ("timeout out of range: expected 1..%d seconds")
+		            :format(AT_MAX_TIMEOUT) })
+	end
+	local steps = {}
+	for _, c in ipairs(cmds) do
+		local cmd = tostring(c)
+		if #cmd > AT_MAX_CMD_LEN then
+			return reply(cli, { error = ("command too long: %d bytes, limit is %d")
+			            :format(#cmd, AT_MAX_CMD_LEN) })
+		end
+		steps[#steps + 1] = { cmd = cmd, tolerate = true, timeout = timeout }
+	end
+	run_for(cli, "at", steps, function(ok, result, err)
+		local out = { ok = ok, error = err, results = {} }
+		for i, st in ipairs(result) do
+			out.results[i] = { cmd = st.cmd, final = st.final, lines = st.lines }
+		end
+		return out
+	end)
+end
+
+--- Build the job that reads the modem's message store and folds it into ours.
+---
+--- +CMGL clears the modem's own "unread" flag on everything it returns, which is why
+--- this is never a poll.  It is safe at exactly two moments -- when the channel comes
+--- up and just after a +CMTI -- because those are the moments the modem's flag is
+--- still the truth, and from then on the read state is ours (SMS.seen).
+local function sms_list_job(done)
+	local msgs = {}
+	--- In PDU mode the header line is `+CMGL: <index>,<stat>,[<alpha>],<length>` and
+	--- the PDU itself is on the line after it.  <stat> is a number here, where text
+	--- mode spelled it out.
+	local function parse(lines)
+		local i = 1
+		while i <= #lines do
+			local idx, stat = lines[i]:match("^%+CMGL:%s*(%d+),%s*(%d+)")
+			if idx then
+				local m, why = pdu_decode(lines[i + 1] or "")
+				if m then
+					stat = tonumber(stat)
+					m.index = tonumber(idx)
+					m.status = PDU_STATUS[stat] or tostring(stat)
+					m.unread = (stat == 0)
+					msgs[#msgs + 1] = m
+				else
+					log("sms %s: %s", idx, why or "undecodable")
+				end
+				i = i + 2
+			else
+				i = i + 1
+			end
+		end
+	end
+	return request("sms_list", {
+		{ cmd = "AT+CMGF=0", tolerate = true },
+		{ cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true },
+		{ cmd = "AT+CMGL=4", parse = parse, tolerate = true, timeout = 40 },
+	}, function(ok, _, err)
+		S.sms = S.sms or {}
+		local list = assemble(msgs)
+		if ok then
+			M.sms_pending = 0
+			S.sms.unread = SMS.merge(list)
+		end
+		M.publish()
+		done(ok, list, err, #msgs)
+	end)
+end
+
+function API.sms_list(cli, args)
+	if not need_link(cli) then return end
+	M.enqueue(sms_list_job(function(ok, list, err, segments)
+		reply(cli, { ok = ok, error = err, count = #list,
+		             segments = segments, messages = list })
+	end))
+	M.start_next()
+end
+
+--- The same read, with nobody asking.  Without it the message counter is whatever the
+--- store on disk happened to hold at boot -- which is how the status bar came up
+--- saying "SMS 0" until the messages page was opened once.
+function M.sms_sync(why)
+	if M.link.state ~= "ready" or M.sms_syncing then return end
+	M.sms_syncing = true
+	log("syncing message store (%s)", why)
+	M.enqueue(sms_list_job(function() M.sms_syncing = false end))
+	M.start_next()
+end
+
+function API.sms_read(cli, args)
+	local idx = tonumber(args.index)
+	if not idx then return reply(cli, { error = "index required" }) end
+	local msg = {}
+	run_for(cli, "sms_read", {
+		{ cmd = "AT+CMGF=0", tolerate = true },
+		{ cmd = "AT+CMGR=" .. idx, tolerate = true, parse = function(lines)
+			-- +CMGR: <stat>,[<alpha>],<length> and the PDU on the next line
+			for i, l in ipairs(lines) do
+				local stat = l:match("^%+CMGR:%s*(%d+)")
+				if stat then
+					local m = pdu_decode(lines[i + 1] or "")
+					if m then
+						stat = tonumber(stat)
+						m.index = idx
+						m.status = PDU_STATUS[stat] or tostring(stat)
+						m.unread = (stat == 0)
+						m.parts, m.indexes = 1, { idx }
+						m.udh = nil
+						msg = m
+					end
+				end
+			end
+		end },
+	}, function(ok, _, err)
+		if ok and msg.index then
+			SMS.mark(msg.index, msg.ts, "read")
+			if (M.sms_pending or 0) > 0 then M.sms_pending = M.sms_pending - 1 end
+			M.publish()
+		end
+		return { ok = ok, error = err, message = msg }
+	end)
+end
+
+--- Let the UI put a message back to unread, or mark one read without fetching it.
+function API.sms_mark(cli, args)
+	local idx = tonumber(args.index)
+	if not idx then return reply(cli, { error = "index required" }) end
+	local state = (args.read == false) and "unread" or "read"
+	SMS.mark(idx, args.ts, state)
+	if state == "read" and (M.sms_pending or 0) > 0 then
+		M.sms_pending = M.sms_pending - 1
+	end
+	M.publish()
+	reply(cli, { ok = true, index = idx, state = state, unread = (S.sms or {}).unread })
+end
+
+--- A long message occupies several slots, so the UI passes back the whole `indexes`
+--- list it got from sms_list rather than one index at a time.
+function API.sms_delete(cli, args)
+	local wanted = {}
+	if type(args.indexes) == "table" then
+		for _, v in ipairs(args.indexes) do
+			local n = tonumber(v)
+			if n then wanted[#wanted + 1] = n end
+		end
+	end
+	local one = tonumber(args.index)
+	if one then wanted[#wanted + 1] = one end
+	if #wanted == 0 then return reply(cli, { error = "index required" }) end
+	if #wanted > 16 then return reply(cli, { error = "too many messages at once" }) end
+
+	local steps = {}
+	for _, n in ipairs(wanted) do
+		steps[#steps + 1] = { cmd = "AT+CMGD=" .. n, timeout = 25, tolerate = true }
+	end
+	steps[#steps + 1] = { cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true }
+	run_for(cli, "sms_delete", steps, function(ok, _, err)
+		if ok then
+			for _, n in ipairs(wanted) do SMS.forget(n) end
+			M.publish()
+		end
+		return { ok = ok, error = err, deleted = wanted }
+	end)
+end
+
+--- AT+CMGD=1,4 wipes the store regardless of the index given.
+function API.sms_delete_all(cli, args)
+	run_for(cli, "sms_delete_all", {
+		{ cmd = "AT+CMGD=1,4", timeout = 60 },
+		{ cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true },
+	}, function(ok, _, err)
+		if ok then
+			SMS.seen = {}
+			SMS.loaded = true
+			SMS.save()
+			M.sms_pending = 0
+			M.publish()
+		end
+		return { ok = ok, error = err }
+	end)
+end
+
+--- Message settings the user can actually change: the service centre number.
+function API.sms_settings(cli)
+	local raw = {}
+	run_for(cli, "sms_settings", {
+		{ cmd = "AT+CSCA?", parse = M.parsers.csca, tolerate = true },
+		{ cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true },
+		{ cmd = "AT+CSMP?", tolerate = true,
+		  parse = function(l) raw.csmp = trim(table.concat(l, " ")) end },
+	}, function(ok, _, err)
+		return { ok = ok, error = err, sms = S.sms or {}, csmp = raw.csmp }
+	end)
+end
+
+function API.sms_settings_set(cli, args)
+	local sca = tostring(args.sca or "")
+	if not sca:match("^%+?%d[%d]*$") then
+		return reply(cli, { error = "invalid service centre number" })
+	end
+	run_for(cli, "sms_settings_set", {
+		{ cmd = ('AT+CSCA="%s",%d'):format(sca, sca:sub(1, 1) == "+" and 145 or 129),
+		  timeout = 25 },
+		{ cmd = "AT+CSCA?", parse = M.parsers.csca, tolerate = true },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, sca = (S.sms or {}).sca }
+	end)
+end
+
+--- A destination number as it may appear inside a quoted AT argument.  Everything that
+--- reaches AT+CMGS / AT+CPBW goes through this: an unchecked string would put a raw CR
+--- into the command line and desynchronise the AT parser, and the modem's own refusal
+--- (+CMS ERROR: 305) is not a validation layer we get to rely on.
+local function pb_number_ok(n)
+	return type(n) == "string" and n:match("^%+?[%d%*#]+$") ~= nil and #n <= 40
+end
+
+--- Send (or, with save=true, only store) a message.
+---
+--- Everything uses PDU mode (AT+CMGF=0). Text mode cannot carry UDH:
+--- one AT+CMGS is exactly one part, and long text produced `+CMS ERROR: 305`.
+--- The encoder selects GSM 03.38 or UCS2 and, when the text does not fit one part,
+--- splits it with concatenation headers so the recipient's phone can
+--- reassemble the parts.
+---
+--- In PDU mode, neither AT+CSCS (the character set is specified by the DCS field) nor AT+CSMP are needed
+--- (the validity period is encoded directly in the PDU).
+
+local function sms_write(cli, args, save)
+	local to, text = tostring(args.to or ""), tostring(args.text or "")
+	if to == "" then return reply(cli, { error = "no destination" }) end
+	if not pb_number_ok(to) then return reply(cli, { error = "invalid destination" }) end
+	if text == "" then return reply(cli, { error = "empty text" }) end
+
+	local pdus, why, info = sms_build(to, text)
+	if not pdus then
+		if why == "message too long" then
+			return reply(cli, { error = ("message too long: more than %d parts")
+			                    :format(SMS_MAX_PARTS) })
+		end
+		return reply(cli, { error = why })
+	end
+
+	local sent = { refs = {} }
+	local steps = { { cmd = "AT+CMGF=0", tolerate = false } }
+	for _, p in ipairs(pdus) do
+		steps[#steps + 1] = { cmd = ("AT+%s=%d"):format(save and "CMGW" or "CMGS",
+		                                                p.tpdu_len),
+		                      term = "prompt", timeout = 20 }
+		steps[#steps + 1] = { cmd = p.hex .. "\26", term = "raw_bytes",
+		                      -- CMGW only writes to storage and answers at once;
+		                      -- CMGS waits for the network.
+		                      timeout = save and 90 or CFG.sms_send_timeout,
+		                      parse = function(lines)
+			for _, l in ipairs(lines) do
+				local ref = l:match("^%+CMG[SW]:%s*(%d+)")
+				if ref then sent.refs[#sent.refs + 1] = tonumber(ref) end
+			end
+		end }
+	end
+
+	run_for(cli, save and "sms_save" or "sms_send", steps, function(ok, _, err)
+		-- The rpcd shim gives up at 28 s and AT+CMGS can take four minutes, so the
+		-- caller is usually gone by the time we get here: without this line a refused
+		-- message leaves no trace anywhere at all.
+		if not ok then
+			log("%s to %s failed after %d part(s): %s",
+				save and "sms_save" or "sms_send", to, info.parts,
+				tostring(err))
+		end
+		return { ok = ok, error = err,
+		         reference = sent.refs[1], references = sent.refs,
+		         parts = info.parts, encoding = info.encoding,
+		         ucs2 = info.encoding == "ucs2" }
+	end)
+end
+
+function API.sms_send(cli, args) sms_write(cli, args, false) end
+function API.sms_save(cli, args) sms_write(cli, args, true)  end
+
+function API.apn_list(cli)
+	run_for(cli, "apn_list", {
+		{ cmd = "AT+CGDCONT?", parse = M.parsers.cgdcont, tolerate = true },
+	}, function(ok, _, err)
+		return { ok = ok, error = err, count = (S.apn and S.apn.count) or 0,
+		         list = (S.apn and S.apn.list) or {} }
+	end)
+end
+
+local PDP_TYPES = { IP = true, IPV6 = true, IPV4V6 = true, PPP = true }
+
+--- Define or edit a profile.  Credentials do not live in +CGDCONT on this firmware --
+--- +CGAUTH answers ERROR -- so they go through Qualcomm's $QCPDPP, whose argument
+--- order is (cid, auth type, password, username).
+function API.apn_set(cli, args)
+	local cid = tonumber(args.cid) or 1
+	local apn = tostring(args.apn or "")
+	local pdp = tostring(args.pdp_type or "IPV4V6"):upper()
+	if cid < 1 or cid > 24 then return reply(cli, { error = "cid out of range" }) end
+	if apn:find('[",\r\n]') then return reply(cli, { error = "invalid APN" }) end
+	if not PDP_TYPES[pdp] then return reply(cli, { error = "invalid PDP type" }) end
+
+	local steps = {
+		{ cmd = ('AT+CGDCONT=%d,"%s","%s"'):format(cid, pdp, apn), timeout = 25 },
+	}
+	if args.auth ~= nil or args.user ~= nil or args.pass ~= nil then
+		local user, pass = tostring(args.user or ""), tostring(args.pass or "")
+		if user:find('[",\r\n]') or pass:find('[",\r\n]') then
+			return reply(cli, { error = "invalid credentials" })
+		end
+		local a = tonumber(args.auth)
+		if not a then a = (user ~= "") and 3 or 0 end
+		if a < 0 or a > 3 then return reply(cli, { error = "invalid auth type" }) end
+		steps[#steps + 1] = (a == 0)
+			and { cmd = ("AT$QCPDPP=%d,0"):format(cid), tolerate = true, timeout = 25 }
+			or  { cmd = ('AT$QCPDPP=%d,%d,"%s","%s"'):format(cid, a, pass, user),
+			      tolerate = true, timeout = 25 }
+	end
+	steps[#steps + 1] = { cmd = "AT$QCPDPP?",  parse = M.parsers.qcpdpp,  tolerate = true }
+	steps[#steps + 1] = { cmd = "AT+CGDCONT?", parse = M.parsers.cgdcont, tolerate = true }
+
+	run_for(cli, "apn_set", steps, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, list = (S.apn and S.apn.list) or {} }
+	end)
+end
+
+function API.apn_delete(cli, args)
+	local cid = tonumber(args.cid)
+	if not cid then return reply(cli, { error = "cid required" }) end
+	run_for(cli, "apn_delete", {
+		{ cmd = "AT+CGDCONT=" .. cid, timeout = 25 },
+		{ cmd = "AT+CGDCONT?", parse = M.parsers.cgdcont, tolerate = true },
+	})
+end
+
+function API.pin_status(cli)
+	run_for(cli, "pin_status", {
+		{ cmd = "AT+CPIN?",      parse = M.parsers.cpin,    tolerate = true },
+		{ cmd = "AT$QCPINSTAT?", parse = M.parsers.pinstat, tolerate = true },
+	}, function(ok, _, err)
+		return { ok = ok, error = err, sim = S.sim or {} }
+	end)
+end
+
+local function valid_pin(p)
+	return type(p) == "string" and p:match("^%d%d%d%d%d?%d?%d?%d?$") ~= nil
+end
+
+--- A PUK is exactly eight digits -- never the 4..8 a PIN may be.  This needs its own
+--- check rather than reusing valid_pin(): a PUK has ten attempts and no more, and a
+--- wrong-length value spends one of them for nothing.  After the tenth the SIM is dead
+--- for good, so a malformed PUK must never reach the modem at all.
+local function valid_puk(p)
+	return type(p) == "string" and p:match("^%d%d%d%d%d%d%d%d$") ~= nil
+end
+
+function API.pin_unlock(cli, args)
+	if not valid_pin(args.pin) then return reply(cli, { error = "invalid PIN" }) end
+	run_for(cli, "pin_unlock", {
+		{ cmd = ('AT+CPIN="%s"'):format(args.pin), timeout = 30 },
+		{ cmd = "AT+CPIN?", parse = M.parsers.cpin, tolerate = true },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, sim = S.sim or {} }
+	end)
+end
+
+function API.puk_unlock(cli, args)
+	if not valid_puk(args.puk) then
+		return reply(cli, { error = "invalid PUK: expected exactly 8 digits" })
+	end
+	if not valid_pin(args.pin) then return reply(cli, { error = "invalid PIN" }) end
+	run_for(cli, "puk_unlock", {
+		{ cmd = ('AT+CPIN="%s","%s"'):format(args.puk, args.pin), timeout = 30 },
+		{ cmd = "AT+CPIN?", parse = M.parsers.cpin, tolerate = true },
+	})
+end
+
+function API.pin_enable(cli, args)
+	if not valid_pin(args.pin) then return reply(cli, { error = "invalid PIN" }) end
+	local on = args.enable and 1 or 0
+	run_for(cli, "pin_enable", {
+		{ cmd = ('AT+CLCK="SC",%d,"%s"'):format(on, args.pin), timeout = 30 },
+	})
+end
+
+function API.pin_change(cli, args)
+	if not valid_pin(args.old) or not valid_pin(args.new) then
+		return reply(cli, { error = "invalid PIN" })
+	end
+	run_for(cli, "pin_change", {
+		{ cmd = ('AT+CPWD="SC","%s","%s"'):format(args.old, args.new), timeout = 30 },
+	})
+end
+
+--- Operator scan.  Takes up to ~90 s and can drop the data connection while it runs,
+--- so it is never called from the background poller -- user action only.
+--- Operator scan.  AT+COPS=? takes a minute and a half or more, and there is a hard
+--- 30 second ceiling on the way in that we do not control: LuCI's /admin/ubus proxy
+--- calls libubus with its default timeout, so a synchronous answer can never arrive.
+--- The scan therefore runs as a job: net_scan starts it and returns at once,
+--- net_scan_result reports progress, and every individual call is instant.
+M.scan = { state = "idle" }
+
+function API.net_scan(cli, args)
+	if M.scan.state == "running" then
+		return reply(cli, { ok = true, state = "running",
+		                    started = M.scan.started, elapsed = os.time() - M.scan.started })
+	end
+	if not need_link(cli) then return end
+
+	local nets = {}
+	M.scan = { state = "running", started = os.time() }
+
+	M.enqueue(request("net_scan", {
+		{ cmd = "AT+COPS=?", timeout = CFG.scan_timeout, tolerate = true,
+		  parse = function(lines)
+			for _, l in ipairs(lines) do
+				for grp in l:gmatch("%((%d[^%)]*)%)") do
+					local f = {}
+					for item in (grp .. ","):gmatch("([^,]*),") do
+						f[#f + 1] = trim(item):gsub('^"', ''):gsub('"$', '')
+					end
+					if #f >= 4 then
+						nets[#nets + 1] = {
+							stat = tonumber(f[1]), long = f[2], short = f[3],
+							numeric = f[4], act = tonumber(f[5]),
+							act_name = ACT_NAME[tonumber(f[5] or -1)],
+						}
+					end
+				end
+			end
+		end },
+	}, function(ok, _, err)
+		M.scan = {
+			state = ok and "done" or "failed",
+			started = M.scan.started, finished = os.time(),
+			error = (not ok) and (err or "scan failed") or nil,
+			networks = nets, count = #nets,
+		}
+	end))
+	M.start_next()
+
+	reply(cli, { ok = true, state = "running", started = M.scan.started })
+end
+
+function API.net_scan_result(cli)
+	local sc = M.scan or { state = "idle" }
+	reply(cli, {
+		ok = (sc.state ~= "failed"),
+		state = sc.state,
+		error = sc.error,
+		started = sc.started,
+		finished = sc.finished,
+		elapsed = sc.started and ((sc.finished or os.time()) - sc.started) or nil,
+		count = sc.count,
+		networks = sc.networks,
+	})
+end
+
+function API.net_register(cli, args)
+	local cmd
+	if args.auto or args.numeric == nil or args.numeric == "" then
+		cmd = "AT+COPS=0"
+	else
+		local num = tostring(args.numeric)
+		if not num:match("^%d%d%d%d%d%d?$") then
+			return reply(cli, { error = "invalid operator code" })
+		end
+		local act = tonumber(args.act)
+		cmd = act and ('AT+COPS=1,2,"%s",%d'):format(num, act)
+		           or ('AT+COPS=1,2,"%s"'):format(num)
+	end
+	run_for(cli, "net_register", {
+		{ cmd = cmd, timeout = CFG.scan_timeout },
+		{ cmd = "AT+COPS?", parse = M.parsers.cops, tolerate = true },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, net = S.net or {} }
+	end)
+end
+
+--- Which radio technologies the modem may use.  The mode itself comes from the kcap
+--- channel; the operator and the band list are still AT, so they are asked for only
+--- when that channel happens to be up.
+function API.net_mode(cli)
+	local ns, kerr = M.net_mode_refresh()
+	local bands = {}
+	local function shape()
+		local n = S.net or {}
+		return { ok = (ns ~= nil), error = kerr, mode = n.mode,
+		         mode_name = n.mode_name, modes = NET_MODES, auto = n.auto,
+		         operator = n.operator, bands = bands }
+	end
+	if M.link.state ~= "ready" then return reply(cli, shape()) end
+	run_for(cli, "net_mode", {
+		{ cmd = "AT+COPS?", parse = M.parsers.cops, tolerate = true },
+		{ cmd = "AT$QCBANDPREF?", tolerate = true, parse = function(l)
+			for _, v in ipairs(l) do
+				local b = v:match('^"(.+)"$')
+				if b then bands[#bands + 1] = b end
+			end
+		end },
+	}, shape)
+end
+
+function API.net_mode_set(cli, args)
+	local m = tonumber(args.mode)
+	if not m or not NET_MODE_NAME[m] then
+		return reply(cli, { error = "mode must be 0 (automatic), 1 (2G), 2 (3G) " ..
+		                            "or 3 (4G)" })
+	end
+	-- SetNetworkSettings writes the whole block, so anything we do not send back is
+	-- lost: read the current one and change the single field.
+	local cur, err = KCAP.call("GetNetworkSettings")
+	if not cur then
+		return reply(cli, { error = "modem control channel: " .. tostring(err) })
+	end
+	local _, serr = KCAP.call("SetNetworkSettings", {
+		NetworkMode       = m,
+		NetselectionMode  = cur.NetselectionMode or 0,
+		NetworkBand       = cur.NetworkBand or 0,
+		DomesticRoam      = cur.DomesticRoam or 0,
+		DomesticRoamGuard = cur.DomesticRoamGuard or 0,
+	}, 20)
+	if serr then return reply(cli, { error = serr }) end
+
+	local ns = M.net_mode_refresh()
+	M.publish()
+	local n = S.net or {}
+	if ns and ns.NetworkMode ~= m then
+		return reply(cli, { ok = false, mode = n.mode, mode_name = n.mode_name,
+		                    error = "the modem stayed on " ..
+		                            tostring(n.mode_name or n.mode) })
+	end
+	-- the radio re-registers after this, so the technology in the snapshot is stale
+	M.bg_due_fast = 0
+	reply(cli, { ok = true, mode = n.mode, mode_name = n.mode_name })
+end
+
+--- Flight mode.  AT+CFUN=0 parks the radio only: the USB link that carries this very
+--- control channel belongs to the Qualcomm Linux and stays up, so this is safe to
+--- toggle from the web UI and safe to undo.
+function API.radio_set(cli, args)
+	local on = args.on and true or false
+	run_for(cli, "radio_set", {
+		{ cmd = "AT+CFUN=" .. (on and "1" or "0"), timeout = 40 },
+		{ cmd = "AT+CFUN?", parse = M.parsers.cfun, tolerate = true },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, radio = S.radio or {} }
+	end)
+end
+
+local function data_act(cli, args, on)
+	local cid = tonumber(args.cid) or (S.data or {}).profile_cid or 1
+	run_for(cli, on and "data_connect" or "data_disconnect", {
+		{ cmd = ("AT+CGACT=%d,%d"):format(on and 1 or 0, cid), timeout = 60 },
+		{ cmd = "AT+CGACT?",    parse = M.parsers.cgact,   tolerate = true },
+		{ cmd = "AT+CGPADDR",   parse = M.parsers.cgpaddr, tolerate = true },
+		{ cmd = "AT+CGCONTRDP", parse = M.parsers.cgcontrdp, tolerate = true },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, data = S.data or {} }
+	end)
+end
+
+function API.data_connect(cli, args)    data_act(cli, args, true)  end
+function API.data_disconnect(cli, args) data_act(cli, args, false) end
+
+--- Serving cell and neighbours, on demand: the slow poll already keeps the signal
+--- fresh, this adds the identifiers a diagnostics page wants.
+function API.cell_info(cli)
+	run_for(cli, "cell_info", {
+		{ cmd = "AT+CEREG?",  parse = M.parsers.cereg, tolerate = true },
+		{ cmd = "AT$QCRSRP?", parse = M.parsers.rsrp,  tolerate = true },
+		{ cmd = "AT$QCRSRQ?", parse = M.parsers.rsrq,  tolerate = true },
+		{ cmd = "AT+CSQ",     parse = M.parsers.csq,   tolerate = true },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, net = S.net or {}, signal = S.signal or {} }
+	end)
+end
+
+--- SIM identity and capabilities: the same block the daemon asks for once per channel.
+function API.sim_info(cli)
+	run_for(cli, "sim_info", {
+		{ cmd = "AT+CPIN?",       parse = M.parsers.cpin,    tolerate = true },
+		{ cmd = "AT+CIMI",        parse = M.parsers.cimi,    tolerate = true },
+		{ cmd = "AT+ICCID",       parse = M.parsers.iccid,   tolerate = true },
+		{ cmd = "AT+CNUM",        parse = M.parsers.cnum,    tolerate = true },
+		{ cmd = "AT$QCSIMSTAT?",  parse = M.parsers.simstat, tolerate = true },
+		{ cmd = 'AT+CLCK="SC",2', parse = M.parsers.clck,    tolerate = true },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, sim = S.sim or {} }
+	end)
+end
+
+--============================================================= SIM phone book
+-- Names are read and written in UCS2 so that non-Latin entries survive; the character
+-- set is put back afterwards because everything else here assumes plain text.
+
+function API.phonebook_list(cli, args)
+	local first = tonumber(args.first) or 1
+	if first < 1 then first = 1 end
+	-- the SIM answers ERROR for a range that runs past its last slot, so stay inside
+	-- what AT+CPBS? reported; 0 or nothing means "as many as the card holds"
+	local total = (S.phonebook or {}).total or 100
+	local count = tonumber(args.count)
+	if not count or count <= 0 or count > total then count = total end
+	local last = first + count - 1
+	if last > total then last = total end
+	if last < first then last = first end
+	local entries = {}
+	run_for(cli, "phonebook_list", {
+		{ cmd = 'AT+CPBS="SM"', tolerate = true },
+		{ cmd = "AT+CPBS?", parse = M.parsers.cpbs, tolerate = true },
+		{ cmd = 'AT+CSCS="UCS2"', tolerate = true },
+		{ cmd = ("AT+CPBR=%d,%d"):format(first, last), timeout = 40,
+		  tolerate = true, parse = function(lines)
+			for _, l in ipairs(lines) do
+				local i, num, ty, txt =
+					l:match('^%+CPBR:%s*(%d+),"([^"]*)",(%d+),"([^"]*)"')
+				if i then
+					entries[#entries + 1] = { index = tonumber(i), number = num,
+					                          type = tonumber(ty), name = decode_body(txt) }
+				end
+			end
+		end },
+		{ cmd = 'AT+CSCS="IRA"', tolerate = true },
+	}, function(ok, _, err)
+		return { ok = ok, error = err, count = #entries, entries = entries,
+		         storage = S.phonebook or {} }
+	end)
+end
+
+function API.phonebook_add(cli, args)
+	local num = tostring(args.number or "")
+	local name = tostring(args.name or "")
+	if not pb_number_ok(num) then return reply(cli, { error = "invalid number" }) end
+	if name:find('[",\r\n]') then return reply(cli, { error = "invalid name" }) end
+	local idx = tonumber(args.index)
+	local ty = (num:sub(1, 1) == "+") and 145 or 129
+	local cmd = ('AT+CPBW=%s,"%s",%d,"%s"')
+	            :format(idx and tostring(idx) or "", num, ty, utf8_to_ucs2(name))
+	run_for(cli, "phonebook_add", {
+		{ cmd = 'AT+CPBS="SM"', tolerate = true },
+		{ cmd = 'AT+CSCS="UCS2"', tolerate = true },
+		{ cmd = cmd, timeout = 30 },
+		{ cmd = 'AT+CSCS="IRA"', tolerate = true },
+		{ cmd = "AT+CPBS?", parse = M.parsers.cpbs, tolerate = true },
+	})
+end
+
+function API.phonebook_delete(cli, args)
+	local idx = tonumber(args.index)
+	if not idx then return reply(cli, { error = "index required" }) end
+	run_for(cli, "phonebook_delete", {
+		{ cmd = 'AT+CPBS="SM"', tolerate = true },
+		{ cmd = "AT+CPBW=" .. idx, timeout = 30 },
+		{ cmd = "AT+CPBS?", parse = M.parsers.cpbs, tolerate = true },
+	})
+end
+
+--- USSD: the reply arrives as a +CUSD URC, not in the command's own response.
+function API.ussd(cli, args)
+	local code = tostring(args.code or "")
+	if not code:match("^[%*#%d%+]+$") then
+		return reply(cli, { error = "invalid USSD code" })
+	end
+	if not need_link(cli) then return end
+	local answered = false
+	-- Must expire before the rpcd plugin's own 28 s read timeout, otherwise the
+	-- caller sees "no answer from modem daemon" instead of a clean USSD timeout.
+	local deadline = mono() + 25
+	M.ussd_wait = function(line)
+		if answered then return end
+		answered = true
+		M.ussd_wait = nil
+		local n, body = line:match('^%+CUSD:%s*(%d+),?%s*"?([^"]*)"?')
+		reply(cli, { ok = true, status = tonumber(n), text = decode_body(body or ""),
+		             raw = line })
+	end
+	M.ussd_deadline = deadline
+	M.ussd_client = cli
+	M.enqueue(request("ussd", {
+		{ cmd = ('AT+CUSD=1,"%s",15'):format(code), timeout = 30, tolerate = true },
+	}, function(ok, _, err)
+		if not ok and not answered then
+			answered = true
+			M.ussd_wait = nil
+			reply(cli, { ok = false, error = err })
+		end
+	end))
+	M.start_next()
+end
+
+function API.usage(cli)
+	M.update_usage()
+	reply(cli, S.usage or {})
+end
+
+function API.usage_reset(cli)
+	local rx, tx = read_counters()
+	M.usage_base = { rx = rx or 0, tx = tx or 0, t = os.time() }
+	M.update_usage()
+	reply(cli, S.usage or {})
+end
+
+function API.reconnect(cli)
+	M.drop("reconnect requested")
+	M.next_try = 0
+	reply(cli, { ok = true })
+end
+
+function API.urc(cli)
+	reply(cli, { count = #M.urc, events = M.urc })
+end
+
+function API.methods(cli)
+	local names = {}
+	for k in pairs(API) do names[#names + 1] = k end
+	table.sort(names)
+	reply(cli, { methods = names })
+end
+
+--================================================================== main plumbing
+
+local clients = {}
+
+local function ctl_accept(listener)
+	local sock = listener:accept()
+	if not sock then return end
+	sock:setblocking(false)
+	clients[#clients + 1] = { sock = sock, buf = "", deadline = mono() + 200 }
+end
+
+local function ctl_handle(cli, line)
+	local req = json.parse(line)
+	if type(req) ~= "table" or not req.method then
+		return reply(cli, { error = "bad request" })
+	end
+	local fn = API[req.method]
+	if not fn then return reply(cli, { error = "unknown method: " .. tostring(req.method) }) end
+	local ok, err = pcall(fn, cli, req.params or {})
+	if not ok then
+		log("method %s failed: %s", req.method, tostring(err))
+		if not cli.dead then reply(cli, { error = "internal error" }) end
+	end
+end
+
+local function ctl_read(cli)
+	-- The reply closes the socket, and the answer to an AT command is produced while
+	-- the modem reader is serviced -- which happens earlier in the very same poll
+	-- pass.  So by the time we get here the client can already be finished, and
+	-- reading a closed nixio socket raises an error that would take the daemon down.
+	-- This bit us for real: rpcd hanging up on a slow command killed the daemon.
+	if cli.dead or not cli.sock then return false end
+	local pok, data, code = pcall(cli.sock.read, cli.sock, 4096)
+	if not pok then return false end
+	if data == nil then
+		if code == nixio.const.EAGAIN then return true end
+		return false
+	elseif data == "" then
+		return cli.pending ~= nil          -- half-close after the request is fine
+	end
+	cli.buf = cli.buf .. data
+	local nl = cli.buf:find("\n")
+	if nl then
+		local line = cli.buf:sub(1, nl - 1)
+		cli.buf = cli.buf:sub(nl + 1)
+		cli.pending = true
+		ctl_handle(cli, line)
+	end
+	return true
+end
+
+local function make_listener()
+	fs.mkdirr(CFG.rundir)
+	fs.unlink(CTL_SOCK)
+	local s = nixio.socket("unix", "stream")
+	assert(s:bind(CTL_SOCK))
+	assert(s:listen(16))
+	s:setblocking(false)
+	-- nixio wants the octal digits written as a decimal number: 660, not 0660
+	fs.chmod(CTL_SOCK, 660)
+	return s
+end
+
+local function main_loop()
+	-- writing to a client that walked away must not take the daemon down with it
+	pcall(function() nixio.signal(13, "ign") end)
+	local listener = make_listener()
+	log("started, control socket %s", CTL_SOCK)
+	M.next_try = 0
+
+	while true do
+		local t = mono()
+
+		-- the mode lives on the Qualcomm side and does not need the AT channel, so
+		-- this runs even while the modem link is down
+		if t >= (M.net_mode_due or 0) then
+			local ns = M.net_mode_refresh()
+			M.net_mode_due = t + (ns and CFG.mode_interval or 60)
+		end
+
+		-- one-shot, but the Qualcomm side may not be answering yet at boot
+		if not M.model_done and t >= (M.model_due or 0) then
+			M.model_due = t + 60
+			M.model_done = M.refresh_model()
+		end
+
+		if M.link.state == "down" and t >= M.next_try then
+			M.connect()
+		end
+
+		-- connection staging: TCP -> shell prompt -> `cat` armed -> ready
+		if M.link.state == "connecting" then
+			-- A per-stage deadline cannot catch a bring-up that keeps inching forward
+			-- from one stage to the next without ever finishing.
+			if M.setup_started and t - M.setup_started > CFG.setup_deadline then
+				M.drop(("bring-up deadline: %ds in stage %s")
+				       :format(CFG.setup_deadline, tostring(M.stage)))
+			elseif M.stage == "tcp" then
+				local ready = 0
+				for _, c in ipairs({ M.reader, M.writer }) do
+					if c.state == "connecting" then
+						local cnt, fds = nixio.poll({ { fd = c.sock, events = POLLOUT } }, 0)
+						if cnt and cnt > 0 then
+							local err = c.sock:getopt("socket", "error")
+							if err == 0 then c.state = "up" else
+								M.drop("connect error " .. tostring(err))
+								break
+							end
+						end
+					end
+					if c.state == "up" then ready = ready + 1 end
+				end
+				if ready == 2 then
+					M.set_stage("shell", 5)
+					M.shell_wait = t + 0.8      -- let telnetd finish printing its banner
+				elseif t > M.stage_deadline then
+					M.drop("connect timeout")
+				end
+			elseif M.stage == "shell" then
+				if t >= M.shell_wait then M.clean_sessions() end
+			elseif M.stage == "clean" then
+				if M.clean_seen then
+					M.arm_sessions()
+				elseif t > M.stage_deadline then
+					-- no marker came back; the kill has had its time either way, so go
+					-- on instead of reconnecting forever
+					log("cleanup marker not seen, arming reader anyway")
+					M.arm_sessions()
+				end
+			elseif M.stage == "sync" then
+				if t >= M.sync_until then M.on_ready() end
+			end
+		end
+
+		if M.link.state == "ready" then
+			-- the due time moves only when the poll really goes out: advancing it
+			-- on a skipped turn would silently push the next one a full interval away
+			if t >= (M.bg_due_slow or 0) and #M.queue < 2 then
+				M.bg_due_slow = t + CFG.slow_interval
+				M.enqueue(bg_slow())
+			end
+			if t >= (M.bg_due_fast or 0) and #M.queue == 0 then
+				M.bg_due_fast = t + CFG.fast_interval
+				M.enqueue(bg_fast())
+			end
+			if M.sms_sync_due and t >= M.sms_sync_due and #M.queue == 0 then
+				M.sms_sync_due = nil
+				if M.sms_sync then M.sms_sync("scheduled") end
+			end
+			if #M.timers > 0 then
+				local keep = {}
+				for _, tm in ipairs(M.timers) do
+					if t >= tm.due then tm.fn() else keep[#keep + 1] = tm end
+				end
+				M.timers = keep
+			end
+			M.start_next()
+			M.tick_timeout()
+		end
+
+		-- build the poll set
+		local fds = { { fd = listener, events = POLLIN } }
+		local map = { [1] = "listener" }
+		for _, c in ipairs({ M.reader, M.writer }) do
+			if c.sock and c.state ~= "down" then
+				local ev = POLLIN
+				if c.wbuf ~= "" or c.state == "connecting" then ev = ev + POLLOUT end
+				fds[#fds + 1] = { fd = c.sock, events = ev }
+				map[#fds] = c
+			end
+		end
+		for _, cli in ipairs(clients) do
+			if not cli.dead then
+				fds[#fds + 1] = { fd = cli.sock, events = POLLIN }
+				map[#fds] = cli
+			end
+		end
+
+		local cnt = nixio.poll(fds, 500)
+		if cnt and cnt > 0 then
+			for i, f in ipairs(fds) do
+				if f.revents and f.revents ~= 0 then
+					local owner = map[i]
+					if owner == "listener" then
+						ctl_accept(listener)
+					elseif (owner == M.reader or owner == M.writer) and owner.sock then
+						-- .sock may already be gone: an earlier entry in this same pass
+						-- can have dropped the channel
+						local c = owner
+						if c.state == "connecting" then
+							local err = c.sock:getopt("socket", "error")
+							if err == 0 then c.state = "up"
+							else M.drop("connect error " .. tostring(err)) end
+						else
+							c:flush()
+							local data = c:recv()
+							if data == nil then
+								M.drop(c.name .. " session closed")
+							elseif data == "" then
+								-- nothing readable yet
+							elseif c == M.writer then
+								-- the writer's shell says nothing we care about, except the
+								-- marker that ends the stale-reader cleanup
+								if M.stage == "clean" then
+									c.rbuf = (c.rbuf .. data):sub(-512)
+									if c.rbuf:find(CLEAN_MARK, 1, true) then
+										M.clean_seen = true
+									end
+								end
+							elseif M.sync_until and mono() < M.sync_until then
+								-- shell echo and banner: discard
+							else
+								c.rbuf = c.rbuf .. data
+								if M.on_raw(data) then
+									-- the "> " prompt ends without a newline, so it would
+									-- otherwise stay in the buffer and glue itself onto the
+									-- modem's next line
+									c.rbuf = ""
+								end
+								while true do
+									local nl = c.rbuf:find("\n")
+									if not nl then break end
+									local line = c.rbuf:sub(1, nl - 1)
+									c.rbuf = c.rbuf:sub(nl + 1)
+									M.on_line(line)
+								end
+							end
+						end
+					elseif owner then
+						if not ctl_read(owner) then
+							pcall(function() owner.sock:close() end)
+							owner.dead = true
+						end
+					end
+				end
+			end
+		end
+
+		-- reap finished control clients
+		for i = #clients, 1, -1 do
+			local cli = clients[i]
+			if cli.dead or mono() > cli.deadline then
+				if not cli.dead then pcall(function() cli.sock:close() end) end
+				table.remove(clients, i)
+			end
+		end
+
+		if M.ussd_deadline and mono() > M.ussd_deadline then
+			M.ussd_deadline = nil
+			if M.ussd_wait then
+				M.ussd_wait = nil
+				if M.ussd_client and not M.ussd_client.dead then
+					reply(M.ussd_client, { ok = false, error = "USSD timeout" })
+				end
+			end
+		end
+
+		-- The modem going quiet for a long time means a dead channel, not silence --
+		-- unless a request is still inside its own deadline.  AT+CMGS stays silent for
+		-- as long as the network makes it wait, and this watchdog used to cut the
+		-- channel from under it at 120 s.  A request past its deadline is handled by
+		-- tick_timeout, so this remains the check for an idle channel.
+		if M.link.state == "ready" and M.link.last_ok > 0
+		   and mono() - M.link.last_ok > 120
+		   and not (M.cur and mono() <= M.cur.deadline) then
+			M.drop("no modem traffic for 120 s")
+		end
+	end
+end
+
+--=========================================================================== CLI
+
+local function ctl_call(method, params, timeout)
+	local s = nixio.socket("unix", "stream")
+	local ok, err = s:connect(CTL_SOCK)
+	if not ok then return nil, "daemon not running (" .. tostring(err) .. ")" end
+	s:write(json.stringify({ method = method, params = params or {} }) .. "\n")
+	s:setopt("socket", "rcvtimeo", timeout or 200)
+	local buf = ""
+	while true do
+		local data = s:read(4096)
+		if not data or data == "" then break end
+		buf = buf .. data
+		if buf:find("\n") then break end
+	end
+	s:close()
+	if buf == "" then return nil, "no answer from daemon" end
+	return buf
+end
+
+local args = { ... }
+local mode, rest = nil, {}
+for i, a in ipairs(args) do
+	if a == "-v" then verbose = true
+	elseif a:match("^%-%-") and not mode then mode = a:sub(3)
+	elseif mode then rest[#rest + 1] = a end
+end
+
+if mode == "at" then
+	local out, err = ctl_call("at", { cmds = rest, timeout = 30 })
+	print(out or ("error: " .. tostring(err)))
+elseif mode == "call" then
+	local method = table.remove(rest, 1)
+	local params = rest[1] and json.parse(rest[1]) or {}
+	local out, err = ctl_call(method or "status", params)
+	print(out or ("error: " .. tostring(err)))
+elseif mode == "status" then
+	local out, err = ctl_call("status")
+	print(out or ("error: " .. tostring(err)))
+elseif mode == "foreground" or mode == nil then
+	main_loop()
+else
+	io.stderr:write("usage: hh71vm-modemd [--foreground|-v] | --status | " ..
+	                "--at 'AT+CSQ' ... | --call METHOD ['{json params}']\n")
+	os.exit(1)
+end

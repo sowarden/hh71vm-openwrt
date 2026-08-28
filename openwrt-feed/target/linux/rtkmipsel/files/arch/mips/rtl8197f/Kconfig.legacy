@@ -1,0 +1,32 @@
+config RTL_8197F_GW
+	bool
+		select RTL_8197F
+        select SYS_HAS_EARLY_PRINTK
+	default n
+
+config RTL_8197F
+        bool
+	select RTL_819X
+        default y
+
+# common flag for Realtek 819X SoC
+config RTL_819X
+        bool
+        default y
+
+## kernel option flag for openWrt SDK
+#
+# Enabled for this port. Vendor drivers under this symbol select branches intended
+# specifically on the OpenWrt tree, and not on the SDK assembly system: in rtknet it is found in 56
+# places of the compiled set, including specifying `DIR_LINUX := $(srctree)` and the correct
+# path to the register map (<asm/mach-rtl8197f/bspchip.h> instead of <bsp/bspchip.h>).
+#
+# It was initially disabled because gpio.c provided global stubs for
+# gpio_to_irq()/irq_to_gpio(), which in 4.14 would override static inline from
+# <linux/gpio.h> and broke the assembly. The plugs have been removed (they contained `return -EINVAL`,
+# zero benefit) - the reason has disappeared, see comment in gpio.c.
+config OPENWRT_SDK
+        def_bool y
+
+config WRT_BARRIER_BREAKER
+        def_bool n

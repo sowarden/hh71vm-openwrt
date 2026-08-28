@@ -1,0 +1,30 @@
+Export _dma_cache_wback and _dma_cache_inv for assembling the WiFi driver module.
+
+In arch/mips/mm/cache.c, of the three DMA operation pointers, only
+_dma_cache_wback_inv. Driver rtl8192cd uses all three (rings of descriptors
+TX/RX on the incoherent DMA), so when assembled by MODULE modpost stops the assembly:
+
+  ERROR: "_dma_cache_wback" [drivers/net/wireless/realtek/rtl8192cd/rtl8192cd.ko] undefined!
+  ERROR: "_dma_cache_inv"   [drivers/net/wireless/realtek/rtl8192cd/rtl8192cd.ko] undefined!
+
+Patch 900-realtek-dma-operation.patch from the fork openwrt-AC10, rebuilt according to the reference
+tree 4.14.275; the context in 4.14 is the same as in 3.18.
+
+The built-in Ethernet driver does not need these exports because it links directly into the
+kernel. The rtl8192cd driver is a loadable module, so modpost must see both symbols exported
+before it can produce rtl8192cd.ko.
+
+This patch was regenerated against the Linux 4.14.275 reference tree rather than edited by
+hand, keeping its context aligned with the pinned kernel revision.
+
+--- a/arch/mips/mm/cache.c
++++ b/arch/mips/mm/cache.c
+@@ -64,6 +64,8 @@
+ void (*_dma_cache_inv)(unsigned long start, unsigned long size);
+ 
+ EXPORT_SYMBOL(_dma_cache_wback_inv);
++EXPORT_SYMBOL(_dma_cache_wback);
++EXPORT_SYMBOL(_dma_cache_inv);
+ 
+ #endif /* CONFIG_DMA_NONCOHERENT || CONFIG_DMA_MAYBE_COHERENT */
+ 

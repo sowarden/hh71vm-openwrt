@@ -1,0 +1,96 @@
+#
+# Kconfig BSP Realtek RTL8197F - variant for Alcatel LINKHUB HH71VM, core 4.14.
+#
+# The basis is Kconfig from the fork openwrt-AC10 (core 3.18), brought to 4.14 and to our board.
+# Differences from the AC10 version and why:
+#
+#   * ARCH_REQUIRE_GPIOLIB -> GPIOLIB. There is no symbol ARCH_REQUIRE_GPIOLIB in 4.14
+#     (tested against the linux-4.14.275 reference tree), architectures are now simple
+#     select GPIOLIB.
+#   * USB_ARCH_HAS_EHCI - there is no character in 4.14, select is discarded.
+#   * RTL_FLASH_SIZE 0x800000 -> 0x1000000. AC10 has a board with 8 MB, we have Winbond
+#     w25q128 = 16 MB (JEDEC EF4018, confirmed by UART drain log). Exactly the same
+#     is in the vendor config config.linux-4.4.RTL8197F_VG_8832BR_8367R_KERN44_GW.
+#   * OPENWRT_SDK is enabled after removing the conflicting GPIO stubs (see Kconfig.legacy).
+#     The reason for the failure was the global stubs gpio_to_irq()/irq_to_gpio() in gpio.c under
+#     this ifdef: in 4.14 gpio_to_irq is static inline in include/linux/gpio.h:69, and
+#     overriding it would break the build. Stubs removed (returned -EINVAL, use
+#     zero), after which the symbol was needed by the vendor rtknet and was included.
+#   * The choice SoC and "Develop platform selection" were choice from one or two points,
+#     where the second point (RTL_8197F_WRT) is not found in the code at all - all of it
+#     the effect was reduced to select. Collapsed into one def_bool.
+#   * The car menu is only HH71VM, and it has been moved inside `if REALTEK_97F`:
+#     in AC10 it hung outside and was shown on any MIPS target.
+#   * DesignWare SPI is disabled by default. The flash of our device does not hang on it:
+#     the drain prints `m25p80 spi0.0`, and the 0 bus is occupied by the controller spi-sheipa
+#     (arch/mips/rtl8197f/mtd.c, id 0); dw_spi_mmio receives tires 1 and 2. In vendor
+#     There is no RTL819X_DW_SPI config either. The option is left for the case of peripherals.
+#
+# CONFIG_RTL_8197F_VG, which the vendor has, is intentionally not enabled: chip variant
+# (8197F versus 8197F_VG) our prom.c is determined in runtime by BSP_ECO_SN, and the departure
+# between the compile-time symbol and the runtime definition would be a source of errors.
+#
+
+if REALTEK_97F
+
+source "arch/mips/rtl8197f/Kconfig.legacy"
+
+config SOC_RTL8197F
+	def_bool y
+	select RTL_8197F_GW
+	select SYS_SUPPORTS_LITTLE_ENDIAN
+	select HAVE_CLK
+	select CLKDEV_LOOKUP
+	select HW_HAS_PCI
+	select GPIOLIB
+
+config RTL_FLASH_SIZE
+	hex "Flash size"
+	default "0x1000000"
+	help
+	  Size of the SPI NOR chip, in bytes. HH71VM carries a Winbond w25q128
+	  (16 MiB, JEDEC EF4018).
+
+config RTL819X_DW_SPI
+	bool "BSP DesignWare SPI controller support"
+	default n
+	select SPI_DESIGNWARE
+	select SPI_DW_MMIO
+	help
+	  The boot flash of this board does not sit on this controller, see the
+	  comment at the top of this file. Enable only for extra SPI peripherals.
+
+config RTL819X_DW_SPI0
+	bool "Enable DesignWare SPI0 controller"
+	depends on RTL819X_DW_SPI
+
+config RTL819X_DW_SPI1
+	bool "Enable DesignWare SPI1 controller"
+	depends on RTL819X_DW_SPI
+
+config RTK_BOOTINFO_DUALIMAGE
+	bool "DualImage Support(OpenWRT SDK)"
+	default n
+
+comment "Second Bank Offset"
+	depends on RTK_BOOTINFO_DUALIMAGE
+
+config RTK_DUALIMAGE_FLASH_OFFSET
+	hex "flash offset"
+	depends on RTK_BOOTINFO_DUALIMAGE
+	default "0x800000"
+	help
+	  Offset of the second bank, in most cases half of the flash size.
+
+menu "Realtek RTL8197F machine selection"
+
+config RTL8197_MACH_HH71VM
+	bool "Alcatel LINKHUB HH71VM"
+	default y
+	help
+	  Say 'Y' here if you want your kernel to support the
+	  Alcatel LINKHUB HH71VM (RTL8197FS + RTL8812FE).
+
+endmenu
+
+endif

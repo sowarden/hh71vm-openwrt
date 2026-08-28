@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# Write to front panel indicator HH71VM.
+#
+# The panel is physically connected to the Qualcomm-half: on our, Realtek-side
+# /sys/class/leds not at all (docs/hardware-facts.md). There are classes on the other side
+# yes - net-blue, net-green, net-red, power, signal-blue, signal-green,
+# signal-red, wlan - and the entry in brightness there SURVIVES the vendor
+# /usr/oem/core_app: checked 2026-08-24 (probe_leds.py --toggle gave OURS,
+# the value lasted three seconds and no one interrupted it). Therefore the channel is
+# regular sysfs through passwordless telnet, not RPC MainLedStatus through kcap.
+#
+# The connection is short-lived: panel events are rare (radio up/down), and
+# There is no need to hold another permanent session to the other side for their sake -
+# hh71vm-modemd occupies its space for relaying AT.
+#
+# The failure here does not break anything and is intentionally silent: the indicator is not a function.
+#
+# Usage: hh71vm-panel-led <name> <0..255>
+#
+
+QC_HOST=192.168.225.1
+QC_PORT=23
+LOCK=/var/lock/hh71vm-panel-led.lock
+TRIES=3
+
+led="$1"
+value="$2"
+
+case "$led" in
+	net-blue|net-green|net-red|power|signal-blue|signal-green|signal-red|wlan) ;;
+	*)
+		echo "usage: $0 <net-blue|net-green|net-red|power|signal-*|wlan> <0..255>" >&2
+		exit 2
+	;;
+esac
+case "$value" in
+	''|*[!0-9]*)
+		echo "$0: brightness must be the number 0..255, received '$value'" >&2
+		exit 2
+	;;
+esac
+[ "$value" -le 255 ] || value=255
+
+# One session at a time: telnetd serves one client on the other side, and
+# two simultaneous attempts (two radios rise almost synchronously) give
+# the second one refused.
+exec 9>"$LOCK" 2>/dev/null && flock 9 2>/dev/null
+
+qc_shell() {
+	# `sleep 1` holds stdin open while telnetd negotiates options and
+	# manages to execute the command; without it, nc closes the channel too early.
+	{ printf '%s\nexit\n' "$1"; sleep 1; } | nc "$QC_HOST" "$QC_PORT" 2>/dev/null
+}
+
+i=1
+while [ "$i" -le "$TRIES" ]; do
+	qc_shell "echo $value > /sys/class/leds/$led/brightness" >/dev/null
+	# Let’s check by reading: the passwordless telnet does not have a return code to which
+	# You can rely on it, but silently missing the indicator is worse than not lighting it.
+	# tr -d: telnet returns rows with CR, and without cleaning the comparison does not match
+	# never, although the recording took place (caught live 2026-08-24).
+	if qc_shell "cat /sys/class/leds/$led/brightness" | tr -d "\r" | grep -qx "$value"; then
+		exit 0
+	fi
+	i=$((i + 1))
+	sleep 1
+done
+exit 1

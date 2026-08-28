@@ -1,0 +1,55 @@
+#!/bin/sh /etc/rc.common
+# Additional configuration for the external gigabit PHY on port 0.
+#
+# WHY IS THIS NEEDED?
+#
+# For HH71VM, the only RJ45 is connected not to the built-in (100-megabit) ports SoC, but to
+# EXTERNAL gigabit PHY: port 0 of the switch operates in GMII mode, PHY sits at MDIO address 6
+# (in the driver - PORT0_RGMII_PHYID, AsicDriver/rtl865x_asicL2.h).
+#
+# ROM - this loader PHY configures itself - can be seen in its output with the command ETH
+# ("Auto PHYID=0x6, page=0xd08, regID=0x11, read back data=0x9" etc.), and that's why
+# TFTP - image filling works. But the driver pulls the reset line PHY during initialization
+# (branch CONFIG_RTL_8211F_SUPPORT), and the setting is lost.
+#
+# The symptom without this script is ONE WAY communication: the device receives packets (sees
+# ARP requests, teaches MAC), and its own packets do not reach the other side.
+#
+# The stock firmware does exactly the same thing and for the same reason - in its log after
+# "init started" comes the block "set phyReg fro Gigabit adapter" with the same three entries.
+# The values ​​are taken verbatim from the drain log on this device instance.
+#
+# [UNSET] which of the three records is decisive: the third (register 0, value 0x1300)
+# restarts autonegotiation, and it is possible that it alone is enough. Checked so far
+# only using all three at once is like stock.
+#
+# It would be more correct to do this in the driver itself, immediately after resetting PHY. Left
+# script, because that’s how the stock works and because it’s necessary to edit the vendor code for the sake of it
+# at stage bring-up is redundant.
+
+START=11
+
+boot() {
+	[ -e /proc/rtl865x/phyReg ] || return 0
+
+	# PAD_CTRL_1 (0xb8000850) - mode and strength of pads RGMII port 0.
+	#
+	# The 25 (PAD_P0_RGMII_MODE) bit remains cleared after PHY is reset by the driver, and
+	# the loader and drain keep it COCKED. With the bit reset, the port is formally
+	# works and the link goes up, but the transfer router -> PC loses frames in
+	# depending on their content: on random data 13-16% on gigabit
+	# (8.9% on 100 Mbit), while any uniform pattern passes through cleanly.
+	# Measured: with bit 0 - 5000 random frames, 780 lost from 2000 on
+	# “killer” pair 2A CD; with bit 1 - 0 from 5000, and 5 MB to SSH go to 2.2 with
+	# instead of 92 s. Analysis - docs/luci-overview-latency.md.
+	#
+	# The value is taken verbatim from the stock bootloader log on this instance
+	# ("Write memory 0xb8000850 dat 0x6fca0030").
+	[ -e /proc/rtl865x/memory ] && 		echo write 0xb8000850 0x6fca0030 > /proc/rtl865x/memory
+
+	# page 0xd08 (3336) - adjustment of the analog part for this board
+	echo extWrite 6 3336 17 0x9  > /proc/rtl865x/phyReg
+	echo extWrite 6 3336 21 0x19 > /proc/rtl865x/phyReg
+	# register 0 (BMCR): enable autonegotiation and restart it
+	echo extWrite 6 0 0 0x1300   > /proc/rtl865x/phyReg
+}

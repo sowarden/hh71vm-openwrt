@@ -1,0 +1,2514 @@
+/*
+ * luci-theme-hh71vm -- LuCI theme for the Alcatel LINKHUB HH71VM OpenWrt port.
+ * Licensed to the public under the Apache License 2.0.
+ *
+ * Layout: fixed left sidebar carrying the whole menu tree, fixed top bar carrying the
+ * modem status, content column with a sane maximum width.  Everything LuCI's own
+ * JavaScript needs is implemented against the selectors luci-theme-bootstrap uses,
+ * because those -- not the documentation -- are the real contract.  Blocks marked
+ * "LuCI contract" are behaviour, not decoration: drop one and a widget breaks.
+ */
+
+/* ============================================================ design tokens */
+
+:root {
+	/* tells the browser to render native widgets, scrollbars and form controls in
+	   the same scheme as the page -- one line, and the built-in chrome stops
+	   fighting the theme */
+	color-scheme: light;
+	accent-color: #4263eb;
+
+	/* surfaces, from the page backdrop up to the topmost card */
+	--bg:            #f4f6f9;
+	--surface:       #ffffff;
+	--surface-2:     #f3f5f8;
+	--surface-3:     #e9edf3;
+	--nav-bg:        #ffffff;
+	--nav-item:      #4a5567;
+
+	--border:        #e2e7ee;
+	--border-strong: #cbd3de;
+
+	--text:          #121926;
+	--text-2:        #48546a;
+	--muted:         #6b7688;
+	--faint:         #97a1b0;
+
+	--accent:        #4263eb;
+	--accent-hover:  #3b56cc;
+	--accent-ink:    #ffffff;
+	--accent-soft:   #edf1ff;
+	--accent-line:   #c9d5ff;
+
+	--ok:            #2b8a3e;
+	--ok-soft:       #eafbee;
+	--ok-line:       #b7ebc2;
+	--warn:          #a15c00;
+	--warn-soft:     #fff8e1;
+	--warn-line:     #f5dfa4;
+	--err:           #c92a2a;
+	--err-soft:      #fff2f2;
+	--err-line:      #f6c9c9;
+
+	/* signal and traffic accents, used by the modem widgets */
+	--sig-good:      #2f9e5e;
+	--sig-mid:       #d08700;
+	--sig-bad:       #d64545;
+	--rx:            #3c8ce7;
+	--tx:            #8a63d2;
+
+	--select:        rgba(66, 99, 235, .30);
+	--select-ink:    #0b1020;
+
+	--shadow-sm:     0 1px 2px rgba(16, 24, 40, .05);
+	--shadow:        0 1px 3px rgba(16, 24, 40, .07), 0 1px 2px rgba(16, 24, 40, .04);
+	--shadow-lg:     0 12px 32px rgba(16, 24, 40, .16), 0 4px 8px rgba(16, 24, 40, .06);
+	--ring:          0 0 0 3px rgba(66, 99, 235, .22);
+
+	--r-xs: 4px;
+	--r-sm: 6px;
+	--r:    8px;
+	--r-lg: 12px;
+	--r-pill: 999px;
+
+	--sidebar-w: 250px;
+	--topbar-h:  56px;
+	--content-max: 1280px;
+
+	--mono: ui-monospace, "SF Mono", "SFMono-Regular", "Menlo", "Cascadia Mono",
+	        "Consolas", "Liberation Mono", monospace;
+	--sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+	        "Noto Sans", sans-serif;
+}
+
+:root[data-theme="dark"] {
+	color-scheme: dark;
+	accent-color: #4c6ef5;
+
+	--bg:            #0d1117;
+	--surface:       #151b23;
+	--surface-2:     #1b222c;
+	--surface-3:     #232c39;
+	--nav-bg:        #111720;
+	--nav-item:      #a7b1c0;
+
+	--border:        #252e3b;
+	--border-strong: #3a4553;
+
+	--text:          #e6edf5;
+	--text-2:        #b3bfcd;
+	--muted:         #8d99a9;
+	--faint:         #6d798a;
+
+	--accent:        #8fa5ff;
+	--accent-hover:  #a9baff;
+	--accent-ink:    #0b1020;
+	--accent-soft:   #1a2137;
+	--accent-line:   #33406b;
+
+	--ok:            #5fd67f;
+	--ok-soft:       #10251a;
+	--ok-line:       #23492f;
+	--warn:          #f0b849;
+	--warn-soft:     #2b220c;
+	--warn-line:     #4d3d15;
+	--err:           #ff8785;
+	--err-soft:      #2c1618;
+	--err-line:      #55272a;
+
+	--sig-good:      #55d68a;
+	--sig-mid:       #f0b849;
+	--sig-bad:       #ff8785;
+	--rx:            #5aa9f8;
+	--tx:            #b18cf0;
+
+	--select:        rgba(143, 165, 255, .42);
+	--select-ink:    #ffffff;
+
+	--shadow-sm:     0 1px 2px rgba(0, 0, 0, .4);
+	--shadow:        0 1px 3px rgba(0, 0, 0, .5);
+	--shadow-lg:     0 16px 40px rgba(0, 0, 0, .6);
+	--ring:          0 0 0 3px rgba(143, 165, 255, .28);
+}
+
+/* ==================================================================== base */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+	-webkit-text-size-adjust: 100%;
+	scrollbar-color: var(--border-strong) transparent;
+	/* keeps the layout from jumping sideways when a page grows past one screen */
+	scrollbar-gutter: stable;
+}
+
+body {
+	margin: 0;
+	padding: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--sans);
+	font-size: 14px;
+	line-height: 1.55;
+	-webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+h1, h2, h3, h4, h5, h6, legend {
+	margin: 0 0 .5em;
+	font-weight: 600;
+	line-height: 1.3;
+	color: var(--text);
+	letter-spacing: -.006em;
+}
+h1, h2, h3 { text-wrap: balance; }
+h1 { font-size: 24px; }
+h2 { font-size: 20px; letter-spacing: -.012em; }
+h3, legend { font-size: 15.5px; }
+h4 { font-size: 14px; }
+h5, h6 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+p { margin: 0 0 .75em; }
+p:last-child { margin-bottom: 0; }
+
+strong, b { font-weight: 600; }
+em { font-style: italic; }
+small { font-size: 12.5px; }
+
+hr { border: 0; border-top: 1px solid var(--border); margin: 20px 0; }
+
+ul, ol { margin: 0 0 .75em 1.4em; padding: 0; }
+ul.unstyled, .unstyled { list-style: none; margin: 0; padding: 0; }
+
+code, tt, .mono, kbd { font-family: var(--mono); font-size: 12.5px; }
+code, tt {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--r-xs);
+	padding: .5px 5px;
+}
+pre {
+	font-family: var(--mono);
+	font-size: 12.5px;
+	line-height: 1.5;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	padding: 12px 14px;
+	overflow: auto;
+	margin: 0 0 12px;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+}
+
+img { max-width: 100%; }
+
+::placeholder { color: var(--faint); opacity: 1; }
+/* A selection has to be obvious at a glance -- the soft accent used before was one
+   step off the card behind it and all but invisible, in both themes. */
+/* Only ::selection, deliberately: csstidy merges rules with identical bodies into one
+   selector list, and a list holding a pseudo-element the browser does not know is
+   invalid as a whole -- pairing this with ::-moz-selection cost the rule entirely in
+   the built image.  Every browser this port is used from understands ::selection. */
+::selection { background: var(--select); color: var(--select-ink); }
+
+/* Focus is never suppressed, only made to look deliberate. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after {
+		animation-duration: .001ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: .001ms !important;
+	}
+}
+
+/* =============================================================== app shell */
+
+#sidebar {
+	position: fixed;
+	top: 0; left: 0; bottom: 0;
+	width: var(--sidebar-w);
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	background: var(--nav-bg);
+	border-right: 1px solid var(--border);
+}
+
+#topbar {
+	position: fixed;
+	top: 0; left: var(--sidebar-w); right: 0;
+	height: var(--topbar-h);
+	z-index: 55;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 0 20px;
+	background: var(--surface);
+	border-bottom: 1px solid var(--border);
+}
+
+#maincontent {
+	margin-left: var(--sidebar-w);
+	/* Longhands on purpose.  csstidy (the minifier the LuCI build runs with
+	   --template=highest) rewrites padding/margin shorthands, and a calc() among the
+	   values makes it truncate the declaration mid-way -- it emitted
+	   `padding:calc(var(--topbar-h)}`, which closes the rule and kills every rule
+	   after it in the file.  calc() in a single-value property is fine. */
+	padding-top: calc(var(--topbar-h) + 26px);
+	padding-right: 28px;
+	padding-bottom: 8px;
+	padding-left: 28px;
+}
+#maincontent > * { max-width: var(--content-max); }
+
+footer {
+	margin-left: var(--sidebar-w);
+	padding: 18px 28px 26px;
+	color: var(--faint);
+	font-size: 12.5px;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+	max-width: calc(var(--content-max) + 56px);
+}
+footer a { color: var(--muted); }
+footer a:hover { color: var(--accent); }
+footer .sep { flex: 1 1 auto; }
+footer .divider { color: var(--border-strong); }
+
+/* The login page has no menu: drop the chrome and centre the form. */
+body.no-nav #sidebar, body.no-nav #topbar { display: none; }
+body.no-nav #maincontent { margin-left: 0; padding: 60px 20px 0; }
+body.no-nav #maincontent > * { max-width: 460px; margin-left: auto; margin-right: auto; }
+/* The footer normally spans the content column and pushes "About this port" to the
+   far right with a flexible spacer.  On the login page there is no content column --
+   just a 460px card in the middle of an empty screen -- and that spacer threw the two
+   halves of the footer into opposite corners.  Here it becomes one centred line with
+   the same middot separator the rest of the footer uses. */
+body.no-nav footer {
+	margin-left: 0;
+	justify-content: center;
+	max-width: none;
+	padding: 24px 20px 26px;
+}
+body.no-nav footer .sep { flex: none; }
+body.no-nav footer .sep::before { content: "·"; color: var(--border-strong); }
+
+/* ================================================================= sidebar */
+
+.sb-brand {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	height: var(--topbar-h);
+	flex: none;
+	padding: 0 16px;
+	border-bottom: 1px solid var(--border);
+	color: var(--text);
+	overflow: hidden;
+}
+.sb-brand:hover { text-decoration: none; color: var(--text); }
+
+.sb-logo {
+	width: 28px; height: 28px;
+	flex: none;
+	border-radius: 8px;
+	background: linear-gradient(145deg, #6d8bff, #4263eb 55%, #2c3fa8);
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22), 0 1px 3px rgba(30, 45, 110, .35);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #fff;
+}
+.sb-logo svg { width: 16px; height: 16px; }
+
+.sb-name { min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+.sb-name b {
+	font-size: 14px;
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.sb-name span { font-size: 11px; color: var(--faint); letter-spacing: .02em; }
+
+.sb-nav {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 10px 10px 16px;
+}
+.sb-nav::-webkit-scrollbar { width: 8px; }
+.sb-nav::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 99px; }
+
+.sb-group { margin-bottom: 2px; }
+
+.sb-head {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	width: 100%;
+	min-height: 0;
+	padding: 7px 9px;
+	border: 0;
+	border-radius: var(--r-sm);
+	background: none;
+	color: var(--muted);
+	font-family: inherit;
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+	cursor: pointer;
+	text-align: left;
+	justify-content: flex-start;
+}
+.sb-head:hover { background: var(--surface-2); color: var(--text-2); border-color: transparent; }
+.sb-head svg { width: 15px; height: 15px; flex: none; opacity: .85; }
+.sb-head .sb-caret { margin-left: auto; width: 12px; height: 12px; opacity: .7; transition: transform .15s ease; }
+.sb-group.open > .sb-head .sb-caret { transform: rotate(90deg); }
+.sb-group.has-active > .sb-head { color: var(--text); }
+
+.sb-items { display: none; margin: 2px 0 6px; padding: 0 0 0 6px; list-style: none; }
+.sb-group.open > .sb-items { display: block; }
+
+.sb-items li { position: relative; }
+.sb-items li > a {
+	display: block;
+	position: relative;
+	padding: 6px 10px 6px 22px;
+	border-radius: var(--r-sm);
+	color: var(--nav-item);
+	font-size: 13.5px;
+	line-height: 1.4;
+}
+.sb-items li > a::before {
+	content: "";
+	position: absolute;
+	left: 8px; top: 50%;
+	width: 4px; height: 4px;
+	margin-top: -2px;
+	border-radius: 50%;
+	background: var(--border-strong);
+	transition: background .12s, transform .12s;
+}
+.sb-items li > a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.sb-items li.active > a { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.sb-items li.active > a::before { background: var(--accent); transform: scale(1.4); }
+
+.sb-foot { flex: none; border-top: 1px solid var(--border); padding: 10px; }
+.sb-foot a {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 7px 10px;
+	border-radius: var(--r-sm);
+	color: var(--muted);
+	font-size: 13px;
+}
+.sb-foot a:hover { background: var(--surface-2); color: var(--err); text-decoration: none; }
+.sb-foot a svg { width: 15px; height: 15px; }
+
+/* The modem facts that do not fit in a phone's top bar -- band, IP, traffic, SMS and
+   the link to the modem page.  Filled by the same renderStrip that draws the strip,
+   and hidden outright on a desktop, where the strip itself has room for all of it. */
+#modem-drawer {
+	display: none;
+	flex: none;
+	padding: 10px 10px 0;
+	border-bottom: 1px solid var(--border);
+	margin-bottom: 4px;
+}
+#modem-drawer .mi {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 38px;
+	padding: 6px 9px;
+	border-radius: var(--r-sm);
+	color: var(--muted);
+	font-size: 13px;
+}
+#modem-drawer .mi b { color: var(--text); font-weight: 600; }
+#modem-drawer a.mi:hover { background: var(--surface-2); text-decoration: none; }
+#modem-drawer .mi-k {
+	color: var(--faint);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: .04em;
+	min-width: 34px;
+}
+#modem-drawer .sep, #modem-drawer .mi-arrow { display: none; }
+#modem-drawer .mi:last-child { margin-bottom: 8px; }
+
+/* mode menu (admin / status): normally a single entry and then hidden */
+#modemenu { display: flex; gap: 4px; list-style: none; margin: 0 0 8px; padding: 0; }
+#modemenu .divider { display: none; }
+#modemenu li a { display: block; padding: 4px 9px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--muted); }
+#modemenu li.active a { background: var(--accent-soft); color: var(--accent); }
+
+/* ================================================================== topbar */
+
+.tb-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+
+.icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px; height: 32px;
+	min-height: 32px;
+	flex: none;
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	background: var(--surface);
+	color: var(--text-2);
+	cursor: pointer;
+	padding: 0;
+	line-height: 0;
+	transition: background .12s, border-color .12s, color .12s;
+}
+.icon-btn:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
+.icon-btn svg { width: 16px; height: 16px; }
+
+#indicators { display: flex; gap: 6px; align-items: center; }
+#indicators .label,
+#indicators > span,
+#topbar [data-indicator] {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	color: var(--text-2);
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 18px;
+	padding: 3px 10px;
+	border-radius: var(--r-pill);
+	white-space: nowrap;
+	text-transform: none;
+}
+#indicators [data-clickable] { cursor: pointer; }
+#indicators [data-style="active"], #indicators .notice, #indicators > span.notice {
+	background: var(--accent-soft);
+	border-color: var(--accent-line);
+	color: var(--accent);
+}
+#indicators [data-indicator="uci-changes"] {
+	background: var(--warn-soft);
+	border-color: var(--warn-line);
+	color: var(--warn);
+}
+
+/* ------------------------------------------------------- modem status bar */
+
+.mstrip {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	min-width: 0;
+	flex: 1 1 auto;
+	overflow: hidden;
+	font-size: 12.5px;
+	color: var(--text-2);
+}
+
+.mstrip .mi {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	white-space: nowrap;
+	flex: none;
+	padding: 4px 9px;
+	border-radius: var(--r-pill);
+	color: var(--muted);
+}
+.mstrip .mi b { color: var(--text); font-weight: 600; }
+.mstrip .mi-k { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.mstrip a.mi { color: var(--text-2); }
+.mstrip a.mi:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+/* Set when the modem status poll has missed three times running.  The figures on
+   screen are then the last known ones, not current, so they are dimmed instead of
+   being left to pass for live; the poll itself keeps retrying, slowly. */
+.mstrip.stale .mi, .sb-modem.stale .mi { opacity: .45; }
+.mstrip.stale .mi b, .sb-modem.stale .mi b { color: var(--muted); }
+.mstrip .mi-sep { width: 1px; height: 18px; background: var(--border); flex: none; margin: 0 4px; }
+/* The chevron is a text glyph, and its ink sits below the middle of its own line
+   box, so flex centring lines up the box and leaves the mark looking low.  Give it a
+   line box of its own height and nudge the glyph, not the element. */
+.mstrip .mi-arrow {
+	color: var(--faint);
+	font-size: 13px;
+	line-height: 1;
+	display: inline-flex;
+	align-items: center;
+	align-self: center;
+	height: 1em;
+	margin-top: -1px;
+}
+
+.mstrip .tech {
+	background: var(--accent);
+	color: var(--accent-ink);
+	border-radius: var(--r-xs);
+	padding: 1px 6px;
+	font-size: 10.5px;
+	font-weight: 700;
+	letter-spacing: .04em;
+}
+.mstrip .tech.off { background: var(--surface-3); color: var(--muted); }
+
+.mstrip .mi.warnpill {
+	background: var(--warn-soft);
+	border: 1px solid var(--warn-line);
+	color: var(--warn);
+	border-radius: var(--r-sm);
+}
+.mstrip .mi.warnpill b { color: var(--warn); }
+
+/* signal strength, five bars filled from the left */
+.bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 13px; flex: none; }
+.bars i { width: 3px; border-radius: 1px; background: var(--border-strong); display: block; }
+.bars i:nth-child(1) { height: 4px; }
+.bars i:nth-child(2) { height: 6.25px; }
+.bars i:nth-child(3) { height: 8.5px; }
+.bars i:nth-child(4) { height: 10.75px; }
+.bars i:nth-child(5) { height: 13px; }
+.bars i.on { background: var(--sig-good); }
+.bars.weak i.on { background: var(--sig-mid); }
+.bars.bad i.on { background: var(--sig-bad); }
+
+.badge-n {
+	background: var(--err);
+	color: #fff;
+	border-radius: var(--r-pill);
+	padding: 0 6px;
+	font-size: 10.5px;
+	font-weight: 700;
+	min-width: 17px;
+	line-height: 16px;
+	text-align: center;
+	display: inline-block;
+}
+:root[data-theme="dark"] .badge-n { color: #2c1618; }
+
+/* =================================================================== misc */
+
+/* Numbers that update in place -- signal, byte counters, uptimes -- must not
+   jitter, and columns of figures should line up on the digit. */
+table, .table, .facts, .mtile-val, .mono, code, pre, input[type="number"],
+.cbi-progressbar::after, .mstrip { font-variant-numeric: tabular-nums; }
+
+/* ================================================================== cards */
+
+.cbi-map, .cbi-section, fieldset.cbi-section, .card {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--r-lg);
+	box-shadow: var(--shadow-sm);
+	padding: 20px 22px;
+	margin: 0 0 18px;
+}
+
+/* A map is only a wrapper: its sections must not draw a second frame inside it. */
+.cbi-map > .cbi-section,
+.cbi-map > .cbi-map-tabbed > .cbi-section,
+.cbi-map > .cbi-tabcontainer > .cbi-section,
+.cbi-section .cbi-section,
+.cbi-value .cbi-section,
+.modal .cbi-section {
+	background: none;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+	padding: 0;
+	margin: 0 0 22px;
+}
+.cbi-map > .cbi-section:last-child,
+.cbi-map > .cbi-map-tabbed > .cbi-section:last-child,
+.cbi-section .cbi-section:last-child { margin-bottom: 0; }
+
+/* Sections after the first get a hairline so the groups stay legible. */
+.cbi-map > .cbi-section + .cbi-section,
+.cbi-map > .cbi-map-tabbed > .cbi-section + .cbi-section,
+.cbi-section .cbi-section + .cbi-section {
+	border-top: 1px solid var(--border);
+	padding-top: 22px;
+}
+
+fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+.cbi-map > h2, h2.cbi-map-title { font-size: 20px; margin: 0 0 4px; }
+.cbi-section > h3, .cbi-section > legend, .cbi-section-node > legend,
+.cbi-section > .cbi-section-node > legend { font-size: 15.5px; margin: 0 0 14px; }
+/* A description belongs to the heading above it, so that pair stays tight and the
+   14px is spent below the description instead. */
+.cbi-section > h3 + .cbi-section-descr,
+.cbi-section > h3 + .cbi-map-descr,
+.cbi-section > legend + .cbi-section-descr { margin-top: -10px; }
+
+.cbi-map-descr, .cbi-section-descr, .cbi-tab-descr {
+	color: var(--muted);
+	font-size: 13px;
+	margin: 0 0 16px;
+	max-width: 80ch;
+}
+.cbi-map > h2 + .cbi-map-descr { margin-bottom: 18px; }
+
+/* A bare h2 at the top of a view is the page title. */
+#maincontent > div > h2:first-child, #maincontent > h2:first-child { margin: 0 0 16px; font-size: 22px; }
+
+/* The status dashboard is a stack of independent cards; on a wide screen they
+   belong side by side, otherwise the page is a thin ribbon of content in the middle
+   of an empty screen.
+   Two fixed columns, and no card is allowed out of them.  The earlier version let
+   sections carrying a table span the full width, which is where the dashboard lost
+   its grid: a wide card, then a half-width one with an empty half beside it, then
+   another wide one.  Rows stretch, so the two cards of a row end on the same line
+   even when one of them has half as much to say. */
+body[data-page="admin-status-overview"] #view {
+	columns: 2;
+	column-gap: 18px;
+}
+body[data-page="admin-status-overview"] #view > .cbi-section {
+	/* Each card is exactly as tall as what is in it, and the next card in the column
+	   starts right below it.  A grid cannot do that: its rows are as tall as the
+	   tallest card in the row, so a short card either stretched into empty space or
+	   left a hole under itself.  Multi-column flow gives two independent stacks --
+	   which is what a dashboard of unrelated cards actually is. */
+	break-inside: avoid;
+	-webkit-column-break-inside: avoid;
+	page-break-inside: avoid;
+	margin: 0 0 18px;
+	min-width: 0;
+	/* the last card of a column must not hang a margin off the bottom */
+	display: flow-root;
+}
+@media (max-width: 1100px) {
+	body[data-page="admin-status-overview"] #view { columns: 1; }
+}
+
+/* Inside a half-width card the interface boxes and the radio boxes stack; the
+   auto-fill grid below would otherwise keep trying for two 340px columns. */
+body[data-page="admin-status-overview"] .network-status-table { grid-template-columns: minmax(0, 1fr); }
+
+/* ============================================================== page tabs */
+
+#tabmenu { margin: 0 0 18px; }
+#tabmenu:empty { display: none; }
+
+#tabmenu ul.tabs, .cbi-tabmenu {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px;
+	list-style: none;
+	margin: 0 0 18px;
+	padding: 0;
+	border-bottom: 1px solid var(--border);
+}
+#tabmenu ul.tabs + ul.tabs { margin-top: -10px; }
+.cbi-tabmenu.map { margin-bottom: 20px; }
+#tabmenu ul.tabs > li, .cbi-tabmenu > li { margin-bottom: -1px; }
+
+#tabmenu ul.tabs > li > a, .cbi-tabmenu > li > a {
+	display: block;
+	padding: 8px 14px;
+	border-bottom: 2px solid transparent;
+	color: var(--muted);
+	font-size: 13.5px;
+	font-weight: 500;
+	white-space: nowrap;
+	transition: color .12s, border-color .12s;
+}
+#tabmenu ul.tabs > li > a:hover, .cbi-tabmenu > li > a:hover {
+	color: var(--text);
+	text-decoration: none;
+	border-bottom-color: var(--border-strong);
+}
+#tabmenu ul.tabs > li.active > a, .cbi-tabmenu > li.cbi-tab > a {
+	color: var(--accent);
+	border-bottom-color: var(--accent);
+	font-weight: 600;
+}
+
+.cbi-tab-disabled[data-errors]::after {
+	content: attr(data-errors);
+	display: inline-block;
+	background: var(--err);
+	color: #fff;
+	min-width: 16px;
+	line-height: 15px;
+	font-size: 10.5px;
+	border-radius: var(--r-pill);
+	text-align: center;
+	margin-left: 6px;
+	padding: 1px 4px;
+}
+
+/* =============================================================== form rows */
+
+.cbi-value {
+	display: grid;
+	grid-template-columns: 240px minmax(0, 1fr);
+	gap: 2px 24px;
+	align-items: start;
+	padding: 11px 0;
+	border-bottom: 1px solid var(--border);
+}
+.cbi-value:last-child, .cbi-value.cbi-value-last { border-bottom: 0; padding-bottom: 2px; }
+
+.cbi-value-title, .cbi-value > label.cbi-value-title {
+	grid-column: 1;
+	padding-top: 7px;
+	font-size: 13.5px;
+	font-weight: 500;
+	color: var(--text-2);
+	overflow-wrap: break-word;
+}
+
+.cbi-value-field { grid-column: 2; min-width: 0; }
+
+/* Anything in a form row that is neither the label nor the field takes the whole
+   row.  A nested section (form.SectionValue) is one case; a widget with no title --
+   the backup file list on Backup / Flash Firmware -- is the other, and without this
+   grid auto-placement parks it in the 240px label column and it renders as a
+   letterbox. */
+.cbi-value > *:not(.cbi-value-title):not(.cbi-value-field) { grid-column: 1 / -1; }
+
+.cbi-value-description, .help-block, .help-inline {
+	display: block;
+	color: var(--muted);
+	font-size: 12.5px;
+	line-height: 1.5;
+	margin-top: 6px;
+	max-width: 76ch;
+}
+.cbi-value-description:empty { display: none; }
+
+.cbi-value-field > .control-group,
+.cbi-value-field > br + span,
+.cbi-value-field > br + div:not(.cbi-value-description) {
+	display: inline-flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 8px;
+}
+
+.cbi-optionals { padding: 12px 0 0; }
+
+.cbi-section-error {
+	background: var(--err-soft);
+	border: 1px solid var(--err-line);
+	border-radius: var(--r-sm);
+	color: var(--err);
+	font-size: 12.5px;
+	padding: 10px 12px;
+	margin: 0 0 14px;
+}
+.cbi-section-error ul { margin: 0 0 0 18px; }
+.cbi-value-error em { display: block; color: var(--err); font-size: 12.5px; margin-top: 6px; font-style: normal; }
+
+div.cbi-value var, .td.cbi-value-field var { font-style: normal; color: var(--accent); }
+
+/* ================================================================= inputs */
+
+input[type="text"], input[type="password"], input[type="number"], input[type="search"],
+input[type="url"], input[type="email"], input[type="tel"], input[type="date"],
+input:not([type]), textarea, select, .uneditable-input, .create-item-input {
+	width: 100%;
+	max-width: 420px;
+	min-height: 34px;
+	padding: 6px 11px;
+	background: var(--surface);
+	color: var(--text);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--r-sm);
+	font-family: inherit;
+	font-size: 13.5px;
+	line-height: 1.5;
+	outline: 0;
+	transition: border-color .12s, box-shadow .12s;
+}
+select {
+	max-width: 420px;
+	padding-right: 30px;
+	color: var(--text);
+	background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+	                  linear-gradient(135deg, currentColor 50%, transparent 50%);
+	background-position: calc(100% - 16px) 15px, calc(100% - 11px) 15px;
+	background-size: 5px 5px, 5px 5px;
+	background-repeat: no-repeat;
+	-webkit-appearance: none;
+	-moz-appearance: none;
+	appearance: none;
+}
+select[multiple] { background-image: none; padding-right: 11px; min-height: 96px; }
+select option { background: var(--surface); color: var(--text); }
+
+textarea {
+	max-width: 100%;
+	min-height: 96px;
+	font-family: var(--mono);
+	font-size: 12.5px;
+	line-height: 1.5;
+	resize: vertical;
+}
+
+input:focus, textarea:focus, select:focus {
+	border-color: var(--accent);
+	box-shadow: var(--ring);
+	outline: 0;
+}
+
+input[type="file"] { max-width: none; border: 0; padding: 0; min-height: 0; background: none; }
+
+input[type="checkbox"], input[type="radio"] {
+	width: 16px; height: 16px;
+	min-height: 0;
+	margin: 0 7px 0 0;
+	accent-color: var(--accent);
+	vertical-align: -3px;
+	cursor: pointer;
+}
+.cbi-value-field > input[type="checkbox"], .cbi-value-field > input[type="radio"] { margin-top: 9px; }
+
+input:disabled, select:disabled, textarea:disabled { opacity: .7; cursor: not-allowed; }
+input[readonly], .uneditable-input { background: var(--surface-2); color: var(--text-2); }
+
+.cbi-input-invalid, input.cbi-input-invalid, .cbi-value-error input, textarea.cbi-input-invalid {
+	border-color: var(--err) !important;
+	background: var(--err-soft);
+	color: var(--err);
+}
+
+label { font-size: 13.5px; }
+.cbi-value-field > label { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px; }
+
+/* ------------------------------------------------------------ dynamic list */
+
+/* LuCI contract: a click anywhere on .item removes it, so the item itself must not
+   take pointer events -- only the "x" zone drawn by ::after may. */
+.cbi-dynlist {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 6px;
+	max-width: 420px;
+	min-height: 34px;
+}
+.cbi-dynlist > .item {
+	position: relative;
+	width: 100%;
+	pointer-events: none;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	padding: 6px 40px 6px 11px;
+	font-size: 13px;
+	word-break: break-all;
+	overflow: hidden;
+}
+.cbi-dynlist > .item::after {
+	content: "\00d7";
+	position: absolute;
+	top: -1px; right: -1px; bottom: -1px;
+	width: 32px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	pointer-events: auto;
+	cursor: pointer;
+	border-left: 1px solid var(--border);
+	border-radius: 0 var(--r-sm) var(--r-sm) 0;
+	color: var(--muted);
+	font-size: 17px;
+	line-height: 1;
+}
+.cbi-dynlist > .item:hover::after { background: var(--err-soft); color: var(--err); }
+.cbi-dynlist > .item:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cbi-dynlist > .add-item { display: flex; width: 100%; gap: 6px; align-items: center; }
+.cbi-dynlist > .add-item > input,
+.cbi-dynlist > .add-item > .cbi-dropdown { flex: 1 1 auto; min-width: 0; max-width: none; }
+.cbi-dynlist > .add-item > .cbi-button { flex: none; margin-left: 0; }
+
+/* --------------------------------------------- dropdown widget (LuCI ui.js) */
+
+/* LuCI contract.  ui.js marks the entries that must be visible with a `display`
+   attribute and opens the list with `open`; every other entry stays hidden.  Without
+   these rules every choice renders stacked on the page. */
+.cbi-dropdown {
+	display: inline-flex !important;
+	position: relative;
+	align-items: stretch;
+	min-width: 180px;
+	max-width: 420px;
+	width: 100%;
+	min-height: 34px;
+	background: var(--surface);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--r-sm);
+	color: var(--text);
+	cursor: pointer;
+	font-size: 13.5px;
+	padding: 0 !important;
+	transition: border-color .12s, box-shadow .12s;
+}
+.cbi-dropdown:hover { border-color: var(--muted); }
+
+.cbi-dropdown > ul {
+	list-style: none;
+	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
+	margin: 0 !important;
+	padding: 0;
+	overflow: hidden;
+}
+.cbi-dropdown > ul > li {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	min-height: 20px;
+	padding: 6px 11px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	flex: 1 1 auto;
+	color: inherit;
+}
+.cbi-dropdown > ul > li[display],
+.cbi-dropdown[open] > ul.preview,
+.cbi-dropdown[open] > ul.dropdown > li,
+.cbi-dropdown[multiple] > ul > li > label,
+.cbi-dropdown[multiple][open] > ul.dropdown > li,
+.cbi-dropdown[multiple][more] > .more,
+.cbi-dropdown[multiple][empty] > .more { display: flex !important; flex-grow: 1; }
+.cbi-dropdown[empty] > ul > li,
+.cbi-dropdown[optional][open] > ul.dropdown > li[placeholder],
+.cbi-dropdown[multiple][open] > ul.dropdown > li > form { display: block !important; }
+.cbi-dropdown > ul.preview,
+.cbi-dropdown > ul > li .hide-close,
+.cbi-dropdown[open] > ul.dropdown > li .hide-open,
+.cbi-dropdown > ul > li > form { display: none; }
+.cbi-dropdown > ul > li .hide-open,
+.cbi-dropdown[open] > ul.dropdown > li .hide-close { display: initial; }
+.cbi-dropdown > ul > li > form { pointer-events: none; margin: 0; padding: 0; }
+.cbi-dropdown > ul > li[display]:not([display="0"]) { border-left: 1px solid var(--border); }
+.cbi-dropdown[empty] > ul { max-width: 1px; }
+.cbi-dropdown > ul > li img { vertical-align: middle; margin-right: 4px; }
+.cbi-dropdown > ul > li input[type="text"] { min-height: 26px; }
+
+.cbi-dropdown > .open, .cbi-dropdown > .more {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	color: var(--muted);
+	font-size: 10px;
+}
+.cbi-dropdown > .more { display: none; font-weight: 700; }
+
+.cbi-dropdown[open] { border-color: var(--accent); box-shadow: var(--ring); }
+.cbi-dropdown[open] > ul.dropdown {
+	display: block;
+	position: absolute;
+	top: calc(100% + 4px); left: 0;
+	min-width: 100%;
+	width: auto;
+	max-width: none;
+	max-height: 320px;
+	overflow: auto;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	box-shadow: var(--shadow-lg);
+	z-index: 1100;
+	padding: 4px;
+}
+.cbi-dropdown[open] > ul.dropdown > li {
+	border: 0;
+	border-radius: var(--r-xs);
+	margin: 1px 0;
+	padding: 7px 10px;
+}
+.cbi-dropdown[open] > ul.dropdown > li[selected] { background: var(--accent-soft); color: var(--accent); }
+.cbi-dropdown[open] > ul.dropdown > li.focus,
+.cbi-dropdown[open] > ul.dropdown > li:hover { background: var(--accent); color: var(--accent-ink); }
+.cbi-dropdown[open] > ul.dropdown > li[unselectable] { opacity: .6; cursor: default; background: none; color: var(--muted); }
+.cbi-dropdown[disabled] { pointer-events: none; opacity: .6; }
+.cbi-dropdown.cbi-input-invalid, .cbi-input-invalid.cbi-dropdown:not([open]) > ul > li { color: var(--err); border-color: var(--err); }
+
+/* the dropdown rendered as a split button (Save & Apply) */
+.cbi-dropdown.cbi-button, .cbi-dropdown.btn {
+	width: auto;
+	min-width: 0;
+	max-width: none;
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--accent-ink);
+	font-weight: 500;
+	font-size: 13px;
+	min-height: 32px;
+}
+.cbi-dropdown.cbi-button:hover, .cbi-dropdown.btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.cbi-dropdown.cbi-button > ul > li, .cbi-dropdown.btn > ul > li { padding: 5px 13px; border-left: 0; }
+.cbi-dropdown.cbi-button > .open, .cbi-dropdown.btn > .open {
+	border-left: 1px solid rgba(127, 127, 127, .4);
+	color: inherit;
+	width: 24px;
+}
+.cbi-dropdown.cbi-button[open] > ul.dropdown > li,
+.cbi-dropdown.btn[open] > ul.dropdown > li { color: var(--text); }
+.cbi-dropdown.cbi-button[open] > ul.dropdown > li:hover,
+.cbi-dropdown.btn[open] > ul.dropdown > li:hover { color: var(--accent-ink); }
+.cbi-dropdown.spinning > ul > li { color: transparent; }
+
+/* ================================================================ buttons */
+
+.btn, .cbi-button, button, input[type="submit"], input[type="button"], input[type="reset"] {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	min-height: 32px;
+	padding: 5px 13px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--r-sm);
+	background: var(--surface);
+	color: var(--text);
+	font-family: inherit;
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 1.4;
+	cursor: pointer;
+	text-align: center;
+	white-space: nowrap;
+	vertical-align: middle;
+	transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
+}
+.btn:hover, .cbi-button:hover, button:hover {
+	background: var(--surface-2);
+	border-color: var(--muted);
+	color: var(--text);
+	text-decoration: none;
+}
+.btn:disabled, .cbi-button:disabled, button:disabled, .btn.disabled, .btn[disabled] {
+	opacity: .5;
+	cursor: not-allowed;
+}
+
+/* adjacent buttons must never touch */
+.cbi-button + .cbi-button, .btn + .btn, .cbi-button + .btn, .btn + .cbi-button,
+input + .cbi-button, select + .cbi-button, .cbi-dropdown + .cbi-button { margin-left: 6px; }
+
+.cbi-button-apply, .cbi-button-action, .cbi-button-add, .cbi-button-fieldadd,
+.cbi-button-positive.important, .btn.primary, .cbi-button.important {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--accent-ink);
+}
+.cbi-button-apply:hover, .cbi-button-action:hover, .cbi-button-add:hover,
+.cbi-button-fieldadd:hover, .btn.primary:hover, .cbi-button.important:hover {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+	color: var(--accent-ink);
+}
+
+.cbi-button-save {
+	background: var(--surface);
+	border-color: var(--accent-line);
+	color: var(--accent);
+}
+.cbi-button-save:hover {
+	background: var(--accent-soft);
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+/* "positive" is used for a state that is currently on (an enabled init script), so
+   it reads as a state, not as the page's primary action */
+.cbi-button-positive {
+	background: var(--surface);
+	border-color: var(--ok-line);
+	color: var(--ok);
+}
+.cbi-button-positive:hover { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+
+/* destructive stays quiet until you reach for it */
+.cbi-button-remove, .cbi-button-negative, .cbi-section-remove .cbi-button, .btn.danger {
+	background: var(--surface);
+	border-color: var(--err-line);
+	color: var(--err);
+}
+.cbi-button-remove:hover, .cbi-button-negative:hover, .btn.danger:hover {
+	background: var(--err-soft);
+	border-color: var(--err);
+	color: var(--err);
+}
+.cbi-button-negative.important, .btn.danger.important {
+	background: var(--err);
+	border-color: var(--err);
+	color: #fff;
+}
+.cbi-button-negative.important:hover { filter: brightness(1.08); color: #fff; }
+
+/* An <input type="submit"> matches the base rule through an attribute selector,
+   which outweighs a bare class -- so on every control LuCI still builds from an
+   <input>, the login form included, the variant colours above lost and the primary
+   action came out looking like a secondary one.  Same specificity, later in the
+   file, so these win. */
+input.cbi-button-apply, input.cbi-button-action, input.cbi-button-add,
+input.cbi-button-fieldadd, input.btn.primary, input.cbi-button.important {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--accent-ink);
+}
+input.cbi-button-apply:hover, input.cbi-button-action:hover,
+input.cbi-button-add:hover, input.btn.primary:hover {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+	color: var(--accent-ink);
+}
+input.cbi-button-save { background: var(--surface); border-color: var(--accent-line); color: var(--accent); }
+input.cbi-button-positive { background: var(--surface); border-color: var(--ok-line); color: var(--ok); }
+input.cbi-button-remove, input.cbi-button-negative { background: var(--surface); border-color: var(--err-line); color: var(--err); }
+input.cbi-button-reset { background: none; border-color: transparent; color: var(--muted); }
+input.cbi-button-reset:hover { background: var(--surface-2); border-color: var(--border-strong); color: var(--text); }
+
+.cbi-button-link {
+	background: none;
+	border-color: transparent;
+	color: var(--accent);
+	padding-left: 8px;
+	padding-right: 8px;
+}
+.cbi-button-link:hover { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+
+.cbi-button-reset { background: none; border-color: transparent; color: var(--muted); }
+.cbi-button-reset:hover { background: var(--surface-2); border-color: var(--border-strong); color: var(--text); }
+
+/* action bars */
+.cbi-page-actions, .actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin: 18px 0 0;
+	padding: 16px 0 0;
+	border-top: 1px solid var(--border);
+}
+.cbi-page-actions > form { display: inline; margin: 0; }
+/* Reset belongs at the far end of the bar, away from the button that commits --
+   but only when something follows it.  On the login form Reset is the last control,
+   and an auto margin there pushed the whole bar, Login included, to the left. */
+.cbi-page-actions > .cbi-button-reset:not(:last-child),
+.cbi-page-actions > .secondary-action:not(:last-child) { margin-right: auto; }
+.cbi-page-actions > * { margin-left: 0 !important; }
+
+.cbi-section-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cbi-section-create { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 14px; }
+.cbi-section-create > * { margin-left: 0 !important; }
+
+/* a bare "right" wrapper is how LuCI parks page buttons; give it a row of its own
+   instead of letting the negative margin it carries slide it over the tab bar.
+   `right` is also LuCI's plain right-align class on table cells (`div.th right`,
+   `div.td right`) -- turning one of those into a flex box takes it out of the table
+   and the column collapses, which is what tore the header of the package list in
+   half and stacked the process buttons.  Cells keep their own alignment rule. */
+#maincontent div.right:not(.td):not(.th),
+.modal > div.right:not(.td):not(.th) {
+	display: flex;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-bottom: 14px !important;
+}
+#maincontent div.right:not(.td):not(.th) > *,
+.modal > div.right:not(.td):not(.th) > * { margin-left: 0 !important; }
+#maincontent .td div.right, #maincontent .cbi-value-field div.right { display: block; margin-bottom: 0 !important; }
+
+/* A right-aligned cell holding buttons: the buttons stay on one line and the column
+   is what widens.  With wrap the column stayed narrow and the buttons stacked. */
+.td.right > .cbi-button, .td.right > .btn, .th.right > * { vertical-align: middle; }
+
+/* ================================================================= tables */
+
+.table, table {
+	display: table;
+	width: 100%;
+	border-collapse: collapse;
+	margin: 0;
+	font-size: 13.5px;
+	position: relative;
+}
+.tr { display: table-row; }
+.td, .th { display: table-cell; }
+
+/* No blanket `white-space: nowrap` here.  A table is `display: table`, and a table
+   never gets narrower than the widest thing in it -- so one unbreakable heading
+   ("Leasetime remaining") was enough to push the whole table out through the side of
+   its card, which is exactly what the dashboard did to the DHCPv6 lease list in a
+   half-width column.  LuCI marks the columns that really must not wrap with its own
+   `nowrap` class, and that still works.
+   Ordinary word wrapping only, no `overflow-wrap: anywhere`: a heading is words, and
+   with `anywhere` a squeezed column turned "MAC-Address" into a vertical stack of
+   single letters. */
+.th, th {
+	padding: 9px 12px;
+	text-align: left;
+	vertical-align: middle;
+	font-weight: 600;
+	font-size: 12px;
+	color: var(--muted);
+	background: var(--surface-2);
+	border-bottom: 1px solid var(--border-strong);
+}
+.tr.table-titles .th:first-child, thead tr th:first-child { border-top-left-radius: var(--r-sm); }
+.tr.table-titles .th:last-child, thead tr th:last-child { border-top-right-radius: var(--r-sm); }
+
+/* `anywhere`, not `break-word`: only `anywhere` is counted when the browser works
+   out how narrow the column is allowed to get.  With `break-word` a DUID, an IPv6
+   address or a MAC still sets a floor under the column width, and the table grows
+   past its card instead of wrapping inside it.
+   On the dashboard this is switched back off further down: there the card scrolls,
+   so a column is allowed to set a floor, and breaking values apart is worse. */
+.td, td {
+	padding: 9px 12px;
+	vertical-align: middle;
+	border-bottom: 1px solid var(--border);
+	overflow-wrap: anywhere;
+}
+.tr:last-child > .td, tbody tr:last-child > td { border-bottom: 0; }
+.tr:hover:not(.table-titles):not(.cbi-section-table-titles):not(.cbi-section-table-descr):not(.placeholder) > .td,
+tbody tr:hover > td { background: var(--surface-2); }
+
+/* LuCI draws an empty table as one row with a single cell; centring it across the
+   table needs the cell taken out of the row, which is why stock does it this way. */
+.tr.placeholder { height: calc(3em + 28px); }
+.tr.placeholder > .td {
+	position: absolute;
+	left: 0; right: 0; bottom: 0;
+	color: var(--muted);
+	font-style: italic;
+	text-align: center;
+	line-height: 3em;
+	border: 0;
+	padding: 12px;
+}
+
+.cbi-rowstyle-1, .cbi-rowstyle-2 { background: transparent; }
+.cbi-section-table-descr .th {
+	font-weight: 400;
+	text-transform: none;
+	font-size: 12.5px;
+	background: none;
+	color: var(--muted);
+	border-bottom: 1px solid var(--border);
+	white-space: normal;
+}
+
+/* LuCI contract: named section tables put the row name in a generated first cell */
+.cbi-section-table-titles.named::before,
+.cbi-section-table-descr.named::before,
+.cbi-section-table-row[data-title]::before {
+	content: attr(data-title) " ";
+	display: table-cell;
+	vertical-align: middle;
+	font-weight: 600;
+	font-size: 13px;
+	padding: 9px 12px;
+	border-bottom: 1px solid var(--border);
+}
+.cbi-section-table-titles.named::before { background: var(--surface-2); color: var(--muted); font-size: 12px; }
+
+.td.cbi-value-field, .th.cbi-section-table-cell { padding: 6px 8px; }
+.cbi-section-table-cell input, .cbi-section-table-cell select, .cbi-section-table-cell .cbi-dropdown,
+.td > input, .td > select, .td > textarea, .td > .cbi-dropdown:not(.cbi-button), .td > .cbi-dynlist { max-width: none; }
+.td .cbi-value-description { margin-top: 4px; }
+
+.td.cbi-section-actions, .th.cbi-section-actions { text-align: right; white-space: nowrap; }
+.td.cbi-section-actions > *, .td.cbi-section-actions > * > form {
+	display: flex;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 6px;
+	/* nowrap on purpose: a table column is sized from the min-content width of its
+	   cells, so a row that may not break forces the column wide enough for every
+	   button.  With wrap the column stayed narrow and Hang Up / Terminate / Kill
+	   came out on two ragged lines. */
+	flex-wrap: nowrap;
+	margin: 0;
+}
+.td.cbi-section-actions .cbi-button + .cbi-button { margin-left: 0; }
+
+/* compact controls inside table rows */
+.td .cbi-button, .td .btn { min-height: 28px; padding: 3px 10px; font-size: 12.5px; }
+
+/* A row of four filled accent buttons per table row shouts; inside a table every
+   action is an outline, and only the colour of a state button carries meaning. */
+.td .cbi-button-action, .td .cbi-button-apply, .td .cbi-button-add,
+.td .cbi-button-edit, .td .cbi-button-reload, .td .btn.primary {
+	background: var(--surface);
+	border-color: var(--border-strong);
+	color: var(--text);
+}
+.td .cbi-button-action:hover, .td .cbi-button-apply:hover, .td .cbi-button-add:hover,
+.td .cbi-button-edit:hover, .td .cbi-button-reload:hover, .td .btn.primary:hover {
+	background: var(--accent-soft);
+	border-color: var(--accent);
+	color: var(--accent);
+}
+.td .cbi-dropdown { min-height: 28px; }
+
+/* Reordering a section: LuCI starts the drag only from this handle -- its dragstart
+   handler refuses any other target -- so the handle has to look like the thing to
+   grab, and a press on it must not turn into a text selection instead.  The cursor
+   is left alone: LuCI writes `cursor:move` inline. */
+.drag-handle {
+	user-select: none;
+	-webkit-user-select: none;
+	touch-action: none;
+	font-size: 15px;
+	line-height: 1;
+	color: var(--muted);
+}
+.drag-handle:hover { background: var(--surface-2); border-color: var(--muted); color: var(--text); }
+
+/* where the row would land */
+.tr.drag-over-above > .td { box-shadow: inset 0 3px 0 var(--accent); }
+.tr.drag-over-below > .td { box-shadow: inset 0 -3px 0 var(--accent); }
+
+.nowrap, .td.nowrap, .th.nowrap { white-space: nowrap; }
+.left, .td.left, .th.left { text-align: left; }
+.td.right, .th.right, td.right, th.right { text-align: right; }
+.center, .td.center, .th.center { text-align: center; }
+.top, .td.top, .th.top { vertical-align: top; }
+.middle, .td.middle, .th.middle, .table.valign-middle .td { vertical-align: middle; }
+.bottom, .td.bottom, .th.bottom { vertical-align: bottom; }
+
+/* The theme runtime puts one of these around every table (wrapTables in hh71vm.js).
+   On a desktop it is deliberately inert -- no overflow, so a dropdown opened in a
+   cell still hangs out of the table the way it always did.  The phone rules turn it
+   into the scroll box that keeps a wide table from stretching the page. */
+.hh-tablewrap { max-width: 100%; }
+
+/* The dashboard is the one place where a card is half the page wide, and two of
+   LuCI's status tables have a hard floor under their width that no amount of
+   wrapping gets past: the associated-stations list carries a nowrap interface badge
+   and a Disconnect button in every row.  Give the include's own container the scroll
+   box, rather than wrapping the table from script -- the container element survives
+   the poll (dom.content only replaces its children), a wrapper inserted around the
+   table does not, and re-inserting it on every poll makes the card jump.
+   Vertical overflow stays visible in practice: the container's height is auto, so
+   scrollHeight never exceeds clientHeight. */
+body[data-page="admin-status-overview"] #view > .cbi-section > div { overflow-x: auto; }
+
+/* Inside those cards a cell wraps between words and nowhere else.  `overflow-wrap:
+   anywhere` lets a column shrink to a single character, and a six-column table in a
+   half-width card does exactly that: the DHCPv6 list came out with the DUID and the
+   IPv6 address chopped mid-value, "72.2 Mbit/s" became four stacked fragments, and
+   even the label "Architecture" broke across two lines.  Ordinary wrapping puts the
+   floor back under every column -- the longest word in it -- and what no longer fits
+   goes into the scroll box declared just above, which is what it is there for.
+   Deliberately not global: elsewhere a card is full-page wide, there is room anyway,
+   and a floor there would push wide tables (firewall rules, routes) off the side of
+   the page, where nothing catches them.
+   This replaces a flat `min-width: 4.5em` on every cell, which was a workaround for
+   `anywhere` and widened narrow columns ("Host") for nothing. */
+body[data-page="admin-status-overview"] #view .td,
+body[data-page="admin-status-overview"] #view .th {
+	overflow-wrap: normal;
+	word-break: normal;
+}
+
+/* Headings are the one thing that must stay on one line.  They carry no data, they
+   are short, and a heading broken at its hyphen or slash ("MAC-Address",
+   "RX Rate / TX Rate") is what made the associated-stations table unreadable in a
+   half-width card.  Safe now that the card scrolls: the old reason not to do this
+   was that the table would grow out through the side of the card instead. */
+body[data-page="admin-status-overview"] #view .th { white-space: nowrap; }
+
+/* Several of LuCI's status includes put more than one heading in a single card --
+   Wireless followed by Associated Stations, the two lease lists.  Only the first is
+   the card's own title; every later one starts a new block, and the generic heading
+   rule only spaces a heading from what comes *after* it. */
+#view .cbi-section > div > h3:not(:first-child),
+#view .cbi-section > div > h4:not(:first-child) { margin-top: 26px; }
+
+/* Some views (Wireless, Routes) drop a heading and a table straight into the page
+   with no section around them; give those the same frame as everything else. */
+#view > h3 { font-size: 15.5px; margin: 22px 0 8px; }
+#view > .table {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--r);
+	box-shadow: var(--shadow-sm);
+	margin: 0 0 18px;
+}
+#view > .table > .tr:first-child > .th:first-child { border-top-left-radius: 7px; }
+#view > .table > .tr:first-child > .th:last-child { border-top-right-radius: 7px; }
+
+.assoclist .ifacebadge { display: inline-flex; flex-direction: column; align-items: center; text-align: center; }
+
+/* A "go to the full page" link under a dashboard card: its own line, aligned with the
+   card's content, and a little air above it. */
+.card-more { margin-top: 9px; font-size: 13px; }
+
+/* ============================================================== messaging */
+
+.alert-message, .notification {
+	position: relative;
+	padding: 13px 16px;
+	border: 1px solid var(--border);
+	border-left: 3px solid var(--muted);
+	border-radius: var(--r);
+	background: var(--surface);
+	margin: 0 0 16px;
+	font-size: 13.5px;
+	color: var(--text);
+}
+.alert-message h4, .notification h4 { margin: 0 0 4px; font-size: 14px; color: inherit; }
+.alert-message p:last-child, .notification p:last-child { margin-bottom: 0; }
+.alert-message > .btn, .alert-message > .cbi-button { margin-top: 10px; }
+.alert-message ul, .notification ul { margin: 6px 0 0 18px; }
+.alert-message pre, .notification pre { margin: 8px 0 0; }
+
+.alert-message.warning, .notification.warning {
+	background: var(--warn-soft); border-color: var(--warn-line); border-left-color: var(--warn); color: var(--warn);
+}
+.alert-message.error, .alert-message.danger, .notification.error, .notification.danger {
+	background: var(--err-soft); border-color: var(--err-line); border-left-color: var(--err); color: var(--err);
+}
+.alert-message.success, .notification.success {
+	background: var(--ok-soft); border-color: var(--ok-line); border-left-color: var(--ok); color: var(--ok);
+}
+.alert-message.notice, .alert-message.info, .notification.info, .notification.notice {
+	background: var(--accent-soft); border-color: var(--accent-line); border-left-color: var(--accent); color: var(--text);
+}
+
+.label {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 0 9px;
+	border-radius: var(--r-pill);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	font-size: 11.5px;
+	font-weight: 600;
+	line-height: 19px;
+	color: var(--muted);
+	white-space: nowrap;
+	text-transform: none;
+	vertical-align: middle;
+}
+.label.success { background: var(--ok-soft); color: var(--ok); border-color: var(--ok-line); }
+.label.warning { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-line); }
+.label.danger, .label.error, .label.important { background: var(--err-soft); color: var(--err); border-color: var(--err-line); }
+.label.notice, .label.info { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+a.label:hover { text-decoration: none; filter: brightness(.97); }
+
+/* status as a dot plus a word: readable without relying on colour alone */
+.dotlabel { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+.dotlabel::before {
+	content: "";
+	width: 7px; height: 7px;
+	border-radius: 50%;
+	background: currentColor;
+	flex: none;
+}
+.dotlabel.ok { color: var(--ok); }
+.dotlabel.warn { color: var(--warn); }
+.dotlabel.bad { color: var(--err); }
+.dotlabel.off { color: var(--muted); }
+
+.cbi-progressbar {
+	position: relative;
+	height: 22px;
+	min-width: 140px;
+	max-width: 420px;
+	border: 1px solid var(--border);
+	border-radius: var(--r-pill);
+	background: var(--surface-2);
+	overflow: hidden;
+}
+.cbi-progressbar > div {
+	height: 100%;
+	width: 0;
+	background: var(--accent);
+	opacity: .5;
+	transition: width .3s ease;
+}
+.cbi-progressbar::after {
+	content: attr(title);
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--text);
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+/* ------------------------------------------------------ spinners and fades */
+
+.spinning { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); }
+.spinning::before {
+	content: "";
+	width: 14px; height: 14px;
+	flex: none;
+	border: 2px solid var(--border-strong);
+	border-top-color: var(--accent);
+	border-radius: 50%;
+	animation: hh-spin .7s linear infinite;
+}
+@keyframes hh-spin { to { transform: rotate(360deg); } }
+
+/* No animation on .fade-in, deliberately.  Both the status dashboard and the modem
+   pages rebuild their sections from scratch on every poll, so an entry animation
+   does not play once -- it replays every few seconds, and a 3px slide under a
+   cursor that is not moving reads as the page trembling.  The class stays because
+   LuCI sets it; it simply does nothing. */
+@keyframes hh-rise { from { transform: translateY(3px); } to { transform: none; } }
+.fade-out { opacity: 0; transition: opacity .25s; }
+
+.flash { animation: hh-flash 1s ease-out; }
+@keyframes hh-flash { 0%, 100% { background: transparent; } 25% { background: var(--accent-soft); } }
+
+/* ================================================================= modals */
+
+#modal_overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 900;
+	background: rgba(10, 14, 22, .55);
+	overflow-y: auto;
+	padding: 48px 16px;
+	visibility: hidden;
+	opacity: 0;
+	transition: opacity .12s ease-in;
+}
+body.modal-overlay-active { overflow: hidden; height: 100vh; }
+body.modal-overlay-active #modal_overlay { visibility: visible; opacity: 1; }
+
+.modal, #modal_overlay > .modal {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	width: 92%;
+	max-width: 640px;
+	min-width: 280px;
+	margin: 0 auto;
+	background: var(--surface);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--r-lg);
+	box-shadow: var(--shadow-lg);
+	padding: 22px 24px;
+}
+#modal_overlay > .modal.uci-dialog, #modal_overlay > .modal.cbi-modal { max-width: 900px; }
+.modal > * { flex-basis: 100%; max-width: 100%; margin-bottom: 12px; }
+.modal > *:last-child { margin-bottom: 0; }
+.modal > h4, .modal > h3 { margin-top: 0; font-size: 17px; }
+.modal > pre, .modal > textarea { overflow: auto; white-space: pre-wrap; max-height: 50vh; }
+.modal .cbi-page-actions { margin-top: 6px; }
+.modal .cbi-value { grid-template-columns: 170px minmax(0, 1fr); }
+.modal .cbi-value:first-of-type { padding-top: 0; }
+
+#applyreboot-section { text-align: center; padding: 24px 0; line-height: 2; }
+body.apply-overlay-active { overflow: hidden; }
+
+/* --------------------------------------------------------------- tooltips */
+
+/* LuCI contract.  Two kinds share the class: one global div that ui.js positions
+   with inline styles (hidden by opacity plus an offscreen position, because that is
+   all ui.js resets), and per-element ones inside .cbi-tooltip-container (hidden by
+   visibility, because those carry an inline `left` that beats the offscreen trick,
+   and some of them also carry .ifacebadge, which would beat a `display` rule). */
+.cbi-tooltip-container { position: relative; cursor: help; }
+.cbi-tooltip {
+	position: absolute;
+	z-index: 1200;
+	left: -10000px; top: -10000px;
+	max-width: 460px;
+	opacity: 0;
+	background: var(--surface);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	box-shadow: var(--shadow-lg);
+	font-size: 12.5px;
+	font-weight: 400;
+	line-height: 1.5;
+	white-space: pre;
+	padding: 8px 11px;
+	pointer-events: none;
+	transition: opacity .15s ease-in;
+}
+.cbi-tooltip-container > .cbi-tooltip { visibility: hidden; }
+.cbi-tooltip-container:hover > .cbi-tooltip:not(:empty) { visibility: visible; left: auto; opacity: 1; }
+.cbi-tooltip ul { list-style: none; margin: 0; padding: 0; }
+.cbi-tooltip ul li { white-space: nowrap; }
+.cbi-tooltip.error { background: var(--err); color: #fff; border-color: var(--err); }
+.cbi-tooltip.success { background: var(--ok); color: #fff; border-color: var(--ok); }
+.cbi-tooltip.info, .cbi-tooltip.notice { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+div.cbi-value var.cbi-tooltip-container, .td.cbi-value-field var.cbi-tooltip-container,
+div.cbi-value var[data-tooltip], .td.cbi-value-field var[data-tooltip] {
+	cursor: help;
+	border-bottom: 1px dotted var(--accent);
+}
+.zonebadge .cbi-tooltip { margin: 0; }
+
+/* ================================================== network page widgets */
+
+.ifacebox {
+	display: inline-flex;
+	flex-direction: column;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--r);
+	overflow: hidden;
+	/* The boxes sit one under another in the interface list, where two of them at
+	   different widths read as a mistake rather than as content.  Wide enough for the
+	   heading plus its dot and for a row of device icons; anything longer still
+	   grows. */
+	min-width: 155px;
+	margin: 0;
+	text-align: center;
+	font-size: 12.5px;
+	line-height: 1.35;
+}
+.ifacebox-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 11px;
+	background: var(--surface-2);
+	border-bottom: 1px solid var(--border);
+	font-weight: 600;
+	font-size: 11.5px;
+	letter-spacing: .045em;
+	text-transform: uppercase;
+	color: var(--text);
+	text-align: left;
+}
+.ifacebox-head.active { background: var(--accent-soft); color: var(--accent); }
+
+/* The device icons in an interface box sit in a line of 12.5px text, part of it
+   inside literal parentheses that LuCI writes around the bridge members.  At the
+   general 18px they overpowered the brackets they stand in; a size just above the
+   text, with room to breathe between them, reads as a row of small marks. */
+.ifacebox-body .cbi-tooltip-container > img,
+.ifacebox-body > img {
+	width: 14px;
+	height: 14px;
+	margin: 0 3px;
+	vertical-align: -2px;
+}
+.ifacebox-body .cbi-tooltip img { margin: 0; }
+
+/* LuCI marks firewall-zone membership by writing a pastel straight onto the element
+   as an inline background-color -- mint green, salmon red.  That was picked for a
+   white page with black text; here it is white on mint, and in the dark theme it is
+   a glaring block of colour with unreadable text on it.
+   The colour is real information, so it is kept -- the theme runtime lifts it into a
+   dot (zoneDots in hh71vm.js) and the chip itself goes back to a normal surface.
+   The rule below matches on the inline style so the pastel is gone from the first
+   paint, before the script gets there; the script still reads element.style. */
+.ifacebox-head[style*="background-color"],
+.zonebadge[style*="background-color"] {
+	background-color: var(--surface-2) !important;
+	color: var(--text);
+}
+.zonebadge[style*="background-color"] {
+	border: 1px solid var(--border);
+}
+.zdot {
+	display: inline-block;
+	flex: none;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .22);
+}
+.ifacebox-head > .zdot { margin-left: auto; }
+.zonebadge > .zdot { margin-right: 1px; }
+.ifacebox-body { padding: 10px 12px; text-align: left; }
+.network-status-table { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+
+.network-status-table .ifacebox { margin: 0; }
+.network-status-table .ifacebox-body { display: flex; flex-direction: column; gap: 3px; height: 100%; }
+.network-status-table .ifacebox-body > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.network-status-table .ifacebox-body .ifacebadge { flex: 1 1 200px; min-width: 0; }
+
+.ifacebadge {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	margin: 0;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	font-size: 12.5px;
+	white-space: nowrap;
+	line-height: 1.4;
+	vertical-align: middle;
+}
+.ifacebadge.large { display: inline-flex; min-width: 220px; }
+
+/* Wireless overview stacks the radio chip and the signal chip in one column, where
+   they differ only by the width of their text -- which reads as two chips of
+   different size.  A shared minimum lines their edges up. */
+#view .td.cbi-value-field > .center > .ifacebadge,
+#view .td.cbi-value-field > .ifacebadge { min-width: 6.8em; }
+.ifacebadge > img, .ifacebadge img { width: 16px; height: 16px; flex: none; }
+.ifacebadge > span { overflow: hidden; text-overflow: ellipsis; }
+.ifacebadge-active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+.zonebadge {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	flex-wrap: wrap;
+	padding: 3px 8px;
+	border-radius: var(--r-sm);
+	font-size: 12.5px;
+	color: var(--text);
+	white-space: nowrap;
+}
+.zonebadge > em, .zonebadge > strong { font-style: normal; }
+.zonebadge input { width: 7em; }
+.zonebadge-empty { border: 1px dashed var(--border-strong); color: var(--muted); font-style: italic; }
+.zone-forwards { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.zone-forwards > * { flex: 1 1 40%; }
+.zone-forwards > span { flex-basis: 8%; text-align: center; color: var(--muted); }
+.zone-forwards .zone-src, .zone-forwards .zone-dest { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+
+/* ------------------------------------------------ LuCI device icons */
+/* LuCI draws interfaces and radios with 16px bitmaps that predate every other
+   pixel on the page.  `content` on an <img> swaps what the browser paints without
+   touching the markup LuCI generates: the src stays what it was, the drawing
+   becomes a line icon in the same family as the rest of the theme.  Two sets,
+   because a data: URI cannot take currentColor.
+   Not scoped to #maincontent: ui.js hangs its modals off <body>, and the same
+   badges appear inside them.
+   Every space inside these URIs is written as %20 on purpose: csstidy strips
+   whitespace inside a quoted url(), which welds `viewBox='0 0 24 24'` into
+   `viewBox='002424'` and runs the path commands together.  With no literal spaces
+   there is nothing for it to strip, and the browser decodes them back. */
+img[src*="/luci-static/resources/icons/"] {
+	width: 18px;
+	height: 18px;
+	vertical-align: middle;
+}
+.ifacebadge > img, .ifacebadge img { width: 16px; height: 16px; }
+img[src$="/icons/ethernet.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%234a5567'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+img[src$="/icons/bridge.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%234a5567'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='1.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><rect%20x='15.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><path%20d='M8.5%2012.25h7'/></svg>"); }
+img[src$="/icons/wifi.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%234a5567'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M5%2012.55a11%2011%200%200%201%2014.08%200'/><path%20d='M1.42%209a16%2016%200%200%201%2021.16%200'/><path%20d='M8.53%2016.11a6%206%200%200%201%206.95%200'/><path%20d='M12%2020h.01'/></svg>"); }
+img[src$="/icons/switch.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%234a5567'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='2'%20y='6.5'%20width='20'%20height='11'%20rx='2'/><path%20d='M6%2012h.01M10%2012h.01M14%2012h.01M18%2012h.01'/></svg>"); }
+img[src$="/icons/vlan.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%234a5567'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M12%202.5%202.5%207%2012%2011.5%2021.5%207%2012%202.5z'/><path%20d='M2.5%2016.5%2012%2021l9.5-4.5'/><path%20d='M2.5%2011.75%2012%2016.25l9.5-4.5'/></svg>"); }
+img[src$="/icons/tunnel.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%234a5567'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M3.5%2020.5v-7.5a8.5%208.5%200%200%201%2017%200v7.5'/><path%20d='M9%2020.5v-7.5a3%203%200%200%201%206%200v7.5'/></svg>"); }
+img[src$="/icons/alias.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%234a5567'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M14.5%206.5H18a5.5%205.5%200%200%201%200%2011h-3.5'/><path%20d='M9.5%2017.5H6a5.5%205.5%200%200%201%200-11h3.5'/><path%20d='M8%2012h8'/></svg>"); }
+img[src$="/icons/port_up.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%232b8a3e'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+img[src$="/icons/port_down.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+img[src$="/icons/ethernet_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+img[src$="/icons/bridge_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='1.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><rect%20x='15.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><path%20d='M8.5%2012.25h7'/></svg>"); }
+img[src$="/icons/wifi_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M5%2012.55a11%2011%200%200%201%2014.08%200'/><path%20d='M1.42%209a16%2016%200%200%201%2021.16%200'/><path%20d='M8.53%2016.11a6%206%200%200%201%206.95%200'/><path%20d='M12%2020h.01'/></svg>"); }
+img[src$="/icons/switch_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='2'%20y='6.5'%20width='20'%20height='11'%20rx='2'/><path%20d='M6%2012h.01M10%2012h.01M14%2012h.01M18%2012h.01'/></svg>"); }
+img[src$="/icons/vlan_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M12%202.5%202.5%207%2012%2011.5%2021.5%207%2012%202.5z'/><path%20d='M2.5%2016.5%2012%2021l9.5-4.5'/><path%20d='M2.5%2011.75%2012%2016.25l9.5-4.5'/></svg>"); }
+img[src$="/icons/tunnel_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M3.5%2020.5v-7.5a8.5%208.5%200%200%201%2017%200v7.5'/><path%20d='M9%2020.5v-7.5a3%203%200%200%201%206%200v7.5'/></svg>"); }
+img[src$="/icons/alias_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a3acba'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M14.5%206.5H18a5.5%205.5%200%200%201%200%2011h-3.5'/><path%20d='M9.5%2017.5H6a5.5%205.5%200%200%201%200-11h3.5'/><path%20d='M8%2012h8'/></svg>"); }
+img[src$="/icons/signal-0.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%23d5dbe4'/></svg>"); }
+img[src$="/icons/signal-0-25.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%234a5567'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%23d5dbe4'/></svg>"); }
+img[src$="/icons/signal-25-50.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%234a5567'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%234a5567'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%23d5dbe4'/></svg>"); }
+img[src$="/icons/signal-50-75.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%234a5567'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%234a5567'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%234a5567'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%23d5dbe4'/></svg>"); }
+img[src$="/icons/signal-75-100.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%234a5567'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%234a5567'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%234a5567'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%234a5567'/></svg>"); }
+img[src$="/icons/signal-none.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%23d5dbe4'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%23d5dbe4'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/ethernet.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a7b1c0'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/bridge.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a7b1c0'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='1.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><rect%20x='15.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><path%20d='M8.5%2012.25h7'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/wifi.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a7b1c0'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M5%2012.55a11%2011%200%200%201%2014.08%200'/><path%20d='M1.42%209a16%2016%200%200%201%2021.16%200'/><path%20d='M8.53%2016.11a6%206%200%200%201%206.95%200'/><path%20d='M12%2020h.01'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/switch.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a7b1c0'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='2'%20y='6.5'%20width='20'%20height='11'%20rx='2'/><path%20d='M6%2012h.01M10%2012h.01M14%2012h.01M18%2012h.01'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/vlan.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a7b1c0'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M12%202.5%202.5%207%2012%2011.5%2021.5%207%2012%202.5z'/><path%20d='M2.5%2016.5%2012%2021l9.5-4.5'/><path%20d='M2.5%2011.75%2012%2016.25l9.5-4.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/tunnel.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a7b1c0'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M3.5%2020.5v-7.5a8.5%208.5%200%200%201%2017%200v7.5'/><path%20d='M9%2020.5v-7.5a3%203%200%200%201%206%200v7.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/alias.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23a7b1c0'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M14.5%206.5H18a5.5%205.5%200%200%201%200%2011h-3.5'/><path%20d='M9.5%2017.5H6a5.5%205.5%200%200%201%200-11h3.5'/><path%20d='M8%2012h8'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/port_up.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235fd67f'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/port_down.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/ethernet_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='3'%20y='8.5'%20width='18'%20height='11'%20rx='2'/><path%20d='M7.5%208.5V4.5M12%208.5V4.5M16.5%208.5V4.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/bridge_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='1.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><rect%20x='15.5'%20y='9'%20width='7'%20height='6.5'%20rx='1.5'/><path%20d='M8.5%2012.25h7'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/wifi_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M5%2012.55a11%2011%200%200%201%2014.08%200'/><path%20d='M1.42%209a16%2016%200%200%201%2021.16%200'/><path%20d='M8.53%2016.11a6%206%200%200%201%206.95%200'/><path%20d='M12%2020h.01'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/switch_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><rect%20x='2'%20y='6.5'%20width='20'%20height='11'%20rx='2'/><path%20d='M6%2012h.01M10%2012h.01M14%2012h.01M18%2012h.01'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/vlan_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M12%202.5%202.5%207%2012%2011.5%2021.5%207%2012%202.5z'/><path%20d='M2.5%2016.5%2012%2021l9.5-4.5'/><path%20d='M2.5%2011.75%2012%2016.25l9.5-4.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/tunnel_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M3.5%2020.5v-7.5a8.5%208.5%200%200%201%2017%200v7.5'/><path%20d='M9%2020.5v-7.5a3%203%200%200%201%206%200v7.5'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/alias_disabled.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%235c6675'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'><path%20d='M14.5%206.5H18a5.5%205.5%200%200%201%200%2011h-3.5'/><path%20d='M9.5%2017.5H6a5.5%205.5%200%200%201%200-11h3.5'/><path%20d='M8%2012h8'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/signal-0.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%2339424f'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%2339424f'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%2339424f'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%2339424f'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/signal-0-25.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%2339424f'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%2339424f'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%2339424f'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/signal-25-50.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%2339424f'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%2339424f'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/signal-50-75.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%2339424f'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/signal-75-100.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%23a7b1c0'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%23a7b1c0'/></svg>"); }
+:root[data-theme="dark"] img[src$="/icons/signal-none.png"] { content: url("data:image/svg+xml,<svg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'><rect%20x='2.0'%20y='16.0'%20width='3.6'%20height='5.0'%20rx='1.2'%20fill='%2339424f'/><rect%20x='7.4'%20y='11.5'%20width='3.6'%20height='9.5'%20rx='1.2'%20fill='%2339424f'/><rect%20x='12.8'%20y='7.0'%20width='3.6'%20height='14.0'%20rx='1.2'%20fill='%2339424f'/><rect%20x='18.200000000000003'%20y='2.5'%20width='3.6'%20height='18.5'%20rx='1.2'%20fill='%2339424f'/></svg>"); }
+
+/* ---------------------------------------------------- unsaved changes list */
+
+.uci-change-list { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
+.uci-change-list ins, .uci-change-list del, .uci-change-list var,
+.uci-change-legend-label ins, .uci-change-legend-label del, .uci-change-legend-label var {
+	display: block;
+	text-decoration: none;
+	font-style: normal;
+	border: 1px solid var(--border);
+	border-radius: var(--r-xs);
+	padding: 3px 8px;
+	margin-bottom: 2px;
+}
+.uci-change-list ins, .uci-change-legend-label ins { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
+.uci-change-list del, .uci-change-legend-label del { background: var(--err-soft); border-color: var(--err-line); color: var(--err); }
+.uci-change-list var, .uci-change-legend-label var { background: var(--surface-2); color: var(--muted); }
+.uci-change-list var ins, .uci-change-list var del { display: inline-block; border: 0; padding: 0; width: 100%; }
+.uci-change-legend { display: flex; flex-wrap: wrap; gap: 18px; padding: 6px 0 12px; }
+.uci-change-legend-label { display: flex; align-items: center; gap: 7px; font-size: 12.5px; width: auto; float: none; }
+.uci-change-legend-label > ins, .uci-change-legend-label > del, .uci-change-legend-label > var {
+	width: 14px; height: 14px; padding: 0; margin: 0; border-radius: 3px;
+}
+
+/* ================================================== LuCI contract: panels */
+
+/* Tab panes.  ui.js flips data-tab-active; without these every pane of every tab
+   group renders at once, stacked, and the tab bar appears to do nothing. */
+[data-tab-title] { display: none; }
+[data-tab-active="true"] { display: block; }
+.cbi-tabcontainer > fieldset.cbi-section[id] > legend { display: none; }
+.tab-content > .tab-pane, .tab-content > div { display: none; }
+.tab-content > .active { display: block; }
+
+.cbi-filebrowser {
+	display: flex;
+	flex-direction: column;
+	min-width: 210px;
+	max-width: 520px;
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	opacity: 0;
+	height: 0;
+	overflow: hidden;
+}
+.cbi-filebrowser.open { opacity: 1; height: auto; overflow: visible; }
+.cbi-filebrowser > * { border-bottom: 1px solid var(--border); padding: 6px 8px; }
+.cbi-filebrowser > div:last-child { border-bottom: 0; }
+.cbi-filebrowser ul { list-style: none; margin: 0; padding: 0; }
+.cbi-filebrowser > ul > li { display: flex; gap: 8px; padding: 4px 8px; }
+.cbi-filebrowser > ul > li:hover { background: var(--surface-2); }
+.cbi-filebrowser > ul > li > div:first-child { flex: 10; overflow: hidden; text-overflow: ellipsis; }
+.cbi-filebrowser > ul > li > div:last-child { flex: none; text-align: right; }
+.cbi-filebrowser .upload { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cbi-filebrowser .upload > div { flex: 10; min-width: 150px; }
+
+/* The realtime graph pages build their frame with an inline style, so the dark
+   theme can only reach it through the attribute and !important. */
+[style*="border:1px solid #000;background:#fff"] {
+	background: var(--surface-2) !important;
+	border: 1px solid var(--border) !important;
+	border-radius: var(--r-sm) !important;
+}
+:root[data-theme="dark"] [style*="border:1px solid #000;background:#fff"] svg line[style*="stroke:black"] {
+	stroke: #8a95a6 !important;
+	stroke-width: .35 !important;
+}
+[style*="border:1px solid #000;background:#fff"] + .right { margin-bottom: 10px !important; }
+
+/* readonly log dumps */
+#syslog, #dsl_status_table { width: 100%; }
+#syslog {
+	font-family: var(--mono);
+	font-size: 12px;
+	line-height: 1.5;
+	min-height: 420px;
+	max-width: none;
+	background: var(--surface-2);
+	white-space: pre;
+}
+
+/* ============================================================= utilities */
+
+.hidden, [hidden] { display: none !important; }
+.inline { display: inline-block; }
+.pull-left { float: left; }
+.pull-right { float: right; }
+.clearfix::after { content: ""; display: table; clear: both; }
+.breadcrumb { list-style: none; display: flex; gap: 8px; margin: 0 0 14px; padding: 0; font-size: 12.5px; color: var(--muted); }
+.close {
+	cursor: pointer;
+	font-size: 18px;
+	line-height: 1;
+	color: var(--muted);
+	background: none;
+	border: 0;
+	min-height: 0;
+	padding: 2px 6px;
+}
+.close:hover { color: var(--text); background: var(--surface-2); }
+.divider { color: var(--border-strong); }
+.cbi-title-ref { color: var(--accent); }
+.cbi-title-ref::after { content: " \279E"; }
+.large { font-size: 15px; }
+.small { font-size: 12.5px; }
+.secondary-nav, .secondary-action { color: var(--muted); }
+.upload { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* The firewall status view injects its own <style> after ours with
+   `border-bottom:1px dotted #00f` on every jump target -- pure blue, and the
+   loudest thing on a page of grey figures.  An id in the selector is what it takes
+   to outrank a stylesheet that comes later in the document. */
+#maincontent span.jump, span.jump {
+	color: var(--text-2);
+	border-bottom: 1px dotted var(--border-strong);
+	cursor: pointer;
+}
+#maincontent span.jump:hover {
+	color: var(--accent);
+	border-bottom-color: var(--accent);
+}
+/* Same view underlines its tooltip anchors in blue.  Only the colour is set here,
+   so anchors that carry no border keep none. */
+#maincontent .cbi-tooltip-container { border-bottom-color: var(--border-strong); }
+
+/* copy-to-clipboard, attached by the theme runtime to values worth copying */
+.copyable { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.copyable > span:first-child { overflow-wrap: break-word; min-width: 0; }
+.copy-btn {
+	border: 0;
+	background: none;
+	color: var(--faint);
+	cursor: pointer;
+	padding: 2px;
+	min-height: 0;
+	border-radius: var(--r-xs);
+	line-height: 0;
+	opacity: 0;
+	transition: opacity .12s, color .12s, background .12s;
+}
+.copy-btn svg { width: 13px; height: 13px; }
+.copyable:hover .copy-btn, .copy-btn:focus-visible, .tr:hover .copy-btn { opacity: 1; }
+.copy-btn:hover { background: var(--surface-2); color: var(--accent); }
+.copy-btn.done { opacity: 1; color: var(--ok); }
+
+.toast {
+	position: fixed;
+	right: 20px; bottom: 20px;
+	z-index: 1500;
+	background: var(--text);
+	color: var(--bg);
+	border-radius: var(--r);
+	padding: 10px 16px;
+	font-size: 13px;
+	font-weight: 500;
+	box-shadow: var(--shadow-lg);
+	animation: hh-rise .18s ease-out;
+}
+
+/* ==================================================== modem app widgets */
+
+/* Column widths for the modem tables.  These used to be inline `width:` attributes,
+   which no media query can reach: on a 390px screen the fixed 70px index and 245px
+   action columns took two thirds of the table and left the APN and the contact name
+   sharing about 60px between them.
+   `width: 1%` is the table-layout way of saying "no wider than your contents": the
+   browser hands the column its min-content width and gives everything left over to
+   the columns that carry the text worth reading.  It costs nothing on a desktop --
+   the buttons stand in a row and the column is exactly as wide as they are -- and on
+   a phone, where the phone rules stack those buttons, it shrinks to one button. */
+.mcol-idx, .mcol-sm, .mcol-act { width: 1%; white-space: nowrap; }
+
+/* headline numbers at the top of the modem overview */
+.mtiles {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 14px;
+	margin: 0 0 18px;
+}
+.mtile {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--r-lg);
+	box-shadow: var(--shadow-sm);
+	padding: 14px 16px;
+	min-width: 0;
+}
+.mtile-cap {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+	color: var(--muted);
+	margin-bottom: 7px;
+}
+.mtile-val {
+	font-size: 19px;
+	font-weight: 600;
+	line-height: 1.25;
+	letter-spacing: -.015em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.mtile-sub { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 1.3em; }
+.mtile-sig { display: inline-flex; align-items: center; gap: 10px; }
+.mtile .bars { height: 15px; }
+.mtile .bars i:nth-child(1) { height: 5px; }
+.mtile .bars i:nth-child(2) { height: 7.5px; }
+.mtile .bars i:nth-child(3) { height: 10px; }
+.mtile .bars i:nth-child(4) { height: 12.5px; }
+.mtile .bars i:nth-child(5) { height: 15px; }
+
+.mactions { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 0; }
+.mactions + .facts, .mactions + .table { margin-top: 16px; }
+.mactions .cbi-button + .cbi-button { margin-left: 0; }
+.cbi-section > .mactions:not(:first-child) { margin-top: 14px; }
+
+/* key/value fact tables: two columns of pairs, hairline rows, no boxes */
+/* auto-fill, not auto-fit: with auto-fit a section holding a single pair collapses
+   the empty tracks and the one row stretches across the whole card, which puts its
+   value about a third of the way in and looks broken next to the other sections */
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); column-gap: 36px; }
+.facts > .fact {
+	display: grid;
+	grid-template-columns: minmax(110px, 45%) minmax(0, 1fr);
+	column-gap: 16px;
+	align-items: baseline;
+	padding: 7px 0;
+	border-bottom: 1px solid var(--border);
+	font-size: 13px;
+}
+.facts > .fact:last-child { border-bottom: 0; }
+.fact-k { color: var(--muted); }
+.fact-v { color: var(--text); font-weight: 500; overflow-wrap: break-word; min-width: 0; }
+.fact-v.mono { font-family: var(--mono); font-size: 12.5px; font-weight: 400; }
+.fact-v .label { font-weight: 600; }
+
+/* message list */
+.msg {
+	border: 1px solid var(--border);
+	border-radius: var(--r);
+	background: var(--surface);
+	padding: 12px 14px;
+	margin-bottom: 10px;
+	transition: border-color .12s;
+}
+.msg:hover { border-color: var(--border-strong); }
+.msg.unread { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+.msg-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 7px; }
+.msg-from { font-weight: 600; font-size: 13.5px; }
+.msg-time { color: var(--muted); font-size: 12px; }
+.msg-body { white-space: pre-wrap; overflow-wrap: break-word; font-size: 13.5px; line-height: 1.55; }
+/* Row actions stay present but quiet -- hiding them outright loses them for keyboard
+   users, and a full-strength button on every message is noise. */
+.msg-acts { display: flex; gap: 6px; margin-left: auto; }
+.msg-acts .cbi-button {
+	min-height: 26px;
+	padding: 2px 9px;
+	font-size: 12px;
+	margin-left: 0 !important;
+	background: none;
+	border-color: transparent;
+	color: var(--muted);
+}
+.msg:hover .msg-acts .cbi-button, .msg-acts .cbi-button:focus-visible { border-color: var(--border); color: var(--text-2); }
+.msg-acts .cbi-button:hover { background: var(--surface-2); border-color: var(--border-strong); color: var(--text); }
+.msg-acts .cbi-button-negative:hover { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+
+/* AT console.  One frame holding a title bar, the log, and the line you type on --
+   the log and the prompt belong together, the way they do in a terminal. */
+.at-term {
+	display: flex;
+	flex-direction: column;
+	margin: 14px 0 10px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--r);
+	background: var(--surface-2);
+	overflow: hidden;
+}
+.at-term:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
+
+.at-bar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px 6px 12px;
+	background: var(--surface-3);
+	border-bottom: 1px solid var(--border);
+}
+.at-title {
+	flex: 1 1 auto;
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+.at-bar .cbi-button {
+	min-height: 24px;
+	padding: 1px 9px;
+	font-size: 12px;
+	margin-left: 0 !important;
+	background: none;
+	border-color: transparent;
+	color: var(--muted);
+}
+.at-bar .cbi-button:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+
+.at-out {
+	font-family: var(--mono);
+	font-size: 12.5px;
+	line-height: 1.55;
+	white-space: pre-wrap;
+	word-break: break-word;
+	background: none;
+	border: 0;
+	padding: 12px 14px;
+	min-height: 260px;
+	max-height: 46vh;
+	overflow: auto;
+	margin: 0;
+	flex: 1 1 auto;
+}
+.at-out .cmd { color: var(--accent); font-weight: 600; }
+.at-out .err { color: var(--err); }
+.at-out .ok { color: var(--ok); }
+.at-out .at-hint { color: var(--faint); }
+.at-out .spinning { font-family: var(--sans); }
+
+.at-line {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px 5px 12px;
+	border-top: 1px solid var(--border);
+	background: var(--surface);
+	cursor: text;
+}
+.at-prompt { color: var(--accent); font-family: var(--mono); font-weight: 700; flex: none; }
+input.at-cmd, .at-line input[type="text"] {
+	flex: 1 1 auto;
+	min-width: 0;
+	max-width: none;
+	min-height: 30px;
+	padding: 2px 0;
+	border: 0;
+	background: none;
+	font-family: var(--mono);
+	font-size: 12.5px;
+}
+input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: none; outline: 0; }
+.at-line .cbi-button { flex: none; min-height: 26px; padding: 2px 12px; font-size: 12.5px; }
+
+.at-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.at-presets .cbi-button { font-family: var(--mono); font-size: 12px; margin-left: 0 !important; }
+
+/* ============================================ narrow desktop and tablets */
+
+@media (max-width: 1180px) {
+	.cbi-value { grid-template-columns: 200px minmax(0, 1fr); }
+}
+@media (max-width: 980px) {
+	:root { --sidebar-w: 210px; }
+	#maincontent { padding-left: 18px; padding-right: 18px; }
+	.cbi-value { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+	.cbi-value-title { grid-column: 1; padding-top: 0; }
+	.cbi-value-field { grid-column: 1; }
+	.facts { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ======================================================== phones: drawer */
+
+/* Below 720px a fixed sidebar leaves nothing for the content, so the navigation
+   becomes an off-canvas drawer opened from a button in the top bar.  The button and
+   the scrim exist in the markup at every width and are hidden here by default, so a
+   desktop layout is not touched by any of this.
+   Note the trade this closes: `width=device-width` in header.htm is what stops a
+   phone from laying the page out at 980px and zooming out, and it only became safe
+   once the sidebar stopped occupying 250px of a 390px screen. */
+
+#nav-toggle, #nav-scrim { display: none; }
+
+@media (max-width: 720px) {
+	:root { --sidebar-w: 268px; }
+
+	#nav-toggle {
+		display: inline-flex;
+		flex: none;
+	}
+
+	#sidebar {
+		transform: translateX(-100%);
+		transition: transform .18s ease-out;
+		will-change: transform;
+	}
+	body.nav-open #sidebar {
+		transform: translateX(0);
+		box-shadow: var(--shadow-lg);
+	}
+
+	#nav-scrim {
+		display: block;
+		position: fixed;
+		inset: 0;
+		z-index: 58;             /* over the top bar (55), under the drawer (60) */
+		background: rgba(10, 14, 22, .5);
+		opacity: 0;
+		visibility: hidden;
+		transition: opacity .18s ease-out;
+	}
+	body.nav-open #nav-scrim { opacity: 1; visibility: visible; }
+	/* The drawer scrolls; the page behind it must not. */
+	body.nav-open { overflow: hidden; }
+
+	#topbar {
+		left: 0;
+		padding: 0 8px;
+		gap: 6px;
+	}
+	#maincontent {
+		margin-left: 0;
+		padding-left: 12px;
+		padding-right: 12px;
+		padding-top: calc(var(--topbar-h) + 16px);
+	}
+	footer {
+		margin-left: 0;
+		padding: 16px 12px 24px;
+		max-width: none;
+	}
+
+	/* The top bar fits the signal, the operator and the theme switch, and that is
+	   all -- on a 390px screen the strip ran the IP and the SMS counter off the edge
+	   and left them only reachable by dragging a bar that does not look draggable.
+	   Everything past the operator moves into the drawer, where it is a column with
+	   room for its labels.  The strip keeps its scroll box for the one case that has
+	   to stay visible in the bar: the warning pill that replaces all of it when the
+	   modem channel is down is wider than what is left over. */
+	.mstrip {
+		overflow-x: auto;
+		overflow-y: hidden;
+		-webkit-overflow-scrolling: touch;
+		scrollbar-width: none;
+	}
+	.mstrip::-webkit-scrollbar { display: none; }
+	.mstrip .mi-k { display: none; }   /* uppercase key labels are the first to go */
+	.mstrip > .mi:not(.mi-sig):not(.mi-net):not(.warnpill),
+	.mstrip > .sep { display: none; }
+
+	#modem-drawer:not(:empty) { display: block; }
+	/* The 34px key column was sized for word labels ("Band", "IP"); the traffic row
+	   uses single arrows, and reserving a word's width for "↓" pushed its value off
+	   to the middle of the row. */
+	#modem-drawer .mi-k {
+		min-width: 6px;
+		font-size: 13px;
+	}
+
+	/* --------------------------------------------------------- touch targets */
+
+	.sb-nav a, .sb-foot a {
+		min-height: 44px;
+		display: flex;
+		align-items: center;
+	}
+	/* ...but `.sb-items li > a` declares `display: block` at a higher specificity
+	   (0,2,1 against 0,1,1), so on a phone only the 44px min-height applied and the
+	   flex centring did not: the label stayed at the top of the taller box while the
+	   dot, positioned at 50% of it, sat 7px below the text.  Measured on the stand:
+	   text centre 15px, dot centre 22px.  Match the specificity instead of raising
+	   the generic rule, which would also catch the brand and the mode menu. */
+	.sb-nav .sb-items li > a {
+		display: flex;
+		align-items: center;
+	}
+	/* Optical centring, by eye on the device: the geometric middle still read as a
+	   touch high against the text. */
+	.sb-nav .sb-items li > a::before { top: 53%; }
+	.icon-btn, .cbi-button, .btn, button {
+		min-height: 38px;
+	}
+	/* Below 980px a form row is already one column, but the field kept the intrinsic
+	   width of a text input -- about twenty characters -- so a full-width label sat
+	   over a field using a third of the row, and in a modal it looked like the dialog
+	   had failed to lay itself out.  By type: a checkbox stretched across the row is
+	   a bar, not a control. */
+	.cbi-value-field > input[type="text"], .cbi-value-field > input[type="password"],
+	.cbi-value-field > input[type="search"], .cbi-value-field > input[type="number"],
+	.cbi-value-field > input:not([type]), .cbi-value-field > select,
+	.cbi-value-field > textarea, .cbi-value-field > .cbi-dropdown:not(.cbi-button),
+	.cbi-value-field > .cbi-dynlist { width: 100%; max-width: none; }
+
+	/* iOS zooms the whole page in when a focused field is under 16px. */
+	input[type="text"], input[type="password"], input[type="search"],
+	input[type="number"], input:not([type]), select, textarea {
+		font-size: 16px;
+	}
+
+	/* ------------------------------------------------------------- tabs */
+
+	/* Wrapped, the five DHCP tabs came out as three ragged rows and the page lost
+	   its heading line.  One row that scrolls sideways keeps the tab strip a strip:
+	   the active tab is always visible because it is the one the page scrolls to,
+	   and the underline still reads as a single edge under the row. */
+	#tabmenu ul.tabs, .cbi-tabmenu {
+		flex-wrap: nowrap;
+		overflow-x: auto;
+		overflow-y: hidden;
+		-webkit-overflow-scrolling: touch;
+		scrollbar-width: none;
+	}
+	#tabmenu ul.tabs::-webkit-scrollbar, .cbi-tabmenu::-webkit-scrollbar { display: none; }
+	#tabmenu ul.tabs > li, .cbi-tabmenu > li { flex: none; }
+	#tabmenu ul.tabs > li > a, .cbi-tabmenu > li > a {
+		padding: 8px 10px;
+		font-size: 12.5px;
+	}
+
+	/* ------------------------------------------------------- wide content */
+
+	/* A table never gets narrower than its widest cell, so on a phone it has to be
+	   allowed to scroll rather than push the page sideways.  The scroll box is the
+	   `.hh-tablewrap` the theme runtime puts around every table (see wrapTables in
+	   hh71vm.js); these two keep the cards themselves from being pushed open by
+	   anything else wide, and catch a table on a page the runtime has not reached
+	   yet. */
+	.cbi-section, .cbi-map, .panel {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+	.hh-tablewrap {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+	/* Room for the columns rather than the tightest possible fit: these tables scroll
+	   sideways anyway, so squeezing "none" or "IPv4-Netmask" into 42px buys nothing
+	   and only makes them harder to read.  Applies to the editable section tables
+	   (Interfaces, Static Routes, Firewall zones) and to the modem tables. */
+	.cbi-section-table > .tr > .th, .cbi-section-table > .tr > .td { min-width: 84px; }
+	.mcol-idx { min-width: 52px; }
+	.mcol-sm { min-width: 78px; }
+
+	/* The realtime graph pages lay their readings out as a table of label/value pairs;
+	   on a phone the pairs read better centred as one row than aligned to a grid
+	   sized by the widest label. */
+	body[data-page^="admin-status-realtime"] .tr {
+		display: flex;
+		justify-content: center;
+	}
+
+	/* luci-app-opkg separates its action buttons with literal `&#160;` text nodes, and
+	   a non-breaking space glues the buttons into one run that cannot wrap: the row
+	   ran off the side of the screen.  Zeroing the container's font size collapses
+	   those text nodes; the buttons carry their own size and are unaffected, only the
+	   label needs its size back. */
+	.controls > div { font-size: 0; }
+	.controls > div > label { font-size: 13.5px; }
+	.controls .cbi-button-neutral { margin-left: 0; }
+
+	/* Column widths come from the contents, not from the width of the screen.
+	   `width: max-content` is what stops "Pkts.", "Traffic" and "Target" being handed
+	   40px each and wrapping every value onto two or three lines: inside a scroll box
+	   the table is free to be as wide as it needs, and the box -- not the page --
+	   takes the overflow, so nothing reaches past the viewport.
+	   `min-width: 100%` keeps the other half of the deal: a table narrower than the
+	   box still fills it, instead of being shrink-to-fit and ending its header
+	   background mid-row, which is what Routes looked like before. */
+	.hh-tablewrap > .table, .hh-tablewrap > table {
+		width: max-content;
+		min-width: 100%;
+	}
+
+	/* Room is scarce: a table gives up some of its padding and a little of its type
+	   size before it gives up a column.  Six columns save 72px between them this way,
+	   which is the difference between a scroll bar and none on Static Routes and on
+	   Diagnostics. */
+	.table, table { font-size: 12.5px; }
+	/* Back up from the 6px squeeze: the columns are allowed to be as wide as their
+	   contents (see the `max-content` rule below), so the padding is headroom rather
+	   than a cost -- roughly the 10% margin that keeps a value off the column edge. */
+	.td, .th, td, th { padding-left: 9px; padding-right: 9px; }
+
+	/* A field inside a table cell must not set a floor under the column: the
+	   Diagnostics input carried a 109px intrinsic width into a 75px cell and put a
+	   scroll bar under a table that otherwise fitted. */
+	.td input, .td select, .td textarea, td input, td select, td textarea {
+		max-width: 100%;
+		box-sizing: border-box;
+	}
+	/* A text field's default intrinsic width is about twenty characters whatever the
+	   column needs; letting it follow the cell instead is what takes Diagnostics the
+	   last 27px.  By type on purpose -- a checkbox stretched across a column is not
+	   a control any more, it is a bar. */
+	.td input[type="text"], .td input[type="password"], .td input[type="search"],
+	.td input[type="number"], .td input:not([type]), .td select,
+	td input[type="text"], td input[type="password"], td input[type="search"],
+	td input[type="number"], td input:not([type]), td select { width: 100%; }
+
+	/* LuCI marks the status lines it does not want broken ("MAC: 00:E0:…", "RX: 18.81
+	   MB (220035 Pkts.)") with its own `nowrap`, and each of those set a 140px floor
+	   under the Interfaces and Wireless columns.  On a phone they wrap between words
+	   -- but only between words: `anywhere` is what once turned a MAC address into a
+	   vertical stack of single characters, so word breaking stays off. */
+	.td span.nowrap {
+		white-space: normal;
+		overflow-wrap: normal;
+		word-break: normal;
+	}
+
+	/* Row actions stack instead of standing in a row: on a phone that column was the
+	   single widest thing in Interfaces, Wireless and the modem tables -- four
+	   buttons side by side held the table 250px wider than the screen.  Stacked, the
+	   column is one button wide and the rest of the row gets the space back.  The
+	   scroll box stays underneath as the fallback for what still does not fit. */
+	.td.cbi-section-actions, .th.cbi-section-actions { white-space: normal; }
+	.td.cbi-section-actions > *, .td.cbi-section-actions > * > form, .td .mactions {
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+	.td.cbi-section-actions .cbi-button, .td .mactions > * { flex: 1 1 auto; }
+
+	/* Firewall Status carries 54 per-element tooltips, and LuCI writes
+	   `style="top:1em; left:auto"` straight into each one -- which beats the offscreen
+	   parking a hidden tooltip is given further up, so all 54 sat at their real
+	   positions and six of them reached past the right edge.  A `visibility: hidden`
+	   element still counts towards the scroll width, which is how a page with every
+	   table already in a scroll box was still 20px wider than the screen; `display`
+	   does not count.  They stay reachable: a tap is a hover on a phone. */
+	.cbi-tooltip-container > .cbi-tooltip { display: none; }
+	.cbi-tooltip-container:hover > .cbi-tooltip:not(:empty) { display: flex; }
+
+	pre, .cbi-value-description code, textarea { max-width: 100%; }
+	pre { overflow-x: auto; }
+
+	/* --------------------------------------------------------------- modals */
+
+	#modal_overlay { padding: 16px 8px; }
+	.modal, #modal_overlay > .modal {
+		width: 100%;
+		min-width: 0;
+		max-height: calc(100vh - 32px);
+		overflow-y: auto;
+	}
+
+	.toast { right: 12px; left: 12px; bottom: 12px; text-align: center; }
+}
+
+/* Everything above animates position, which is exactly what motion sensitivity is
+   about; the drawer still opens and closes, just without the slide. */
+@media (prefers-reduced-motion: reduce) {
+	#sidebar, #nav-scrim { transition: none; }
+}
