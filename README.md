@@ -20,7 +20,7 @@ the normal way to use this firmware.
 | You want to | Read |
 |---|---|
 | Install OpenWrt permanently | [Flash installation guide](docs/flash-install.md) |
-| Add optional modem controls | [Optional package bundles](extras/) |
+| Add optional modem controls or WireGuard | [Signed package feed](docs/package-feed.md) |
 | Try the build first, without writing flash (needs UART) | [RAM boot guide](docs/installation.md) |
 | Check what works and what does not | [Known issues](docs/known-issues.md) |
 | Test a subsystem and report results | [Testing guide](docs/testing.md) |
@@ -31,7 +31,12 @@ After any installation attempt, successful or not, please submit a
 
 ## Firmware files
 
+New builds are distributed as [immutable releases](https://github.com/sowarden/hh71vm-openwrt/releases),
+each with its own signed package feed. Automatic releases are explicitly marked
+as not tested on hardware. See [package installation](docs/package-feed.md) for usage.
+
 [`firmware/`](firmware/) contains `fwupg`, `sysupgrade`, and `nfjrom` images with checksums.
+This is the preserved historical snapshot, not an alias for the newest release.
 The repository also includes installation and rollback utilities under [`tools/flash/`](tools/flash/)
 and matching packages under [`packages/`](packages/).
 
@@ -116,7 +121,8 @@ credentials, and keys. Attach searchable text, not screenshots of text.
 | [`openwrt-feed/`](openwrt-feed/) | HH71VM source delta and build config |
 | [`firmware/`](firmware/) | Published images, manifest, and checksums |
 | [`packages/`](packages/) | Matching target and kernel packages plus package index |
-| [`extras/`](extras/) | Optional user-installable package bundles |
+| [`autobuild/`](autobuild/) | Unified firmware build and immutable signed feed |
+| [`extras/`](extras/) | Historical snapshot's optional bundle recipe |
 | [`tools/flash/`](tools/flash/) | Backup, installation, update, and rollback utilities |
 | [`tools/ram_boot.py`](tools/ram_boot.py) | RAM-only loader and UART capture tool |
 | [`CHANGELOG.md`](CHANGELOG.md) | Published snapshot history |

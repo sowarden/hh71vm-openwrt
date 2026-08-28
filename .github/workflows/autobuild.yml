@@ -1,0 +1,138 @@
+name: Build and publish immutable firmware
+
+on:
+  push:
+    branches: [main, openwrt-autobuild]
+
+permissions:
+  contents: read
+
+# No shared latest tag or concurrency group: every push retains its own identity.
+
+jobs:
+  validate:
+    if: github.repository == 'sowarden/hh71vm-openwrt' && vars.HH71VM_AUTOBUILD_ENABLED == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake lua5.1 gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi python3-serial squashfs-tools
+          sh autobuild/install-usign.sh "$RUNNER_TEMP/usign"
+          echo "$RUNNER_TEMP/usign/build" >> "$GITHUB_PATH"
+      - name: Check workflow syntax
+        run: sh autobuild/check-workflows.sh "$RUNNER_TEMP/actionlint"
+      - name: Validate public key and run tests
+        env:
+          HH71VM_FEED_PUBLIC_KEY: ${{ vars.HH71VM_FEED_PUBLIC_KEY }}
+        run: |
+          PYTHONPATH=autobuild python3 -c 'import os; from common import public_key; public_key(os.environ["HH71VM_FEED_PUBLIC_KEY"].encode())'
+          sh openwrt-feed/package/utils/modem-extra-tools/build-helper.sh
+          python3 -m unittest discover -s tests -v
+          lua5.1 openwrt-feed/package/utils/modem-extra-tools/tests/unit.lua openwrt-feed/package/utils/modem-extra-tools/files
+
+  build:
+    needs: validate
+    runs-on: [self-hosted, linux, ARM64, hh71vm-build]
+    timeout-minutes: 1440
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Reserve build identity and directories
+        id: identity
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'autobuild')
+          from common import identity
+          tag = identity(os.environ['GITHUB_SHA'], os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('tag=' + tag, file=output)
+          (Path(os.environ['RUNNER_TEMP']) / tag / 'candidate').mkdir(parents=True, exist_ok=False)
+          for name in ('downloads', 'ccache'):
+              (Path(os.environ['RUNNER_TEMP']) / 'hh71vm-cache' / name).mkdir(parents=True, exist_ok=True)
+          PY
+      - name: Restore downloads and compiler cache only
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ${{ runner.temp }}/hh71vm-cache/downloads
+            ${{ runner.temp }}/hh71vm-cache/ccache
+          key: hh71vm-${{ runner.arch }}-${{ hashFiles('autobuild/lock.json', 'autobuild/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            hh71vm-${{ runner.arch }}-${{ hashFiles('autobuild/lock.json', 'autobuild/Dockerfile') }}-
+      - name: Build in a disposable container
+        env:
+          HH71VM_FEED_PUBLIC_KEY: ${{ vars.HH71VM_FEED_PUBLIC_KEY }}
+          BUILD_JOBS: ${{ vars.HH71VM_BUILD_JOBS || '2' }}
+          BUILD_TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -eu
+          docker build --pull --build-arg "BUILD_UID=$(id -u)" --build-arg "BUILD_GID=$(id -g)" \
+            -f autobuild/Dockerfile -t "hh71vm-build:$BUILD_TAG" autobuild
+          docker run --rm --init --cap-drop=ALL --security-opt=no-new-privileges \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/src,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/$BUILD_TAG/candidate,target=/output" \
+            --mount "type=bind,source=$RUNNER_TEMP/hh71vm-cache/downloads,target=/cache/downloads" \
+            --mount "type=bind,source=$RUNNER_TEMP/hh71vm-cache/ccache,target=/cache/ccache" \
+            --env HH71VM_FEED_PUBLIC_KEY \
+            "hh71vm-build:$BUILD_TAG" \
+            --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --jobs "$BUILD_JOBS"
+      - name: Transfer the exact unsigned candidate
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.identity.outputs.tag }}
+          path: ${{ runner.temp }}/${{ steps.identity.outputs.tag }}/candidate/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Remove this run's container image
+        if: always() && steps.identity.outputs.tag != ''
+        env:
+          BUILD_TAG: ${{ steps.identity.outputs.tag }}
+        run: docker image rm "hh71vm-build:$BUILD_TAG" || true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: candidate
+          merge-multiple: true
+      - name: Install isolated signing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake squashfs-tools
+          sh autobuild/install-usign.sh "$RUNNER_TEMP/usign"
+          echo "$RUNNER_TEMP/usign/build" >> "$GITHUB_PATH"
+      - name: Inspect images and sign the exact candidate
+        env:
+          HH71VM_FEED_SIGNING_KEY: ${{ secrets.HH71VM_FEED_SIGNING_KEY }}
+          HH71VM_FEED_PUBLIC_KEY: ${{ vars.HH71VM_FEED_PUBLIC_KEY }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: python3 autobuild/publish.py sign candidate --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"
+      - name: Publish and verify immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+        run: python3 autobuild/publish.py publish candidate --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" --artifact-id "$CANDIDATE_ARTIFACT_ID"

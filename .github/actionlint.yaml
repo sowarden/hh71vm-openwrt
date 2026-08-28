@@ -1,0 +1,2 @@
+self-hosted-runner:
+  labels: [hh71vm-build]

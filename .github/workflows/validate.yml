@@ -9,23 +9,25 @@ permissions:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          persist-credentials: false
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install loader dependency
         run: python -m pip install -r tools/requirements.txt
 
+      - name: Check workflow syntax
+        run: sh autobuild/check-workflows.sh "$RUNNER_TEMP/actionlint"
+
       - name: Rebuild helper executables from source
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
+          sudo apt-get install -y gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi cmake squashfs-tools
+          sh autobuild/install-usign.sh "$RUNNER_TEMP/usign"
+          echo "$RUNNER_TEMP/usign/build" >> "$GITHUB_PATH"
           sh openwrt-feed/package/utils/modem-extra-tools/build-helper.sh
 
       - name: Run publication and loader tests
@@ -41,6 +43,10 @@ jobs:
           tools/release/extras_common.py
           tools/release/build-extras.py
           tools/release/publish-extras.py
+          autobuild/build.py
+          autobuild/common.py
+          autobuild/inspect_image.py
+          autobuild/publish.py
           openwrt-feed/target/linux/rtkmipsel/image/mkrtkimg.py
 
       - name: Verify published checksums
@@ -48,7 +54,10 @@ jobs:
         run: sha256sum -c SHA256SUMS
 
       - name: Check installer syntax
-        run: sh -n extras/modem-extra-tools/install.sh
+        run: |
+          sh -n extras/modem-extra-tools/install.sh
+          sh -n autobuild/package/hh71vm-feed/files/reconcile.sh
+          sh -n autobuild/install-usign.sh
 
       - name: Run modem backend unit tests
         run: |
