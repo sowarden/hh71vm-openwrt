@@ -21,20 +21,21 @@ kernel.
 ## Installation
 
 Download the `modem-extra-tools-*.zip` bundle from the matching
-[release](https://github.com/sowarden/hh71vm-openwrt/releases) and extract it.
-Open a terminal on your computer **inside the extracted bundle folder**:
+[release](https://github.com/sowarden/hh71vm-openwrt/releases) and extract it. On Windows,
+copy the entire extracted folder to the router; replace the example local path and router
+address below:
 
-```sh
-scp -O -r -o HostKeyAlgorithms=+ssh-rsa . root@192.168.1.1:/tmp/modem-extra-tools
+```text
+scp -O -r -o HostKeyAlgorithms=+ssh-rsa "C:\path\to\modem-extra-tools-1.1.0" root@192.168.1.1:/tmp/
 ssh -o HostKeyAlgorithms=+ssh-rsa root@192.168.1.1
 ```
 
-Replace `192.168.1.1` with your router's LAN address. `-O` uses the legacy SCP
-protocol; the host-key option supports the Dropbear server shipped in this build.
-Check the host key when prompted. Then run these commands on the router:
+The uploaded folder will be `/tmp/modem-extra-tools-1.1.0`. `-O` uses the legacy SCP
+protocol; the host-key option supports the Dropbear server shipped in this build. Check the
+host key when prompted. Then run these commands on the router:
 
 ```sh
-cd /tmp/modem-extra-tools
+cd /tmp/modem-extra-tools-1.1.0
 sh install.sh
 ```
 
