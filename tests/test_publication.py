@@ -40,6 +40,12 @@ class PublicationBoundaryTests(unittest.TestCase):
                             for _, revision in references))
         dockerfile = (ROOT / "autobuild/Dockerfile").read_text()
         self.assertIn("libc6-dev-armel-cross", dockerfile)
+        autobuild = (ROOT / ".github/workflows/autobuild.yml").read_text()
+        self.assertIn("actions/cache/restore@", autobuild)
+        self.assertIn("actions/cache/save@", autobuild)
+        self.assertIn("if: always() && steps.identity.outcome == 'success'", autobuild)
+        self.assertIn('cache_root="$(dirname "$RUNNER_TEMP")/hh71vm-cache"', autobuild)
+        self.assertNotIn("${{ runner.temp }}/hh71vm-cache", autobuild)
 
     def test_test_branch_cannot_publish_a_release(self):
         workflow = (ROOT / ".github/workflows/autobuild.yml").read_text()

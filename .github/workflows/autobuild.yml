@@ -57,15 +57,16 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               print('tag=' + tag, file=output)
           (Path(os.environ['RUNNER_TEMP']) / tag / 'candidate').mkdir(parents=True, exist_ok=False)
-          for name in ('downloads', 'ccache'):
-              (Path(os.environ['RUNNER_TEMP']) / 'hh71vm-cache' / name).mkdir(parents=True, exist_ok=True)
           PY
+          cache_root="$(dirname "$RUNNER_TEMP")/hh71vm-cache"
+          mkdir -p "$cache_root/downloads" "$cache_root/ccache"
+          printf 'cache-root=%s\n' "$cache_root" >> "$GITHUB_OUTPUT"
       - name: Restore downloads and compiler cache only
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
-            ${{ runner.temp }}/hh71vm-cache/downloads
-            ${{ runner.temp }}/hh71vm-cache/ccache
+            ${{ steps.identity.outputs.cache-root }}/downloads
+            ${{ steps.identity.outputs.cache-root }}/ccache
           key: hh71vm-${{ runner.arch }}-${{ hashFiles('autobuild/lock.json', 'autobuild/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             hh71vm-${{ runner.arch }}-${{ hashFiles('autobuild/lock.json', 'autobuild/Dockerfile') }}-
@@ -82,11 +83,20 @@ jobs:
             --user "$(id -u):$(id -g)" \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/src,readonly" \
             --mount "type=bind,source=$RUNNER_TEMP/$BUILD_TAG/candidate,target=/output" \
-            --mount "type=bind,source=$RUNNER_TEMP/hh71vm-cache/downloads,target=/cache/downloads" \
-            --mount "type=bind,source=$RUNNER_TEMP/hh71vm-cache/ccache,target=/cache/ccache" \
+            --mount "type=bind,source=${{ steps.identity.outputs.cache-root }}/downloads,target=/cache/downloads" \
+            --mount "type=bind,source=${{ steps.identity.outputs.cache-root }}/ccache,target=/cache/ccache" \
             --env HH71VM_FEED_PUBLIC_KEY \
             "hh71vm-build:$BUILD_TAG" \
             --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --jobs "$BUILD_JOBS"
+      - name: Save downloads and compiler cache
+        if: always() && steps.identity.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ${{ steps.identity.outputs.cache-root }}/downloads
+            ${{ steps.identity.outputs.cache-root }}/ccache
+          key: hh71vm-${{ runner.arch }}-${{ hashFiles('autobuild/lock.json', 'autobuild/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Transfer the exact unsigned candidate
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

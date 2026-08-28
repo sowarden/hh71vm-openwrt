@@ -134,6 +134,22 @@ def download_inventory(build):
     return inventory
 
 
+def snapshot_inventory(build):
+    snapshot = build / ".hh71vm-source-downloads"
+    inventory = {}
+    for line in (snapshot / "checksums.txt").read_text().splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not NAME.fullmatch(parts[0]) or not SHA.fullmatch(parts[1]):
+            raise ValueError("source snapshot lacks a pinned SHA-256")
+        name, expected = parts
+        if name in inventory:
+            raise ValueError("duplicate source snapshot filename: " + name)
+        inventory[name] = expected
+    if not inventory:
+        raise ValueError("source snapshot is empty")
+    return inventory
+
+
 def verify_downloads(build, repair=False):
     inventory = download_inventory(build)
     invalid = []
@@ -146,6 +162,34 @@ def verify_downloads(build, repair=False):
     if invalid and not repair:
         raise ValueError("source download checksum mismatch: " + ", ".join(invalid))
     return invalid
+
+
+def snapshot_downloads(build):
+    inventory = download_inventory(build)
+    snapshot = build / ".hh71vm-source-downloads"
+    snapshot.mkdir(exist_ok=False)
+    for name, expected in sorted(inventory.items()):
+        source = build / "dl" / name
+        destination = snapshot / name
+        if source.is_symlink() or not source.is_file() or sha256(source) != expected:
+            raise ValueError("cannot snapshot unverified source download: " + name)
+        shutil.copyfile(source, destination)
+        if sha256(destination) != expected:
+            raise ValueError("source snapshot copy mismatch: " + name)
+    (snapshot / "checksums.txt").write_text(
+        "".join(f"{name} {expected}\n" for name, expected in sorted(inventory.items())))
+    return snapshot
+
+
+def verify_download_snapshot(build):
+    snapshot = build / ".hh71vm-source-downloads"
+    invalid = []
+    for name, expected in snapshot_inventory(build).items():
+        path = snapshot / name
+        if path.is_symlink() or not path.is_file() or sha256(path) != expected:
+            invalid.append(name)
+    if invalid:
+        raise ValueError("source snapshot checksum mismatch: " + ", ".join(invalid))
 
 
 def download(build, lock, jobs):
@@ -169,6 +213,8 @@ def download(build, lock, jobs):
     if verify_downloads(build, repair=True):
         run("make", f"-j{jobs}", "download", "V=s", cwd=build, timeout=3600)
     verify_downloads(build)
+    snapshot_downloads(build)
+    os.environ.pop("HH71VM_DOWNLOAD_MANIFEST", None)
 
 
 def unique(paths, description):
@@ -267,15 +313,17 @@ def collect(source, build, output, args, key, lock):
                     combined.addfile(member, archive.extractfile(member) if member.isfile() else None)
             if process.wait():
                 raise ValueError("upstream buildsystem source export failed")
-    verify_downloads(build)
-    write_json(output / "download-checksums.json", download_inventory(build))
+    verify_download_snapshot(build)
+    sources = snapshot_inventory(build)
+    write_json(output / "download-checksums.json", sources)
     with tarfile.open(output / "upstream-sources.tar.gz", "w:gz") as archive:
         def canonical_owner(info):
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             return info
-        for name in sorted(download_inventory(build)):
-            archive.add(build / "dl" / name, arcname=name, recursive=False, filter=canonical_owner)
+        for name in sorted(sources):
+            archive.add(build / ".hh71vm-source-downloads" / name, arcname=name,
+                        recursive=False, filter=canonical_owner)
     for path in output.iterdir():
         if path.stat().st_size >= 2 * 1024**3:
             raise ValueError("asset exceeds GitHub's per-file size limit")

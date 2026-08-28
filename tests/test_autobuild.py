@@ -207,6 +207,22 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pinned"):
                 builder.download_inventory(root)
 
+    def test_source_snapshot_survives_working_cache_changes(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / "dl").mkdir()
+            cached = root / "dl/source.tar.gz"
+            cached.write_bytes(b"verified source")
+            expected = auto.sha256(cached)
+            (root / "download-manifest.txt").write_text(f"source.tar.gz {expected}\n")
+            builder.snapshot_downloads(root)
+            cached.write_bytes(b"working cache changed after download")
+            builder.verify_download_snapshot(root)
+            self.assertEqual(builder.snapshot_inventory(root), {"source.tar.gz": expected})
+            (root / ".hh71vm-source-downloads/source.tar.gz").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "snapshot checksum"):
+                builder.verify_download_snapshot(root)
+
 
 class FakeGitHub:
     def __init__(self):
