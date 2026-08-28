@@ -118,8 +118,7 @@ def build_bundle(bundle_dir, package_dir, output_dir):
             f"Kernel package: {manifest['kernel']}\n"
             f"Architecture: {manifest['architecture']}\n"
             f"Bundle version: {manifest['version']}\n"
-            "A successful build does not establish hardware test coverage.\n"
-            "Check the candidate metadata and release notes for test status.\n"
+            "Install only on firmware with the exact kernel package shown above.\n"
         )
         (stage / "COMPATIBILITY.txt").write_bytes(compatibility.encode("utf-8"))
         staged.append(Path("COMPATIBILITY.txt"))
