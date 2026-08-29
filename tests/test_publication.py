@@ -46,6 +46,11 @@ class PublicationBoundaryTests(unittest.TestCase):
         self.assertIn("if: always() && steps.identity.outcome == 'success'", autobuild)
         self.assertIn('cache_root="$(dirname "$RUNNER_TEMP")/hh71vm-cache"', autobuild)
         self.assertNotIn("${{ runner.temp }}/hh71vm-cache", autobuild)
+        mask = autobuild.index("Mask self-hosted runner identity and paths")
+        build_checkout = autobuild.index("actions/checkout@", mask)
+        self.assertLess(mask, build_checkout)
+        for value in ("$HOME", "$RUNNER_NAME", "$RUNNER_TEMP", "$GITHUB_WORKSPACE"):
+            self.assertIn(value, autobuild[mask:build_checkout])
 
     def test_test_branch_cannot_publish_a_release(self):
         workflow = (ROOT / ".github/workflows/autobuild.yml").read_text()
