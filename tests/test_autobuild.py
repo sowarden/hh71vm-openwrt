@@ -33,7 +33,6 @@ builder = module("build")
 publisher = module("publish")
 images = module("inspect_image")
 COMMIT = "a" * 40
-RECOVERY_COMMIT = "c" * 40
 TAG = auto.identity(COMMIT, 42, 1)
 KERNEL = "4.14.275-1-" + "b" * 32
 KEY = auto.public_key(b"untrusted comment: test\n" + base64.b64encode(b"Ed" + b"12345678" + b"x" * 32) + b"\n")[1]
@@ -234,18 +233,10 @@ class FakeGitHub:
         self.mutations = []
         self.interrupt_after = None
         self.corrupt_public = False
-        self.main_commit = COMMIT
-        self.comparison = None
 
     def api(self, endpoint, method="GET", payload=None, missing=False):
         if method != "GET":
             self.mutations.append((endpoint, method))
-        if endpoint == "git/ref/heads/main":
-            return {"object": {"type": "commit", "sha": self.main_commit}}
-        if endpoint.startswith("compare/"):
-            if self.comparison is None:
-                raise AssertionError("unexpected comparison")
-            return self.comparison
         if endpoint.startswith("git/ref/tags/"):
             return self.ref
         if endpoint == "git/refs" and method == "POST":
@@ -383,7 +374,7 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(self.github.mutations)
         self.assertFalse(self.github.release["immutable"])
 
-    def test_resume_requires_allowed_main_history_and_exact_source_artifact(self):
+    def test_resume_requires_exact_source_artifact(self):
         self.manifest["hardware_tested"] = False
         auto.write_json(self.root / "release.json", self.manifest)
         self.github.ref = {"object": {"type": "commit", "sha": COMMIT}}
@@ -398,42 +389,10 @@ class PublicationTests(unittest.TestCase):
                                             prerelease=False, create_tag=False)
             retire.assert_called_once_with(self.github, 123, self.manifest)
             self.assertNotIn("hardware_tested", auto.read_json(self.root / "release.json"))
-        self.github.main_commit = RECOVERY_COMMIT
-        self.github.comparison = {"status": "diverged", "merge_base_commit": {"sha": "b" * 40},
-                                  "total_commits": 0, "commits": [], "files": []}
-        with patch.object(publisher, "sign") as sign, self.assertRaisesRegex(ValueError, "ancestor"):
-            publisher.resume(self.root, TAG, COMMIT, 123, 42, KEY, self.github)
-        sign.assert_not_called()
-
-    def test_resume_accepts_only_complete_recovery_commits_and_paths(self):
-        self.github.main_commit = RECOVERY_COMMIT
-        identity = {"name": "sowarden", "email": "sowarden@proton.me"}
-        recovery = {"sha": RECOVERY_COMMIT, "commit": {"message": "Recovery [release-resume]",
-                    "author": identity, "committer": identity}}
-        self.github.comparison = {"status": "ahead", "merge_base_commit": {"sha": COMMIT},
-                                  "total_commits": 1, "commits": [recovery],
-                                  "files": [{"filename": "autobuild/publish.py", "status": "modified"}]}
-        publisher.verify_recovery_source(self.github, COMMIT)
-        for field, value, error in (
-                ("total_commits", 2, "complete"),
-                ("commits", [{"sha": RECOVERY_COMMIT, "commit": {"message": "ordinary",
-                              "author": identity, "committer": identity}}], "non-recovery"),
-                ("files", [{"filename": "firmware/changed.bin", "status": "modified"}], "paths")):
-            with self.subTest(field=field):
-                saved = self.github.comparison[field]
-                self.github.comparison[field] = value
-                with self.assertRaisesRegex(ValueError, error):
-                    publisher.verify_recovery_source(self.github, COMMIT)
-                self.github.comparison[field] = saved
-        recovery["commit"]["author"] = {"name": "other", "email": "other@example.com"}
-        with self.assertRaisesRegex(ValueError, "identity"):
-            publisher.verify_recovery_source(self.github, COMMIT)
 
     def test_resume_checks_remote_identity_before_signing(self):
         with patch.object(publisher, "sign") as sign:
-            self.github.api = lambda endpoint, **kwargs: (
-                {"object": {"type": "commit", "sha": COMMIT}} if endpoint == "git/ref/heads/main" else
-                {"name": "other", "workflow_run": {"id": 42}})
+            self.github.api = lambda endpoint, **kwargs: {"name": "other", "workflow_run": {"id": 42}}
             with self.assertRaisesRegex(ValueError, "artifact identity"):
                 publisher.resume(self.root, TAG, COMMIT, 123, 42, KEY, self.github)
             sign.assert_not_called()
