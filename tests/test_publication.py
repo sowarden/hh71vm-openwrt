@@ -68,6 +68,7 @@ class PublicationBoundaryTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/openwrt-autobuild'", recovery)
         self.assertIn("artifact-ids: ${{ inputs.artifact-id }}", recovery)
         self.assertIn("run-id: ${{ inputs.source-run-id }}", recovery)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", recovery)
         self.assertIn('args.command == "resume"', publisher)
         self.assertIn('event != "workflow_dispatch"', publisher)
         checker = (ROOT / "autobuild/check-workflows.sh").read_text()

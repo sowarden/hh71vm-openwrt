@@ -49,6 +49,7 @@ jobs:
           echo "$RUNNER_TEMP/usign/build" >> "$GITHUB_PATH"
       - name: Inspect, sign, publish and verify the exact candidate
         env:
+          GH_TOKEN: ${{ github.token }}
           HH71VM_FEED_SIGNING_KEY: ${{ secrets.HH71VM_FEED_SIGNING_KEY }}
           HH71VM_FEED_PUBLIC_KEY: ${{ vars.HH71VM_FEED_PUBLIC_KEY }}
         run: |
