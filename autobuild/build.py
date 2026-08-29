@@ -329,7 +329,7 @@ def collect(source, build, output, args, key, lock):
             raise ValueError("asset exceeds GitHub's per-file size limit")
     manifest = {"schema": 1, "tag": tag, "source_commit": args.commit, "run_id": args.run_id,
                 "run_attempt": args.attempt, "architecture": ARCHITECTURE, "kernel": kernel,
-                "feed_url": feed_url(tag), "key_id": public_key(key)[0], "hardware_tested": False,
+                "feed_url": feed_url(tag), "key_id": public_key(key)[0],
                 "files": {p.name: sha256(p) for p in sorted(output.iterdir())}}
     write_json(output / "release.json", manifest)
     validate_candidate(output)

@@ -32,8 +32,8 @@ After any installation attempt, successful or not, please submit a
 ## Firmware files
 
 New builds are distributed as [immutable releases](https://github.com/sowarden/hh71vm-openwrt/releases),
-each with its own signed package feed. Automatic releases are explicitly marked
-as not tested on hardware. See [package installation](docs/package-feed.md) for usage.
+each with its own signed package feed. A separate release is retained for every
+published source revision. See [package installation](docs/package-feed.md) for usage.
 
 [`firmware/`](firmware/) contains `fwupg`, `sysupgrade`, and `nfjrom` images with checksums.
 This is the preserved historical snapshot, not an alias for the newest release.

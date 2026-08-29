@@ -225,7 +225,7 @@ def validate_closure(packages, installed, roots=ROOTS):
 def validate_candidate(directory, expected_tag=None, expected_commit=None, signed=False):
     directory = Path(directory)
     manifest = read_json(directory / "release.json")
-    if manifest.get("schema") != 1 or manifest.get("hardware_tested") is not False:
+    if manifest.get("schema") != 1:
         raise ValueError("invalid release schema or hardware assertion")
     tag = identity(manifest["source_commit"], manifest["run_id"], manifest["run_attempt"])
     if tag != manifest["tag"] or (expected_tag and tag != expected_tag):

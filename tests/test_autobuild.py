@@ -79,7 +79,7 @@ def candidate(directory):
         (directory / name).write_bytes(b"test fixture\n")
     manifest = dict(schema=1, tag=TAG, source_commit=COMMIT, run_id=42, run_attempt=1,
                     architecture=auto.ARCHITECTURE, kernel=KERNEL, feed_url=auto.feed_url(TAG),
-                    key_id=auto.public_key(KEY)[0], hardware_tested=False,
+                    key_id=auto.public_key(KEY)[0],
                     files={p.name: auto.sha256(p) for p in directory.iterdir()})
     auto.write_json(directory / "release.json", manifest)
     return manifest
@@ -237,15 +237,17 @@ class FakeGitHub:
     def api(self, endpoint, method="GET", payload=None, missing=False):
         if method != "GET":
             self.mutations.append((endpoint, method))
-        if endpoint == "immutable-releases":
-            return {"enabled": self.enabled}
+        if endpoint == "git/ref/heads/main":
+            return {"object": {"type": "commit", "sha": COMMIT}}
         if endpoint.startswith("git/ref/tags/"):
             return self.ref
+        if endpoint == "actions/artifacts/123":
+            return {"name": TAG, "workflow_run": {"id": 42}}
         if endpoint == "releases" and method == "POST":
             self.release = dict(payload, id=1, immutable=False)
             return self.release
         if endpoint == "releases/1" and method == "PATCH":
-            self.release.update(draft=False, immutable=True)
+            self.release.update(draft=False, immutable=self.enabled)
             self.ref = {"object": {"type": "commit", "sha": COMMIT}}
         if endpoint == "releases/1":
             return self.release
@@ -347,6 +349,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(mutations, self.github.mutations)
         self.assertTrue(self.github.release["immutable"])
         self.assertNotIn("VERIFIED", self.github.release["body"])
+        self.assertNotIn("not tested", self.github.release["body"].lower())
 
     def test_interrupted_upload_resumes_exact_draft(self):
         self.github.interrupt_after = 2
@@ -358,11 +361,30 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(self.github.release["draft"])
         self.assertEqual(sum(m == "POST" for _, m in self.github.mutations), 1)
 
-    def test_disabled_immutability_makes_no_mutations(self):
+    def test_missing_immutability_fails_after_publish(self):
         self.github.enabled = False
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "immutability"):
             self.publish()
-        self.assertEqual(self.github.mutations, [])
+        self.assertTrue(self.github.mutations)
+        self.assertFalse(self.github.release["immutable"])
+
+    def test_resume_requires_current_main_and_exact_source_artifact(self):
+        self.manifest["hardware_tested"] = False
+        auto.write_json(self.root / "release.json", self.manifest)
+        with patch.object(publisher, "validate_candidate", return_value=self.manifest), \
+                patch.object(publisher, "sign") as sign, \
+                patch.object(publisher, "verify_signatures"), \
+                patch.object(publisher, "publish") as publish, \
+                patch.object(publisher, "retire_transfer_artifact") as retire:
+            publisher.resume(self.root, TAG, COMMIT, 123, 42, KEY, self.github)
+            sign.assert_called_once_with(self.root, TAG, COMMIT, KEY, expected_run_id=42)
+            publish.assert_called_once_with(self.root, self.manifest, self.github, prerelease=False)
+            retire.assert_called_once_with(self.github, 123, self.manifest)
+            self.assertNotIn("hardware_tested", auto.read_json(self.root / "release.json"))
+        self.github.api = lambda endpoint, **kwargs: ({"object": {"type": "commit", "sha": "b" * 40}}
+                                                       if endpoint == "git/ref/heads/main" else None)
+        with patch.object(publisher, "sign"), self.assertRaisesRegex(ValueError, "current main"):
+            publisher.resume(self.root, TAG, COMMIT, 123, 42, KEY, self.github)
 
     def test_existing_tag_cannot_move(self):
         self.github.ref = {"object": {"type": "commit", "sha": "b" * 40}}

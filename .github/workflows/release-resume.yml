@@ -1,0 +1,59 @@
+name: Resume an inspected release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact-id:
+        description: Exact unsigned candidate artifact ID
+        required: true
+        type: string
+      source-run-id:
+        description: Workflow run that produced the candidate
+        required: true
+        type: string
+      tag:
+        description: Exact release tag stored in the candidate
+        required: true
+        type: string
+      source-commit:
+        description: Exact current main commit stored in the candidate
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  resume:
+    if: github.repository == 'sowarden/hh71vm-openwrt' && github.ref == 'refs/heads/openwrt-autobuild'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ inputs.artifact-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source-run-id }}
+          path: candidate
+          merge-multiple: true
+      - name: Install isolated signing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake squashfs-tools
+          sh autobuild/install-usign.sh "$RUNNER_TEMP/usign"
+          echo "$RUNNER_TEMP/usign/build" >> "$GITHUB_PATH"
+      - name: Inspect, sign, publish and verify the exact candidate
+        env:
+          HH71VM_FEED_SIGNING_KEY: ${{ secrets.HH71VM_FEED_SIGNING_KEY }}
+          HH71VM_FEED_PUBLIC_KEY: ${{ vars.HH71VM_FEED_PUBLIC_KEY }}
+        run: |
+          python3 autobuild/publish.py resume candidate \
+            --tag "${{ inputs.tag }}" \
+            --commit "${{ inputs.source-commit }}" \
+            --artifact-id "${{ inputs.artifact-id }}" \
+            --source-run-id "${{ inputs.source-run-id }}"

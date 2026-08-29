@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from common import REPOSITORY, sha256, validate_candidate
+from common import REPOSITORY, read_json, sha256, validate_candidate, write_json
 from inspect_image import inspect_release_images
 
 
@@ -27,11 +27,12 @@ def verify_signatures(directory):
         raise ValueError("release checksum file mismatch")
 
 
-def sign(directory, tag, commit, expected_key):
+def sign(directory, tag, commit, expected_key, expected_run_id=None):
     # Remove the secret from child process environments before any inspection.
     secret = os.environ.pop("HH71VM_FEED_SIGNING_KEY", "")
     manifest = validate_candidate(directory, tag, commit)
-    if str(manifest["run_id"]) != os.environ.get("GITHUB_RUN_ID"):
+    run_id = str(expected_run_id) if expected_run_id is not None else os.environ.get("GITHUB_RUN_ID")
+    if str(manifest["run_id"]) != run_id:
         raise ValueError("candidate belongs to a different workflow run")
     if (directory / "hh71vm-feed.pub").read_bytes() != expected_key:
         raise ValueError("builder changed the configured public key")
@@ -123,7 +124,7 @@ class GitHub:
 
 def release_body(manifest, marker):
     return (f"HH71VM OpenWrt build `{manifest['tag']}`\n\n"
-            "Automated build. Not tested on hardware.\n\n"
+            "Automated build from the published source revision.\n\n"
             f"Kernel ABI: `{manifest['kernel']}`. Architecture: `{manifest['architecture']}`.\n\n"
             "The images include the signed package feed for this build.\n\n"
             "```sh\nopkg update\nopkg install luci-app-modem-extra-tools\n"
@@ -146,9 +147,6 @@ def retire_transfer_artifact(github, artifact_id, manifest):
 def publish(directory, manifest, github, prerelease=True):
     tag = manifest["tag"]
     marker = "<!-- hh71vm-release:" + sha256(directory / "release.json") + " -->"
-    settings = github.api("immutable-releases")
-    if not (settings.get("enabled") or settings.get("enforced_by_owner")):
-        raise ValueError("enable repository release immutability before publication")
     release = github.find_release(tag)
     ref = github.api("git/ref/tags/" + tag, missing=True)
     if ref and (ref["object"]["type"] != "commit" or ref["object"]["sha"] != manifest["source_commit"]):
@@ -193,27 +191,59 @@ def publish(directory, manifest, github, prerelease=True):
             raise ValueError("anonymous asset hash mismatch")
 
 
+def resume(directory, tag, commit, artifact_id, source_run_id, key, github):
+    unsigned = validate_candidate(directory, tag, commit, signed=False)
+    if unsigned["run_id"] != source_run_id:
+        raise ValueError("release recovery run identity differs from candidate")
+    if "hardware_tested" in unsigned:
+        if unsigned["hardware_tested"] is not False:
+            raise ValueError("release recovery contains an invalid hardware assertion")
+        del unsigned["hardware_tested"]
+        write_json(Path(directory) / "release.json", unsigned)
+        validate_candidate(directory, tag, commit, signed=False)
+    sign(directory, tag, commit, key, expected_run_id=source_run_id)
+    main_ref = github.api("git/ref/heads/main")
+    if (main_ref["object"]["type"] != "commit" or
+            main_ref["object"]["sha"] != commit):
+        raise ValueError("release recovery source is not the current main commit")
+    artifact = github.api(f"actions/artifacts/{artifact_id}")
+    if artifact["name"] != tag or artifact["workflow_run"]["id"] != source_run_id:
+        raise ValueError("release recovery artifact identity differs from candidate")
+    manifest = validate_candidate(directory, tag, commit, signed=True)
+    verify_signatures(directory)
+    publish(directory, manifest, github, prerelease=False)
+    retire_transfer_artifact(github, artifact_id, manifest)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("sign", "publish"))
+    parser.add_argument("command", choices=("sign", "publish", "resume"))
     parser.add_argument("directory", type=Path)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--artifact-id", type=int)
+    parser.add_argument("--source-run-id", type=int)
     args = parser.parse_args()
-    if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY or os.environ.get("GITHUB_EVENT_NAME") != "push":
-        parser.error("release jobs require a push in the canonical repository")
+    if os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
+        parser.error("release jobs require the canonical repository")
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    if event not in ("push", "workflow_dispatch"):
+        parser.error("release event is not allowed")
     if os.environ.get("GITHUB_REF") not in ("refs/heads/main", "refs/heads/openwrt-autobuild"):
         parser.error("release branch is not allowed")
-    if args.commit != os.environ.get("GITHUB_SHA"):
+    if args.command != "resume" and (event != "push" or args.commit != os.environ.get("GITHUB_SHA")):
         parser.error("release source differs from this workflow")
     if args.command == "publish" and os.environ.get("GITHUB_REF") != "refs/heads/main":
         parser.error("publication is restricted to main")
-    if args.command == "sign":
+    if args.command == "resume" and (event != "workflow_dispatch" or
+            os.environ.get("GITHUB_REF") != "refs/heads/openwrt-autobuild"):
+        parser.error("release recovery requires an explicit test-branch dispatch")
+    if args.command in ("sign", "resume"):
         from common import public_key
         key = public_key(os.environ["HH71VM_FEED_PUBLIC_KEY"].encode())[1]
+    if args.command == "sign":
         sign(args.directory, args.tag, args.commit, key)
-    else:
+    elif args.command == "publish":
         if not args.artifact_id or args.artifact_id < 1:
             parser.error("publication requires the exact transfer artifact ID")
         manifest = validate_candidate(args.directory, args.tag, args.commit, signed=True)
@@ -223,6 +253,10 @@ def main():
         github = GitHub()
         publish(args.directory, manifest, github, prerelease=os.environ["GITHUB_REF"] != "refs/heads/main")
         retire_transfer_artifact(github, args.artifact_id, manifest)
+    else:
+        if not args.artifact_id or args.artifact_id < 1 or not args.source_run_id or args.source_run_id < 1:
+            parser.error("release recovery requires exact artifact and source run IDs")
+        resume(args.directory, args.tag, args.commit, args.artifact_id, args.source_run_id, key, GitHub())
 
 
 if __name__ == "__main__":

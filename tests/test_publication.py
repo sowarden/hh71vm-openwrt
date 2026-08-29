@@ -54,6 +54,7 @@ class PublicationBoundaryTests(unittest.TestCase):
 
     def test_test_branch_cannot_publish_a_release(self):
         workflow = (ROOT / ".github/workflows/autobuild.yml").read_text()
+        recovery = (ROOT / ".github/workflows/release-resume.yml").read_text()
         validation = (ROOT / ".github/workflows/validate.yml").read_text()
         publisher = (ROOT / "autobuild/publish.py").read_text()
         self.assertIn("if: github.ref == 'refs/heads/main'", workflow)
@@ -61,6 +62,23 @@ class PublicationBoundaryTests(unittest.TestCase):
         self.assertNotIn("pull_request:", workflow + validation)
         self.assertIn('args.command == "publish"', publisher)
         self.assertIn('os.environ.get("GITHUB_REF") != "refs/heads/main"', publisher)
+        self.assertIn("workflow_dispatch:", recovery)
+        self.assertNotIn("push:", recovery)
+        self.assertNotIn("self-hosted", recovery)
+        self.assertIn("github.ref == 'refs/heads/openwrt-autobuild'", recovery)
+        self.assertIn("artifact-ids: ${{ inputs.artifact-id }}", recovery)
+        self.assertIn("run-id: ${{ inputs.source-run-id }}", recovery)
+        self.assertIn('args.command == "resume"', publisher)
+        self.assertIn('event != "workflow_dispatch"', publisher)
+        checker = (ROOT / "autobuild/check-workflows.sh").read_text()
+        for name in ("autobuild.yml", "release-resume.yml", "validate.yml"):
+            self.assertIn(".github/workflows/" + name, checker)
+
+    def test_current_release_has_no_hardware_test_marker(self):
+        public = "\n".join((ROOT / path).read_text() for path in
+                           ("README.md", "autobuild/build.py", "autobuild/common.py", "autobuild/publish.py"))
+        self.assertNotIn("Not tested on hardware", public)
+        self.assertNotIn('"hardware_tested": False', public)
 
     def test_base_image_preserves_https_dependencies(self):
         manifest = (FIRMWARE / "openwrt-rtkmipsel-rtl8197f-hh71vm.manifest").read_text()

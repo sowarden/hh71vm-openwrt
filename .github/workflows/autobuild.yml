@@ -36,6 +36,7 @@ jobs:
 
   build:
     needs: validate
+    if: needs.validate.result == 'success' && !contains(github.event.head_commit.message, '[release-resume]')
     runs-on: [self-hosted, linux, ARM64, hh71vm-build]
     timeout-minutes: 1440
     outputs:
