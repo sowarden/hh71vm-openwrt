@@ -2343,6 +2343,8 @@ local function sms_list_job(done)
 		if ok then
 			M.sms_pending = 0
 			S.sms.unread = SMS.merge(list)
+			M.sms_messages = list
+			M.sms_generation = (M.sms_generation or 0) + 1
 		end
 		M.publish()
 		done(ok, list, err, #msgs)
@@ -2356,6 +2358,14 @@ function API.sms_list(cli, args)
 		             segments = segments, messages = list })
 	end))
 	M.start_next()
+end
+
+--- Return the latest assembled list without touching the modem.  Background +CMTI
+--- handling and the boot-time sync keep this cache current; consumers may poll this
+--- method without issuing repeated AT+CMGL reads or opening another modem channel.
+function API.sms_snapshot(cli, args)
+	reply(cli, { ok = true, generation = M.sms_generation or 0,
+	             messages = M.sms_messages or {} })
 end
 
 --- The same read, with nobody asking.  Without it the message counter is whatever the
@@ -2439,6 +2449,18 @@ function API.sms_delete(cli, args)
 	run_for(cli, "sms_delete", steps, function(ok, _, err)
 		if ok then
 			for _, n in ipairs(wanted) do SMS.forget(n) end
+			local deleted = {}
+			for _, n in ipairs(wanted) do deleted[n] = true end
+			local remaining = {}
+			for _, message in ipairs(M.sms_messages or {}) do
+				local keep = true
+				for _, n in ipairs(message.indexes or { message.index }) do
+					if deleted[tonumber(n)] then keep = false; break end
+				end
+				if keep then remaining[#remaining + 1] = message end
+			end
+			M.sms_messages = remaining
+			M.sms_generation = (M.sms_generation or 0) + 1
 			M.publish()
 		end
 		return { ok = ok, error = err, deleted = wanted }

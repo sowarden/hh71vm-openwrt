@@ -1,0 +1,31 @@
+#!/usr/bin/lua
+-- SPDX-License-Identifier: Apache-2.0
+
+package.path = '/usr/libexec/sms-to-telegram/?.lua;' .. package.path
+local json, runtime = require 'luci.jsonc', require 'runtime'
+local methods = {
+	status = {},
+	config_get = {},
+	config_set = { token = 'str', chat_id = 'str', remove_after_send = true },
+	discover_chat = { token = 'str' },
+}
+
+if arg[1] == 'list' then
+	local result = {}
+	for name, signature in pairs(methods) do
+		local body = json.stringify(signature)
+		if body == '[]' then body = '{}' end
+		result[#result + 1] = json.stringify(name) .. ':' .. body
+	end
+	print('{' .. table.concat(result, ',') .. '}')
+else
+	local ok, result = pcall(function()
+		if arg[1] ~= 'call' or not methods[arg[2]] then error('unknown_method', 0) end
+		local params = json.parse(io.read('*a') or '') or {}
+		if arg[2] == 'status' then return runtime.status() end
+		if arg[2] == 'config_get' then return runtime.config_get() end
+		if arg[2] == 'config_set' then return runtime.write_config(params) end
+		if arg[2] == 'discover_chat' then return runtime.discover_chat(params.token or '') end
+	end)
+	print(json.stringify(ok and result or { ok = false, error = 'internal_error' }))
+end

@@ -11,7 +11,8 @@ from pathlib import Path, PurePosixPath
 
 REPOSITORY = "sowarden/hh71vm-openwrt"
 ARCHITECTURE = "mipsel_24kc"
-ROOTS = ("luci-app-modem-extra-tools", "luci-proto-wireguard", "wireguard-tools")
+ROOTS = ("luci-app-modem-extra-tools", "luci-app-sms-to-telegram",
+         "luci-proto-wireguard", "wireguard-tools")
 IMAGE_ASSETS = {
     "fwupg": "openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin",
     "sysupgrade": "openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin",

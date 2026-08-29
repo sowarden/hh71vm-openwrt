@@ -55,3 +55,5 @@ jobs:
           sudo apt-get install -y lua5.1
           cd openwrt-feed/package/utils/modem-extra-tools
           lua5.1 tests/unit.lua files
+          cd ../sms-to-telegram
+          lua5.1 tests/unit.lua files

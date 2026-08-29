@@ -25,6 +25,10 @@ stated in their source headers and package metadata; the license text is include
 [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0). The `hh71vm-ipt-ipopt` module package is
 GPL-2.0-only and is covered by the repository root [`LICENSE`](LICENSE).
 
+The `sms-to-telegram` Lua backend and LuCI package are Apache-2.0. Its minimal HTTPS
+transport is ISC-licensed and built against OpenWrt's ISC-licensed `libuclient`; the
+license text is included as [`LICENSE-ISC`](LICENSE-ISC).
+
 ## Documentation and RAM boot tool
 
 Unless a file says otherwise, the repository documentation and `tools/ram_boot.py` are

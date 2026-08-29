@@ -33,6 +33,7 @@ local METHODS = {
 	apn_list        = {},
 	net_mode        = {},
 	sms_list        = {},
+	sms_snapshot    = {},
 	sms_settings    = {},
 	sms_read        = { index = 0 },
 	phonebook_list  = { first = 0, count = 0 },

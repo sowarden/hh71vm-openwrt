@@ -130,6 +130,7 @@ def release_body(manifest, marker):
             f"Kernel ABI: `{manifest['kernel']}`. Architecture: `{manifest['architecture']}`.\n\n"
             "The images include the signed package feed for this build.\n\n"
             "```sh\nopkg update\nopkg install luci-app-modem-extra-tools\n"
+            "opkg install luci-app-sms-to-telegram\n"
             "opkg install luci-proto-wireguard\n```\n\n"
             "Older images keep their own feeds. Do not force dependencies or run a global package upgrade.\n\n"
             f"[Download the complete flash bundle]({manifest['feed_url']}/{BUNDLE_ASSET})\n\n"

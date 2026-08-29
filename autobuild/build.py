@@ -318,7 +318,7 @@ def collect(source, build, output, args, key, lock):
     with (output / "source-delta.tar.gz").open("wb") as stream:
         archive = subprocess.Popen(["git", "-C", str(source), "archive", args.commit, "autobuild",
                                     "openwrt-feed", "tools", "docs", "LICENSE",
-                                    "LICENSE-APACHE-2.0", "LICENSING.md"], stdout=subprocess.PIPE)
+                                    "LICENSE-APACHE-2.0", "LICENSE-ISC", "LICENSING.md"], stdout=subprocess.PIPE)
         with gzip.GzipFile(fileobj=stream, mode="wb", mtime=0) as zipped:
             shutil.copyfileobj(archive.stdout, zipped)
         if archive.wait():

@@ -1,0 +1,15 @@
+{
+	"luci-app-sms-to-telegram": {
+		"description": "Configure SMS forwarding to Telegram",
+		"read": {
+			"ubus": {
+				"sms-to-telegram": [ "status", "config_get" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"sms-to-telegram": [ "config_set", "discover_chat" ]
+			}
+		}
+	}
+}

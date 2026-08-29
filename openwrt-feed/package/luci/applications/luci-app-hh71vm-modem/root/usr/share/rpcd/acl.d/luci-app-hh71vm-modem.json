@@ -17,6 +17,7 @@
 					"net_mode",
 					"net_scan_result",
 					"sms_list",
+					"sms_snapshot",
 					"sms_settings",
 					"sms_read",
 					"phonebook_list"

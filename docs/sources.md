@@ -150,6 +150,8 @@ directories are:
 package/utils/modem-extra-tools/
 package/luci/applications/luci-app-modem-extra-tools/
 package/utils/hh71vm-ipt-ipopt/
+package/utils/sms-to-telegram/
+package/luci/applications/luci-app-sms-to-telegram/
 ```
 
 The unified workflow builds these packages from source in the same buildroot as the image.

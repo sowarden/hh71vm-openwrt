@@ -1,0 +1,15 @@
+#!/usr/bin/lua
+-- SPDX-License-Identifier: Apache-2.0
+
+package.path = '/usr/libexec/sms-to-telegram/?.lua;' .. package.path
+local runtime = require 'runtime'
+
+local ok, err = pcall(function()
+	if arg[1] == 'run' then return runtime.run(false) end
+	if arg[1] == 'once' then return runtime.run(true) end
+	error('usage: sms-to-telegram run|once', 0)
+end)
+if not ok then
+	require('nixio').syslog('err', 'sms-to-telegram: internal_error')
+	os.exit(1)
+end

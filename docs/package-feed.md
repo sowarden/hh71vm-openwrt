@@ -6,6 +6,7 @@ or file transfer is needed on a clean installation.
 ```sh
 opkg update
 opkg install luci-app-modem-extra-tools
+opkg install luci-app-sms-to-telegram
 opkg install luci-proto-wireguard
 ```
 
@@ -41,6 +42,18 @@ opkg install \
   /tmp/hh71vm-offline/modem-extra-tools_*.ipk \
   /tmp/hh71vm-offline/luci-app-modem-extra-tools_*.ipk
 ```
+
+For SMS forwarding, install the following files from the same extracted bundle. The HTTPS,
+JSON, ubus and CA dependencies are already present in the matching base image:
+
+```sh
+opkg install \
+  /tmp/hh71vm-offline/libuci-lua_*.ipk \
+  /tmp/hh71vm-offline/sms-to-telegram_*.ipk \
+  /tmp/hh71vm-offline/luci-app-sms-to-telegram_*.ipk
+```
+
+Configuration and delivery semantics are documented in [SMS to Telegram](sms-to-telegram.md).
 
 Stop if the Release tag does not match the installed image or opkg reports a kernel ABI or
 dependency error. Do not use `--force-depends`, install IPKs from another Release, or run a
