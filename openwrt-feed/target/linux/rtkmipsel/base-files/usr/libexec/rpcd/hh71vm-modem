@@ -23,6 +23,7 @@ local METHODS = {
 	-- read-only
 	status          = {},
 	refresh         = {},
+	device_refresh  = {},
 	usage           = {},
 	urc             = {},
 	methods         = {},

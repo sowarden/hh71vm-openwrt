@@ -22,7 +22,7 @@ the normal way to use this firmware.
 | Download firmware and flashing tools | [Latest flash bundle](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip) |
 | Install OpenWrt permanently | [Flash installation guide](docs/flash-install.md) |
 | Add optional modem controls or WireGuard | [Signed package feed](docs/package-feed.md) |
-| Try the build first, without writing flash (needs UART) | [RAM boot guide](docs/installation.md) |
+| Try the build first, without writing flash (needs UART) | [RAM boot guide](docs/ram-boot.md) |
 | Check what works and what does not | [Known issues](docs/known-issues.md) |
 | Test a subsystem and report results | [Testing guide](docs/testing.md) |
 | Rebuild from source | [Sources and build instructions](docs/sources.md) |
@@ -115,7 +115,7 @@ credentials, and keys. Attach searchable text, not screenshots of text.
 | Path | Purpose |
 |---|---|
 | [`docs/flash-install.md`](docs/flash-install.md) | Backup, permanent installation, update, rollback |
-| [`docs/installation.md`](docs/installation.md) | Optional RAM dry run over UART |
+| [`docs/ram-boot.md`](docs/ram-boot.md) | Optional RAM dry run over UART |
 | [`docs/known-issues.md`](docs/known-issues.md) | Current limitations and expected quirks |
 | [`docs/testing.md`](docs/testing.md) | Test matrix, log collection, and reporting |
 | [`docs/sources.md`](docs/sources.md) | Source provenance and build instructions |

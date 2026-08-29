@@ -209,8 +209,21 @@ Then work through the [testing guide](testing.md) and send a compatibility repor
 
 ## Updating an installed system
 
-Use the OpenWrt updater on the device. No installation tool and no button press is needed.
-Download the latest
+New images include `autosysupgrade`, which downloads and verifies the latest production Release,
+runs the OpenWrt image compatibility check, and asks for confirmation before changing flash:
+
+```sh
+autosysupgrade
+```
+
+It verifies the signed `release.json` against the public key embedded in the read-only firmware,
+then verifies the image SHA-256. The confirmation warns that the router can remain unavailable for
+approximately 5-7 minutes. Use `autosysupgrade -n` for a clean installation that does not preserve
+the current configuration. `autosysupgrade --check` performs all download, signature, checksum, and
+compatibility checks without starting an upgrade.
+
+For older images without this command, use the OpenWrt updater manually. No installation tool and
+no button press is needed. Download the latest
 [`sysupgrade` image](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin)
 and verify it against the
 [`SHA256SUMS`](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/SHA256SUMS)
@@ -267,7 +280,7 @@ development:
 
 Each of them prints its plan before touching the port, and each supports `--dry-run`. The
 serial console is `38400 8N1` on the **Realtek** side; see the
-[RAM boot guide](installation.md) for the pinout photo and wiring rules.
+[RAM boot guide](ram-boot.md) for the pinout photo and wiring rules.
 
 Close every other program using the serial port first. Only one program can own it.
 

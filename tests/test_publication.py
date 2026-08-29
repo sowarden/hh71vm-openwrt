@@ -85,6 +85,39 @@ class PublicationBoundaryTests(unittest.TestCase):
             self.assertIn(f"CONFIG_PACKAGE_{name}=y\n", config)
         self.assertIn("CONFIG_PACKAGE_kmod-wireguard=m\n", config)
 
+    def test_autosysupgrade_is_fail_closed_and_embedded(self):
+        updater = (ROOT /
+                   "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/autosysupgrade")
+        text = updater.read_text()
+        self.assertTrue(text.startswith("#!/bin/sh\n"))
+        for marker in (
+            "release.json.sig",
+            "usign -V",
+            "sha256sum",
+            "sysupgrade -T",
+            "installed build is newer than the latest public Release",
+            "--force",
+            'architecture" = mipsel_24kc',
+            'board_name 2>/dev/null || true)" = hh71vm',
+            "releases/download/$tag",
+        ):
+            self.assertIn(marker, text)
+        self.assertNotIn("--no-check-certificate", text)
+        self.assertIn('[ "$installed" = "$tag" ] && [ "$keep_config" = 1 ] && [ "$check_only" = 0 ]', text)
+        inspector = (ROOT / "autobuild/inspect_image.py").read_text()
+        self.assertIn('files.get("usr/sbin/autosysupgrade")', inspector)
+
+    def test_offline_modem_bootstrap_includes_direct_runtime_dependencies(self):
+        guide = (ROOT / "docs/package-feed.md").read_text()
+        for package in (
+            "libuci-lua_*.ipk",
+            "iptables-mod-ipopt_*.ipk",
+            "kmod-hh71vm-ipt-ipopt_*.ipk",
+            "modem-extra-tools_*.ipk",
+            "luci-app-modem-extra-tools_*.ipk",
+        ):
+            self.assertIn(package, guide)
+
     def test_generated_publication_directories_are_not_versioned(self):
         for name in ("firmware", "packages", "extras", "dist"):
             with self.subTest(name=name):

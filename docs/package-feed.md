@@ -16,6 +16,37 @@ After installing a package that adds a LuCI page, log out of LuCI and sign in
 again. The active browser session can retain its previous menu tree even after
 the router-side index cache is rebuilt. A router reboot is not required.
 
+## Offline installation over LAN
+
+If mobile service is already restricted, use another computer to download
+`packages-bundle.zip` from the immutable Release that exactly matches the installed
+firmware. The complete flash bundle contains firmware and recovery tools, but currently
+does not contain this optional package bundle.
+
+Check the installed release identity before copying anything:
+
+```sh
+cat /usr/share/hh71vm-feed/release.conf
+```
+
+Extract `packages-bundle.zip` on the computer, create a temporary directory on the router,
+and copy only the required IPKs over the LAN with legacy SCP mode. Keep the IPK filenames
+unchanged. Then install the complete local set in one opkg transaction:
+
+```sh
+opkg install \
+  /tmp/hh71vm-offline/libuci-lua_*.ipk \
+  /tmp/hh71vm-offline/kmod-hh71vm-ipt-ipopt_*.ipk \
+  /tmp/hh71vm-offline/iptables-mod-ipopt_*.ipk \
+  /tmp/hh71vm-offline/modem-extra-tools_*.ipk \
+  /tmp/hh71vm-offline/luci-app-modem-extra-tools_*.ipk
+```
+
+Stop if the Release tag does not match the installed image or opkg reports a kernel ABI or
+dependency error. Do not use `--force-depends`, install IPKs from another Release, or run a
+global `opkg upgrade`. Keeping the tools optional avoids placing IMEI/NV write helpers in
+the base firmware for users who do not need them.
+
 ## Firmware updates
 
 After sysupgrade, the image restores its own feed URL and public key. Recognized

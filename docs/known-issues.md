@@ -58,6 +58,38 @@ or no networking. Report marker differences.
 - Some radio/scan signal and mode fields in the UI still need audit or clearer handling.
 - Settings changed through the modem pages act on the separate Qualcomm subsystem and may
   persist there. Rebooting or reinstalling the Realtek side is not guaranteed to undo them.
+- An IMEI restore verifies the Qualcomm NV 550 write by reading that NV item back. A fresh
+  `ATI` query refreshes the main Modem overview, but neither result proves that the running
+  modem or mobile network is using the restored identity. After a successful restore, fully
+  shut down the router, disconnect power, and then power it on again. The implemented
+  OpenWrt reboot path resets the Realtek SoC and has no confirmed Qualcomm reset step, so
+  it is not a substitute for this power cycle.
+- OpenWrt and `modem-extra-tools` do not remove a carrier, SIM, subsidy, or network lock.
+  IMEI restoration, TTL normalization, LTE band preferences, SIM PIN handling, and carrier
+  unlocking are separate operations. This project has no verified carrier-unlock method.
+
+## Wi-Fi encryption on older images
+
+Older images can offer WEP for the custom `rtl8192cd` radios even though their netifd handler
+rejects it. Applying WEP can leave the radio down. The supported choices are an open network
+or WPA2-PSK with CCMP/AES; `wpa2` by itself means WPA2-Enterprise and is not a substitute.
+
+Until an image containing the LuCI capability fix is installed, the following recovery can
+be applied through SSH to each affected `wifi-iface`. This procedure follows the current
+generator and netifd contract but has not yet been independently validated on hardware:
+
+```sh
+uci set wireless.default_radio0.encryption='psk2+ccmp'
+uci set wireless.default_radio0.key='REPLACE_WITH_8_TO_63_ASCII_CHARACTERS'
+uci set wireless.default_radio1.encryption='psk2+ccmp'
+uci set wireless.default_radio1.key='REPLACE_WITH_8_TO_63_ASCII_CHARACTERS'
+uci commit wireless
+wifi reload
+```
+
+Confirm the actual section names before running the commands; `default_radio0` and
+`default_radio1` are factory defaults, not a universal promise. Do not change the radio
+device type, install hostapd/wpad as a workaround, or select `mac80211`/`broadcom`.
 
 ## Installing packages over the mobile link
 

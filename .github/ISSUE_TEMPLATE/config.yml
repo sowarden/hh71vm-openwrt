@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: RAM boot guide
-    url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/installation.md
+    url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/ram-boot.md
     about: Follow the supported procedure before opening a report.
   - name: Testing and log collection
     url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/testing.md

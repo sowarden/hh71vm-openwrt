@@ -1238,13 +1238,15 @@ local function set(tbl, key, value)
 end
 
 function M.parsers.ati_lines(lines)
+	local parsed = {}
 	for _, l in ipairs(lines) do
 		local k, v = l:match("^(%a[%w ]-):%s*(.+)$")
-		if k == "Model" then set("device", "model", v)
-		elseif k == "Revision" then set("device", "revision", v)
-		elseif k == "Manufacturer" then set("device", "vendor", v)
-		elseif k == "IMEI" then set("device", "imei", v) end
+		if k == "Model" then set("device", "model", v); parsed.model = v
+		elseif k == "Revision" then set("device", "revision", v); parsed.revision = v
+		elseif k == "Manufacturer" then set("device", "vendor", v); parsed.vendor = v
+		elseif k == "IMEI" then set("device", "imei", v); parsed.imei = v end
 	end
+	return parsed
 end
 
 -- RSSI in dBm from the 0..31 scale of +CSQ, and 0..5 "bars" the UI can draw.
@@ -2243,6 +2245,19 @@ function API.refresh(cli, args)
 	end
 	M.enqueue(r, true)
 	M.start_next()
+end
+
+--- Refresh only the modem-reported device identity.  This is intentionally narrower
+--- than the general refresh so an NV restore can invalidate the overview cache without
+--- queueing every slow status command.  ATI is readback, not proof of network acceptance.
+function API.device_refresh(cli)
+	local fresh = {}
+	run_for(cli, "device_refresh", {
+		{ cmd = "ATI", parse = function(lines) fresh = M.parsers.ati_lines(lines) end },
+	}, function(ok, _, err)
+		M.publish()
+		return { ok = ok, error = err, device = fresh }
+	end)
 end
 
 --- Arbitrary AT is an administrative privilege, but it still shares the one AT engine

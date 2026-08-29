@@ -10,6 +10,17 @@ function M.quote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 function M.exec(command) return os.execute(command) == 0 end
+function M.refresh_modem_identity()
+  local pipe=io.popen('ubus call hh71vm-modem device_refresh 2>/dev/null','r')
+  if not pipe then return nil end
+  local text=pipe:read('*a') or ''
+  pipe:close()
+  local ok,value=pcall(json.parse,text)
+  if not ok or type(value)~='table' or value.ok~=true or type(value.device)~='table' then
+    return nil
+  end
+  return value.device
+end
 function M.read(path) return fs.readfile(path) end
 function M.json(path)
   local text = M.read(path)

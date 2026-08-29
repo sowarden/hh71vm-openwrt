@@ -54,6 +54,10 @@ def check_files(files, tag, key, expected_installed=None):
         expected = (Path(__file__).parent / "package/hh71vm-feed/files" / source).read_bytes().replace(b"\r\n", b"\n")
         if files.get(name) != expected:
             raise ValueError("image feed migration code differs from source")
+    updater = (Path(__file__).parents[1] /
+               "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/autosysupgrade")
+    if files.get("usr/sbin/autosysupgrade") != updater.read_bytes().replace(b"\r\n", b"\n"):
+        raise ValueError("image autosysupgrade differs from source")
     installed = records(files["usr/lib/opkg/status"].decode())
     if expected_installed is not None and sorted(installed, key=lambda r: r["Package"]) != sorted(expected_installed, key=lambda r: r["Package"]):
         raise ValueError("manifest package inventory differs from embedded image")

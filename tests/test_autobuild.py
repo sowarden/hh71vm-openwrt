@@ -318,6 +318,7 @@ class ImageInspectionTests(unittest.TestCase):
                 "etc/opkg/hh71vm.conf": ("src/gz hh71vm " + auto.feed_url(TAG) + "\n").encode(),
                 "usr/lib/opkg/status": "".join(f"{k}: {v}\n" for k, v in package("kernel", version=KERNEL).items()).encode(),
                 "usr/sbin/xtables-legacy-multi": bytes(elf),
+                "usr/sbin/autosysupgrade": (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/autosysupgrade").read_bytes().replace(b"\r\n", b"\n"),
             }
             for name, source in (("usr/libexec/hh71vm-feed-reconcile", "reconcile.sh"),
                                  ("etc/uci-defaults/99-hh71vm-feed", "99-hh71vm-feed")):

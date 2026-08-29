@@ -18,7 +18,7 @@ SOURCE_FILES = {
     "tools/ram_boot.py": "tools/ram_boot.py",
     "tools/verify_bundle.py": "verify_bundle.py",
     "docs/flash-install.md": "docs/flash-install.md",
-    "docs/installation.md": "docs/installation.md",
+    "docs/ram-boot.md": "docs/ram-boot.md",
     "docs/telnet-access.md": "docs/telnet-access.md",
     "docs/testing.md": "docs/testing.md",
     "docs/assets/realtek-uart-pinout.jpg": "docs/assets/realtek-uart-pinout.jpg",
@@ -64,7 +64,7 @@ another Release.
 1. Open a terminal in this directory.
 2. Run `python verify_bundle.py`.
 3. Read `docs/flash-install.md` for stock installation or sysupgrade.
-4. Read `docs/installation.md` for optional RAM boot over UART.
+4. Read `docs/ram-boot.md` for optional RAM boot over UART.
 
 The LAN installer performs a dry run and stock backup before writing flash when used as
 documented. Keep the generated `backup-stock` directory safe and device-specific.

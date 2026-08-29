@@ -46,6 +46,20 @@ def copy_overlay(source, destination):
                     path.chmod(0o755)
 
 
+def apply_feed_patches(source, build, feed):
+    """Apply repository-owned patches to an exact, freshly checked out feed."""
+    patch_dir = source / "openwrt-feed" / "patches" / feed
+    if not patch_dir.is_dir():
+        return
+    checkout = build / "feeds" / feed
+    patches = sorted(patch_dir.glob("*.patch"))
+    if not patches:
+        raise ValueError("empty feed patch directory: " + feed)
+    for patch in patches:
+        run("patch", "-p1", "--fuzz=0", "--input=" + str(patch.resolve()), cwd=checkout)
+    run("git", "diff", "--check", cwd=checkout)
+
+
 def prepare(source, build, cache, key, tag, lock):
     if build.exists():
         raise ValueError("refusing an existing buildroot")
@@ -60,6 +74,7 @@ def prepare(source, build, cache, key, tag, lock):
     (build / "version").write_text(tag + "\n")
     (build / "feeds.conf").write_text("".join(
         f"src-git {name} {s['url']}^{s['revision']}\n" for name, s in lock["upstream"].items() if name != "openwrt"))
+    apply_feed_patches(source, build, "luci")
     run("./scripts/feeds", "update", "-i", cwd=build)
     run("./scripts/feeds", "install", "-a", cwd=build)
     copy_overlay(source / "openwrt-feed/target/linux/rtkmipsel", build / "target/linux/rtkmipsel")

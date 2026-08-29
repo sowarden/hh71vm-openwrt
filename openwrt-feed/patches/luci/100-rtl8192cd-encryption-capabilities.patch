@@ -1,0 +1,136 @@
+From: sowarden <sowarden@proton.me>
+Subject: [PATCH] luci-mod-network: describe rtl8192cd encryption capabilities
+
+The HH71VM rtl8192cd netifd handler implements open networks and WPA2-PSK
+with CCMP through the driver's built-in authenticator. It does not use
+hostapd and rejects WEP and all enterprise or WPA3 modes.
+
+Keep the device type unchanged, round-trip the existing psk2+ccmp UCI value,
+and force CCMP instead of presenting unsupported cipher choices.
+---
+ .../resources/view/network/wireless.js | 70 +++++++++++++++++---------
+ 1 file changed, 46 insertions(+), 24 deletions(-)
+
+diff --git a/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js b/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js
+--- a/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js
++++ b/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js
+@@ -11,6 +11,24 @@
+ 'require firewall';
+ 'require tools.widgets as widgets';
+ 
++function normalizeEncryptionValue(hwtype, encryption, cipher, cipherActive) {
++	if (hwtype == 'rtl8192cd')
++		return (encryption == 'psk2') ? 'psk2+ccmp' : encryption;
++
++	if (cipherActive && encryption &&
++	    (cipher == 'tkip' || cipher == 'ccmp' || cipher == 'tkip+ccmp'))
++		return encryption + '+' + cipher;
++
++	return encryption;
++}
++
++function rtl8192cdCryptoModes(hwtype) {
++	return (hwtype == 'rtl8192cd') ? [
++		['psk2', 'WPA2-PSK', 35],
++		['none',  _('No Encryption'), 0]
++	] : null;
++}
++
+ function count_changes(section_id) {
+ 	var changes = ui.changes.changes, n = 0;
+ 
+@@ -1127,46 +1145,48 @@ return view.extend({
+ 
+ 				o.write = function(section_id, value) {
+ 					var e = this.section.children.filter(function(o) { return o.option == 'encryption' })[0].formvalue(section_id),
+-					    co = this.section.children.filter(function(o) { return o.option == 'cipher' })[0], c = co.formvalue(section_id);
++					    co = this.section.children.filter(function(o) { return o.option == 'cipher' })[0],
++					    c = co ? co.formvalue(section_id) : null;
+ 
+ 					if (value == 'wpa' || value == 'wpa2' || value == 'wpa3' || value == 'wpa3-mixed')
+ 						uci.unset('wireless', section_id, 'key');
+ 
+-					if (co.isActive(section_id) && e && (c == 'tkip' || c == 'ccmp' || c == 'tkip+ccmp'))
+-						e += '+' + c;
++					e = normalizeEncryptionValue(hwtype, e, c, co && co.isActive(section_id));
+ 
+ 					uci.set('wireless', section_id, 'encryption', e);
+ 				};
+ 
+-				o = ss.taboption('encryption', form.ListValue, 'cipher', _('Cipher'));
+-				o.depends('encryption', 'wpa');
+-				o.depends('encryption', 'wpa2');
+-				o.depends('encryption', 'wpa3');
+-				o.depends('encryption', 'wpa3-mixed');
+-				o.depends('encryption', 'psk');
+-				o.depends('encryption', 'psk2');
+-				o.depends('encryption', 'wpa-mixed');
+-				o.depends('encryption', 'psk-mixed');
+-				o.value('auto', _('auto'));
+-				o.value('ccmp', _('Force CCMP (AES)'));
+-				o.value('tkip', _('Force TKIP'));
+-				o.value('tkip+ccmp', _('Force TKIP and CCMP (AES)'));
+-				o.write = ss.children.filter(function(o) { return o.option == 'encryption' })[0].write;
+-
+-				o.cfgvalue = function(section_id) {
+-					var v = String(uci.get('wireless', section_id, 'encryption'));
+-					if (v.match(/\+/)) {
+-						v = v.replace(/^[^+]+\+/, '');
+-						if (v == 'aes')
+-							v = 'ccmp';
+-						else if (v == 'tkip+aes' || v == 'aes+tkip' || v == 'ccmp+tkip')
+-							v = 'tkip+ccmp';
++				if (hwtype != 'rtl8192cd') {
++					o = ss.taboption('encryption', form.ListValue, 'cipher', _('Cipher'));
++					o.depends('encryption', 'wpa');
++					o.depends('encryption', 'wpa2');
++					o.depends('encryption', 'wpa3');
++					o.depends('encryption', 'wpa3-mixed');
++					o.depends('encryption', 'psk');
++					o.depends('encryption', 'psk2');
++					o.depends('encryption', 'wpa-mixed');
++					o.depends('encryption', 'psk-mixed');
++					o.value('auto', _('auto'));
++					o.value('ccmp', _('Force CCMP (AES)'));
++					o.value('tkip', _('Force TKIP'));
++					o.value('tkip+ccmp', _('Force TKIP and CCMP (AES)'));
++					o.write = ss.children.filter(function(o) { return o.option == 'encryption' })[0].write;
++
++					o.cfgvalue = function(section_id) {
++						var v = String(uci.get('wireless', section_id, 'encryption'));
++						if (v.match(/\+/)) {
++							v = v.replace(/^[^+]+\+/, '');
++							if (v == 'aes')
++								v = 'ccmp';
++							else if (v == 'tkip+aes' || v == 'aes+tkip' || v == 'ccmp+tkip')
++								v = 'tkip+ccmp';
++						}
++						return v;
+ 					}
+-					return v;
+-				};
++				}
+ 
+ 
+-				var crypto_modes = [];
++				var crypto_modes = rtl8192cdCryptoModes(hwtype) || [];
+ 
+ 				if (hwtype == 'mac80211') {
+ 					var has_supplicant = L.hasSystemFeature('wpasupplicant'),
+@@ -1290,9 +1310,11 @@ return view.extend({
+ 					crypto_modes.push(['psk',      'WPA-PSK',                     21]);
+ 				}
+ 
+-				crypto_modes.push(['wep-open',   _('WEP Open System'), 11]);
+-				crypto_modes.push(['wep-shared', _('WEP Shared Key'),  10]);
+-				crypto_modes.push(['none',       _('No Encryption'),   0]);
++				if (hwtype != 'rtl8192cd') {
++					crypto_modes.push(['wep-open',   _('WEP Open System'), 11]);
++					crypto_modes.push(['wep-shared', _('WEP Shared Key'),  10]);
++					crypto_modes.push(['none',       _('No Encryption'),   0]);
++				}
+ 
+ 				crypto_modes.sort(function(a, b) { return b[2] - a[2] });
+ 
+-- 
+2.43.0

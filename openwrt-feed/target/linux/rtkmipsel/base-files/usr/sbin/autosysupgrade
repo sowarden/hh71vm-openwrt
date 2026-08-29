@@ -1,0 +1,157 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+repository='https://github.com/sowarden/hh71vm-openwrt'
+asset='openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin'
+latest="$repository/releases/latest/download"
+keep_config=1
+check_only=0
+force=0
+
+usage() {
+  cat <<'EOF'
+Usage: autosysupgrade [-n] [--check] [--force]
+
+Download and verify the latest HH71VM sysupgrade image.
+  -n       do not preserve the current configuration
+  --check  verify availability and compatibility without upgrading
+  --force  allow replacing a build whose workflow ID is newer than the latest Release
+EOF
+}
+
+fail() {
+  echo "autosysupgrade: $1" >&2
+  exit 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n) keep_config=0 ;;
+    --check) check_only=1 ;;
+    --force) force=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[ "$(id -u)" = 0 ] || fail 'must be run as root'
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null || true)" = hh71vm ] ||
+  fail 'this updater is only for the HH71VM OpenWrt image'
+
+for command in uclient-fetch usign jsonfilter sha256sum sysupgrade mktemp awk; do
+  command -v "$command" >/dev/null 2>&1 || fail "required command is missing: $command"
+done
+
+data=/rom/usr/share/hh71vm-feed
+[ -f "$data/release.pub" ] && [ -f "$data/release.conf" ] || data=/usr/share/hh71vm-feed
+[ -f "$data/release.pub" ] && [ -f "$data/release.conf" ] ||
+  fail 'the installed image trust anchor is missing'
+
+lock=/tmp/autosysupgrade.lock
+mkdir "$lock" 2>/dev/null || fail 'another autosysupgrade process is already running'
+temporary=$(mktemp -d /tmp/autosysupgrade.XXXXXX) || {
+  rmdir "$lock"
+  fail 'cannot create a temporary directory'
+}
+cleanup() {
+  rm -f "$temporary/release.json" "$temporary/release.json.sig" "$temporary/$asset"
+  rmdir "$temporary" "$lock" 2>/dev/null || true
+}
+trap cleanup EXIT HUP INT TERM
+
+download() {
+  uclient-fetch -q -T 60 -O "$2" "$1" || fail "download failed: $1"
+  [ -s "$2" ] || fail "download is empty: $1"
+}
+
+json() {
+  jsonfilter -i "$temporary/release.json" -e "@.$1" 2>/dev/null || true
+}
+
+echo 'Downloading the signed latest-release descriptor...'
+download "$latest/release.json" "$temporary/release.json"
+download "$latest/release.json.sig" "$temporary/release.json.sig"
+usign -V -p "$data/release.pub" -m "$temporary/release.json" \
+  -x "$temporary/release.json.sig" >/dev/null 2>&1 ||
+  fail 'release.json signature verification failed'
+
+schema=$(json schema)
+architecture=$(json architecture)
+tag=$(json tag)
+key_id=$(json key_id)
+image_url=$(json feed_url)
+trusted_key_id=$(usign -F -p "$data/release.pub" 2>/dev/null) ||
+  fail 'cannot read the installed trust anchor'
+checksum=$(awk -v key="\"$asset\":" '
+  $1 == key && $2 ~ /^"[0-9a-f]+",?$/ {
+    gsub(/[",]/, "", $2)
+    print $2
+  }
+' "$temporary/release.json")
+
+[ "$schema" = 1 ] || fail 'unsupported release descriptor schema'
+[ "$architecture" = mipsel_24kc ] || fail 'the latest Release is for a different architecture'
+case "$tag" in hh71vm-[A-Za-z0-9._-]*) ;; *) fail 'invalid Release tag' ;; esac
+[ "$key_id" = "$trusted_key_id" ] || fail 'Release key does not match the installed trust anchor'
+[ "$image_url" = "$repository/releases/download/$tag" ] || fail 'invalid immutable Release URL'
+[ "${#checksum}" = 64 ] || fail 'the image checksum is missing or invalid'
+case "$checksum" in *[!0-9a-f]*) fail 'the image checksum is invalid' ;; esac
+
+installed=$(awk -F= '$1 == "release" { print $2 }' "$data/release.conf")
+echo "Installed Release: ${installed:-unknown}"
+echo "Latest Release:    $tag"
+
+installed_run=${installed#*-r}
+installed_run=${installed_run%%-a*}
+latest_run=${tag#*-r}
+latest_run=${latest_run%%-a*}
+case "$installed_run:$latest_run" in
+  *[!0-9:]*) ;;
+  :*|*:) ;;
+  *)
+    if [ "$installed_run" -gt "$latest_run" ] && [ "$force" = 0 ]; then
+      fail 'the installed build is newer than the latest public Release; use --force only if replacement is intentional'
+    fi
+    ;;
+esac
+
+if [ "$installed" = "$tag" ] && [ "$keep_config" = 1 ] && [ "$check_only" = 0 ]; then
+  echo 'The latest Release is already installed.'
+  exit 0
+fi
+
+echo 'Downloading the immutable sysupgrade image...'
+download "$image_url/$asset" "$temporary/$asset"
+actual=$(sha256sum "$temporary/$asset" | awk '{ print $1 }')
+[ "$actual" = "$checksum" ] || fail 'downloaded image SHA-256 mismatch'
+sysupgrade -T "$temporary/$asset" >/dev/null 2>&1 ||
+  fail 'sysupgrade rejected the downloaded image'
+
+echo "Verified SHA-256:  $checksum"
+echo 'Image compatibility check passed.'
+[ "$check_only" = 0 ] || exit 0
+
+echo
+echo 'WARNING: The router will be unavailable while the firmware is installed.'
+echo 'The complete upgrade and boot can take approximately 5-7 minutes.'
+if [ "$keep_config" = 0 ]; then
+  echo 'WARNING: -n was selected; current configuration will not be preserved.'
+fi
+while :; do
+  printf 'Continue with the firmware upgrade? [y/n] '
+  IFS= read -r answer || answer=n
+  case "$answer" in
+    y|Y) break ;;
+    n|N) echo 'Upgrade cancelled.'; exit 0 ;;
+    *) echo 'Please enter y or n.' ;;
+  esac
+done
+
+echo 'Starting sysupgrade. Do not disconnect power during the upgrade.'
+if [ "$keep_config" = 1 ]; then
+  exec sysupgrade -v "$temporary/$asset"
+else
+  exec sysupgrade -n -v "$temporary/$asset"
+fi

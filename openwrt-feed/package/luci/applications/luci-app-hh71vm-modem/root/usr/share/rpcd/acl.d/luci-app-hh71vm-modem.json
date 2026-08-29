@@ -6,6 +6,7 @@
 				"hh71vm-modem": [
 					"status",
 					"refresh",
+					"device_refresh",
 					"usage",
 					"urc",
 					"methods",

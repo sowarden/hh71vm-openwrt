@@ -175,6 +175,7 @@ return view.extend({
 			var ownership = E('input', { 'type': 'checkbox' });
 			var imeiChildren = [
 				E('p', { 'class': 'alert-message warning' }, _('Use this only to restore the original IMEI printed on the label or box of this exact router. Do not enter an invented value or an IMEI from another device.')),
+				E('p', { 'class': 'alert-message warning' }, _('After a successful restore, fully shut down the router, disconnect its power, and then power it on again. A normal OpenWrt reboot restarts the Realtek/OpenWrt side but does not fully restart the separate Qualcomm modem subsystem, so the restored value may not take effect until this cold power cycle.')),
 				E('p', {}, im.unread ? _('Current IMEI has not been read yet.') :
 					_('Current IMEI: ') + (im.current_imei || _('unreadable')) + (im.current_valid ? '' : _(' (missing, damaged or not checksum-valid)'))),
 				E('p', { 'class': 'cbi-value-description' }, im.backup_present ?
@@ -187,6 +188,13 @@ return view.extend({
 			];
 			if (im.pending) imeiChildren.push(E('p', { 'class': 'alert-message error' },
 				_('An interrupted IMEI restore is recorded. Use recovery to finish writing and verifying the already confirmed target.')));
+			if (im.activation_pending) imeiChildren.push(E('p', { 'class': 'alert-message warning' },
+				_('NV 550 readback completed, but activation by the running modem and the mobile network is not verified. Fully shut down the router, disconnect its power, then power it on again. An OpenWrt reboot or a matching ATI readback is not proof of network acceptance.')));
+			if (im.identity_cache_refreshed === false) imeiChildren.push(E('p', { 'class': 'alert-message notice' },
+				_('The main Modem overview cache could not be refreshed. Its IMEI may remain stale until the modem channel reconnects or the router is fully power-cycled.')));
+			else if (im.reported_imei) imeiChildren.push(E('p', { 'class': 'cbi-value-description' },
+				_('Fresh ATI readback: ') + (im.reported_matches_nv ? _('matches NV 550') : _('differs from NV 550')) +
+				_('. This still does not verify the identity accepted by the mobile network.')));
 			imeiChildren.push(E('div', { 'class': 'cbi-page-actions' }, [
 				button(_('Read current IMEI'), '', false, function() { action(imeiRead, true); }),
 				button(_('Recover interrupted restore'), 'cbi-button-negative', !im.pending, function() {
@@ -206,7 +214,7 @@ return view.extend({
 					ui.showModal(_('Restore original IMEI'), [
 						E('p', {}, _('Current value: ') + (im.current_imei || _('unreadable'))),
 						E('p', {}, _('Restore the label value ') + target + '?'),
-						E('p', { 'class': 'alert-message warning' }, _('This writes only Qualcomm NV item 550, then reads it back for exact verification. Mobile service may reconnect. Do not power off the router during the operation.')),
+						E('p', { 'class': 'alert-message warning' }, _('This writes only Qualcomm NV item 550, then reads it back for exact verification. Mobile service may reconnect. Do not power off the router during the operation. After success, fully disconnect router power before relying on the restored value.')),
 						E('div', { 'class': 'cbi-page-actions' }, [
 							E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')),
 							E('button', { 'class': 'cbi-button cbi-button-negative', 'click': function() {

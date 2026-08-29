@@ -16,7 +16,7 @@ name, sends ``AUTOBURN 0`` as an independent guard, and has no flash read, write
 command.
 
 The router must already be stopped at the ``<RealTek>`` prompt. See
-``docs/installation.md`` before using this program.
+``docs/ram-boot.md`` before using this program.
 """
 
 import argparse

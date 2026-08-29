@@ -4,6 +4,7 @@ local c, fs = require 'common', require 'nixio.fs'
 local I={}
 local backup=c.directory .. '/imei-before-restore.json'
 local pending=c.directory .. '/imei-pending.json'
+local activation=c.directory .. '/imei-activation-pending.json'
 local cache=c.runtime .. '/imei.json'
 
 function I.valid(value)
@@ -58,6 +59,15 @@ local function describe(raw)
     state.pending_target=journal.target
     state.pending_target_matches=decoded_ok and value==journal.target or false
   end
+  local marker=c.json(activation)
+  if marker and type(marker)=='table' and marker.schema==1 and marker.board==c.board()
+    and I.valid(marker.target) then
+    state.activation_pending=true
+    state.activation_required='full-power-cycle'
+    state.activation_target_matches_nv=decoded_ok and value==marker.target or false
+  else
+    state.activation_pending=false
+  end
   return state
 end
 function I.cached()
@@ -65,6 +75,10 @@ function I.cached()
     pending=fs.access(pending) and true or false,backend='qualcomm-dci-nv550'}
   state.backup_present=fs.access(backup) and true or false
   state.pending=fs.access(pending) and true or false
+  local marker=c.json(activation)
+  state.activation_pending=marker and type(marker)=='table' and marker.schema==1
+    and marker.board==c.board() and I.valid(marker.target) or false
+  if state.activation_pending then state.activation_required='full-power-cycle' end
   return state
 end
 function I.execute(operation,target,confirmed)
@@ -99,13 +113,21 @@ function I.execute(operation,target,confirmed)
     local after=q:run(q.helper .. ' restore ' .. target,12)
     c.need(raw_valid(after),'invalid NV 550 restore reply')
     c.need(I.decode(after)==target,'IMEI readback mismatch')
+    c.atomic(activation,{schema=1,board=c.board(),created=os.time(),target=target})
     fs.unlink(pending); c.need(c.exec('sync'),'filesystem sync failed')
     local before_ok,before_imei=pcall(I.decode,before)
     local state=describe(after); state.changed=not before_ok or before_imei~=target
+    state.nv_readback_verified=true
     return state
   end)
   if q then q:close() end
   lock:close(); c.need(ok,result)
+  local reported=c.refresh_modem_identity()
+  result.identity_cache_refreshed=reported and true or false
+  if reported and I.valid(reported.imei) then
+    result.reported_imei=reported.imei
+    result.reported_matches_nv=result.current_valid and reported.imei==result.current_imei or false
+  end
   c.atomic(cache,result); return result
 end
 return I

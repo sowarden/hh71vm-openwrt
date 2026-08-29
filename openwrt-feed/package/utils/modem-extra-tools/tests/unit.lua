@@ -2,7 +2,7 @@
 -- Pure mocks: never access a modem, filesystem or firewall.
 package.path=(arg[1] or 'files') .. '/?.lua;' .. package.path
 local stored,remote,capability,band_fault,opens,writes={},'',nil,nil,0,0
-local imei_raw,imei_fault,imei_writes='',nil,0
+local imei_raw,imei_fault,imei_writes,reported_imei='',nil,0,nil
 local original='c500088820000000'
 local regional='c700088820000000' -- Same modem plus LTE B2 capability.
 local label_imei='490154203237518'
@@ -21,6 +21,9 @@ c.atomic=function(p,v) stored[p]=v end
 c.read=function(p) return stored[p] end
 c.json=c.read
 c.exec=function() return true end
+c.refresh_modem_identity=function()
+  return reported_imei and {imei=reported_imei} or nil
+end
 
 local function encode_imei(value)
   local result={'08',value:sub(1,1)..'a'}
@@ -69,7 +72,7 @@ local function rejects(fn,pattern)
 end
 local function reset()
   stored={}; remote=original; capability=regional; band_fault=nil; opens=0; writes=0
-  imei_raw=encode_imei(donor_imei); imei_fault=nil; imei_writes=0
+  imei_raw=encode_imei(donor_imei); imei_fault=nil; imei_writes=0; reported_imei=donor_imei
 end
 
 reset()
@@ -153,10 +156,17 @@ rejects(function() I.execute('restore',label_imei,false) end,'explicit confirmat
 test(imei_writes==0,'missing confirmation never writes IMEI')
 rejects(function() I.execute('restore','000000000000000',true) end,'valid Luhn')
 test(imei_writes==0,'invalid target never writes IMEI')
-I.execute('restore',label_imei,true)
+local restored=I.execute('restore',label_imei,true)
 test(I.decode(imei_raw)==label_imei,'confirmed original IMEI restored despite valid foreign current value')
 test(stored[c.directory .. '/imei-before-restore.json'].decoded==donor_imei,'pre-restore NV 550 safety backup saved')
 test(not stored[c.directory .. '/imei-pending.json'],'IMEI journal cleared after verified success')
+test(restored.nv_readback_verified and restored.activation_pending,'verified NV write records pending activation')
+test(restored.activation_required=='full-power-cycle','activation state requires a full power cycle')
+test(restored.identity_cache_refreshed and not restored.reported_matches_nv,'fresh ATI can still report the pre-restore identity')
+test(stored[c.directory .. '/imei-activation-pending.json'].target==label_imei,'activation warning survives an OpenWrt reboot')
+reported_imei=label_imei
+local reread=I.execute('show')
+test(reread.reported_matches_nv and reread.activation_pending,'matching ATI refreshes the cache but does not claim network activation')
 local safety=stored[c.directory .. '/imei-before-restore.json'].raw
 I.execute('restore',donor_imei,true)
 test(stored[c.directory .. '/imei-before-restore.json'].raw==safety,'first IMEI safety backup is never overwritten')
