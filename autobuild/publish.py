@@ -145,18 +145,24 @@ def retire_transfer_artifact(github, artifact_id, manifest):
     github.api(f"actions/artifacts/{artifact_id}", "DELETE")
 
 
-def publish(directory, manifest, github, prerelease=True):
+def release_tag(github, tag, commit, create):
+    ref = github.api("git/ref/tags/" + tag, missing=True)
+    if ref and (ref["object"]["type"] != "commit" or ref["object"]["sha"] != commit):
+        raise ValueError("existing tag points to another source")
+    if not ref:
+        if not create:
+            raise ValueError("release recovery requires the exact maintainer-created tag")
+        ref = github.api("git/refs", "POST", {"ref": "refs/tags/" + tag, "sha": commit})
+        if ref["object"]["type"] != "commit" or ref["object"]["sha"] != commit:
+            raise ValueError("created tag points to another source")
+    return ref
+
+
+def publish(directory, manifest, github, prerelease=True, create_tag=True):
     tag = manifest["tag"]
     marker = "<!-- hh71vm-release:" + sha256(directory / "release.json") + " -->"
     release = github.find_release(tag)
-    ref = github.api("git/ref/tags/" + tag, missing=True)
-    if ref and (ref["object"]["type"] != "commit" or ref["object"]["sha"] != manifest["source_commit"]):
-        raise ValueError("existing tag points to another source")
-    if not ref:
-        ref = github.api("git/refs", "POST", {"ref": "refs/tags/" + tag,
-            "sha": manifest["source_commit"]})
-        if ref["object"]["type"] != "commit" or ref["object"]["sha"] != manifest["source_commit"]:
-            raise ValueError("created tag points to another source")
+    release_tag(github, tag, manifest["source_commit"], create_tag)
     if release:
         if marker not in release.get("body", "") or release["tag_name"] != tag:
             raise ValueError("unmanaged release or different manifest")
@@ -250,10 +256,11 @@ def resume(directory, tag, commit, artifact_id, source_run_id, key, github):
     artifact = github.api(f"actions/artifacts/{artifact_id}")
     if artifact["name"] != tag or artifact["workflow_run"]["id"] != source_run_id:
         raise ValueError("release recovery artifact identity differs from candidate")
+    release_tag(github, tag, commit, create=False)
     sign(directory, tag, commit, key, expected_run_id=source_run_id)
     manifest = validate_candidate(directory, tag, commit, signed=True)
     verify_signatures(directory)
-    publish(directory, manifest, github, prerelease=False)
+    publish(directory, manifest, github, prerelease=False, create_tag=False)
     retire_transfer_artifact(github, artifact_id, manifest)
 
 

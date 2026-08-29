@@ -383,9 +383,10 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(self.github.mutations)
         self.assertFalse(self.github.release["immutable"])
 
-    def test_resume_requires_current_main_and_exact_source_artifact(self):
+    def test_resume_requires_allowed_main_history_and_exact_source_artifact(self):
         self.manifest["hardware_tested"] = False
         auto.write_json(self.root / "release.json", self.manifest)
+        self.github.ref = {"object": {"type": "commit", "sha": COMMIT}}
         with patch.object(publisher, "validate_candidate", return_value=self.manifest), \
                 patch.object(publisher, "sign") as sign, \
                 patch.object(publisher, "verify_signatures"), \
@@ -393,7 +394,8 @@ class PublicationTests(unittest.TestCase):
                 patch.object(publisher, "retire_transfer_artifact") as retire:
             publisher.resume(self.root, TAG, COMMIT, 123, 42, KEY, self.github)
             sign.assert_called_once_with(self.root, TAG, COMMIT, KEY, expected_run_id=42)
-            publish.assert_called_once_with(self.root, self.manifest, self.github, prerelease=False)
+            publish.assert_called_once_with(self.root, self.manifest, self.github,
+                                            prerelease=False, create_tag=False)
             retire.assert_called_once_with(self.github, 123, self.manifest)
             self.assertNotIn("hardware_tested", auto.read_json(self.root / "release.json"))
         self.github.main_commit = RECOVERY_COMMIT
@@ -475,6 +477,39 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unrelated"):
                 publisher.retire_transfer_artifact(self.github, 123, self.manifest)
             self.assertEqual(api.call_count, 1)
+
+    def test_resume_requires_precreated_tag_before_signing(self):
+        self.manifest["hardware_tested"] = False
+        auto.write_json(self.root / "release.json", self.manifest)
+        with patch.object(publisher, "validate_candidate", return_value=self.manifest), \
+                patch.object(publisher, "sign") as sign, \
+                self.assertRaisesRegex(ValueError, "maintainer-created tag"):
+            publisher.resume(self.root, TAG, COMMIT, 123, 42, KEY, self.github)
+        sign.assert_not_called()
+
+    def test_recovery_publish_never_creates_a_missing_tag(self):
+        with self.assertRaisesRegex(ValueError, "maintainer-created tag"):
+            publisher.publish(self.root, self.manifest, self.github, create_tag=False)
+        self.assertEqual(self.github.mutations, [])
+
+    def test_resume_models_existing_tag_through_anonymous_readback_and_cleanup(self):
+        self.manifest["hardware_tested"] = False
+        auto.write_json(self.root / "release.json", self.manifest)
+        self.github.ref = {"object": {"type": "commit", "sha": COMMIT}}
+        with patch.object(publisher, "validate_candidate", return_value=self.manifest), \
+                patch.object(publisher, "sign"), \
+                patch.object(publisher, "verify_signatures"):
+            publisher.resume(self.root, TAG, COMMIT, 123, 42, KEY, self.github)
+        self.assertTrue(self.github.release["immutable"])
+        self.assertEqual(set(self.github.files), {path.name for path in self.root.iterdir()})
+        self.assertNotIn(("git/refs", "POST"), self.github.mutations)
+        for mutation in (("releases", "POST"), ("releases/1", "PATCH"),
+                         ("actions/artifacts/123", "DELETE")):
+            self.assertIn(mutation, self.github.mutations)
+        self.assertLess(self.github.mutations.index(("releases", "POST")),
+                        self.github.mutations.index(("releases/1", "PATCH")))
+        self.assertLess(self.github.mutations.index(("releases/1", "PATCH")),
+                        self.github.mutations.index(("actions/artifacts/123", "DELETE")))
 
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("usign"), "requires POSIX shell and pinned usign")

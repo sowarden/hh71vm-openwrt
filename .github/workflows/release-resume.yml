@@ -12,11 +12,11 @@ on:
         required: true
         type: string
       tag:
-        description: Exact release tag stored in the candidate
+        description: Exact maintainer-created release tag stored in the candidate
         required: true
         type: string
       source-commit:
-        description: Exact current main commit stored in the candidate
+        description: Exact firmware source commit stored in the candidate
         required: true
         type: string
 
