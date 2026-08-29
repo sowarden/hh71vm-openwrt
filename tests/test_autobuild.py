@@ -85,12 +85,29 @@ def candidate(directory):
     manifest = dict(schema=1, tag=TAG, source_commit=COMMIT, run_id=42, run_attempt=1,
                     architecture=auto.ARCHITECTURE, kernel=KERNEL, feed_url=auto.feed_url(TAG),
                     key_id=auto.public_key(KEY)[0],
+                    changelog=["Add a synthetic test feature."],
                     files={p.name: auto.sha256(p) for p in directory.iterdir()})
     auto.write_json(directory / "release.json", manifest)
     return manifest
 
 
 class PackageTests(unittest.TestCase):
+    def test_release_notes_are_short_reviewed_plain_text(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "release-notes.json"
+            path.write_text('{"schema": 1, "changes": ["Add a tested feature."]}')
+            self.assertEqual(auto.read_release_notes(path), ["Add a tested feature."])
+            for value in (
+                {"schema": 1, "changes": []},
+                {"schema": 1, "changes": [" leading space"]},
+                {"schema": 1, "changes": ["duplicate", "duplicate"]},
+                {"schema": 1, "changes": ["line\nbreak"]},
+                {"schema": 2, "changes": ["wrong schema"]},
+            ):
+                auto.write_json(path, value)
+                with self.assertRaises(ValueError):
+                    auto.read_release_notes(path)
+
     @unittest.skipUnless(os.environ.get("HH71VM_TEST_OPKG"), "optional pinned host opkg integration")
     def test_real_opkg_solver_accepts_complete_and_rejects_missing_dependency(self):
         with tempfile.TemporaryDirectory() as t:
@@ -115,6 +132,17 @@ class PackageTests(unittest.TestCase):
     def test_build_identity_never_uses_latest(self):
         tags = {auto.identity(COMMIT, 42, 1), auto.identity(COMMIT, 42, 2), auto.identity(COMMIT, 43, 1)}
         self.assertEqual(len(tags), 3)
+        self.assertEqual(auto.identity(COMMIT, 42, 1),
+                         "hh71vm-r00000000000000000042-a000001-" + COMMIT[:12])
+        self.assertEqual(auto.legacy_identity(COMMIT, 42, 1),
+                         "hh71vm-" + COMMIT[:12] + "-r42-a1")
+        self.assertEqual(auto.feed_url(auto.legacy_identity(COMMIT, 42, 1)),
+                         "https://github.com/sowarden/hh71vm-openwrt/releases/download/" +
+                         auto.legacy_identity(COMMIT, 42, 1))
+        with self.assertRaisesRegex(ValueError, "field width"):
+            auto.identity(COMMIT, 10 ** 20, 1)
+        with self.assertRaisesRegex(ValueError, "field width"):
+            auto.identity(COMMIT, 42, 10 ** 6)
         for tag in ("latest", "../escape", TAG + "/Packages"):
             with self.assertRaises(ValueError):
                 auto.feed_url(tag)
@@ -319,6 +347,9 @@ class ImageInspectionTests(unittest.TestCase):
                 "usr/lib/opkg/status": "".join(f"{k}: {v}\n" for k, v in package("kernel", version=KERNEL).items()).encode(),
                 "usr/sbin/xtables-legacy-multi": bytes(elf),
                 "usr/sbin/autosysupgrade": (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/autosysupgrade").read_bytes().replace(b"\r\n", b"\n"),
+                "www/luci-static/resources/hh71vm/updater.js": (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js").read_bytes().replace(b"\r\n", b"\n"),
+                "www/luci-static/resources/view/system/flash.js": b"'require hh71vm.updater as updater';\n",
+                "usr/share/rpcd/acl.d/luci-base.json": b'"/usr/sbin/autosysupgrade": [ "exec" ]\n',
             }
             for name, source in (("usr/libexec/hh71vm-feed-reconcile", "reconcile.sh"),
                                  ("etc/uci-defaults/99-hh71vm-feed", "99-hh71vm-feed")):

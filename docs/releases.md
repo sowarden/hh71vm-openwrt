@@ -4,6 +4,10 @@ Firmware, package indexes, packages, checksums, and source archives are publishe
 as immutable [GitHub Releases](https://github.com/sowarden/hh71vm-openwrt/releases). Each
 production build has a unique tag and remains available for devices that still run it.
 
+New tags place the zero-padded workflow run and attempt before the source commit prefix. They are
+designed to remain chronological when a GitHub view falls back to tag-name ordering. Firmware and
+feed tools continue to accept the original commit-first tags used by existing Releases.
+
 Production Releases are treated as permanent distribution records, not expiring GitHub Actions artifacts.
 The workflow deletes only its temporary transfer artifact after successful publication; it does
 not delete a production Release or any of its assets. Keep every production Release available

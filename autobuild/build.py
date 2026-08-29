@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 
 from common import (ARCHITECTURE, ROOTS, IMAGE_ASSETS, NAME, SHA, identity, feed_url, public_key, read_json,
-                    write_json, sha256, ipk, records, make_index, validate_closure,
+                    read_release_notes, write_json, sha256, ipk, records, make_index, validate_closure,
                     validate_candidate, privacy)
 from flash_bundle import create as create_flash_bundle
 
@@ -317,7 +317,7 @@ def collect(source, build, output, args, key, lock):
     # Source archives contain only public source trees and upstream downloads.
     with (output / "source-delta.tar.gz").open("wb") as stream:
         archive = subprocess.Popen(["git", "-C", str(source), "archive", args.commit, "autobuild",
-                                    "openwrt-feed", "tools", "docs", "LICENSE",
+                                    "openwrt-feed", "tools", "docs", "release-notes.json", "LICENSE",
                                     "LICENSE-APACHE-2.0", "LICENSE-ISC", "LICENSING.md"], stdout=subprocess.PIPE)
         with gzip.GzipFile(fileobj=stream, mode="wb", mtime=0) as zipped:
             shutil.copyfileobj(archive.stdout, zipped)
@@ -349,6 +349,7 @@ def collect(source, build, output, args, key, lock):
     manifest = {"schema": 1, "tag": tag, "source_commit": args.commit, "run_id": args.run_id,
                 "run_attempt": args.attempt, "architecture": ARCHITECTURE, "kernel": kernel,
                 "feed_url": feed_url(tag), "key_id": public_key(key)[0],
+                "changelog": read_release_notes(source / "release-notes.json"),
                 "files": {p.name: sha256(p) for p in sorted(output.iterdir())}}
     write_json(output / "release.json", manifest)
     validate_candidate(output)

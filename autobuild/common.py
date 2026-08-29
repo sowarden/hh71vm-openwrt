@@ -19,8 +19,13 @@ IMAGE_ASSETS = {
     "nfjrom": "openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin",
 }
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.+~-]*\Z")
-TAG = re.compile(r"hh71vm-[0-9a-f]{12}-r[1-9][0-9]*-a[1-9][0-9]*\Z")
+TAG_V1 = re.compile(r"hh71vm-[0-9a-f]{12}-r[1-9][0-9]*-a[1-9][0-9]*\Z")
+TAG_V2 = re.compile(r"hh71vm-r[0-9]{20}-a[0-9]{6}-[0-9a-f]{12}\Z")
+TAG = re.compile(r"(?:hh71vm-[0-9a-f]{12}-r[1-9][0-9]*-a[1-9][0-9]*|"
+                 r"hh71vm-r[0-9]{20}-a[0-9]{6}-[0-9a-f]{12})\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
+CHANGELOG_LIMIT = 12
+CHANGELOG_ITEM_LIMIT = 240
 
 
 def digest(data):
@@ -55,7 +60,38 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=unique)
 
 
+def validate_changelog(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= CHANGELOG_LIMIT:
+        raise ValueError("changelog must contain between 1 and 12 entries")
+    result = []
+    for entry in value:
+        if (not isinstance(entry, str) or entry != entry.strip() or not entry or
+                len(entry) > CHANGELOG_ITEM_LIMIT or any(ord(character) < 32 for character in entry)):
+            raise ValueError("invalid changelog entry")
+        result.append(entry)
+    if len(set(result)) != len(result):
+        raise ValueError("duplicate changelog entry")
+    return result
+
+
+def read_release_notes(path):
+    notes = read_json(path)
+    if not isinstance(notes, dict) or set(notes) != {"schema", "changes"} or notes["schema"] != 1:
+        raise ValueError("invalid release notes schema")
+    return validate_changelog(notes["changes"])
+
+
 def identity(commit, run_id, attempt):
+    if not re.fullmatch(r"[a-f0-9]{40}", commit):
+        raise ValueError("source commit must be a full SHA")
+    if not all(re.fullmatch(r"[1-9][0-9]*", str(x)) for x in (run_id, attempt)):
+        raise ValueError("invalid build identity")
+    if len(str(run_id)) > 20 or len(str(attempt)) > 6:
+        raise ValueError("build identity exceeds its sortable field width")
+    return f"hh71vm-r{int(run_id):020d}-a{int(attempt):06d}-{commit[:12]}"
+
+
+def legacy_identity(commit, run_id, attempt):
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("source commit must be a full SHA")
     if not all(re.fullmatch(r"[1-9][0-9]*", str(x)) for x in (run_id, attempt)):
@@ -233,8 +269,13 @@ def validate_candidate(directory, expected_tag=None, expected_commit=None, signe
     manifest = read_json(directory / "release.json")
     if manifest.get("schema") != 1:
         raise ValueError("invalid release schema")
-    tag = identity(manifest["source_commit"], manifest["run_id"], manifest["run_attempt"])
-    if tag != manifest["tag"] or (expected_tag and tag != expected_tag):
+    validate_changelog(manifest.get("changelog"))
+    identities = {
+        identity(manifest["source_commit"], manifest["run_id"], manifest["run_attempt"]),
+        legacy_identity(manifest["source_commit"], manifest["run_id"], manifest["run_attempt"]),
+    }
+    tag = manifest["tag"]
+    if tag not in identities or (expected_tag and tag != expected_tag):
         raise ValueError("release identity mismatch")
     if expected_commit and manifest["source_commit"] != expected_commit:
         raise ValueError("source commit mismatch")

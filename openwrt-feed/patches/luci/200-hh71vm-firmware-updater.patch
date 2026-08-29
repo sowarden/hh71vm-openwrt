@@ -1,0 +1,40 @@
+From: sowarden <sowarden@proton.me>
+Subject: [PATCH] luci: add HH71VM signed firmware updater to flash page
+
+--- a/modules/luci-mod-system/htdocs/luci-static/resources/view/system/flash.js
++++ b/modules/luci-mod-system/htdocs/luci-static/resources/view/system/flash.js
+@@ -5,6 +5,7 @@
+ 'require rpc';
+ 'require fs';
+ 'require ui';
++'require hh71vm.updater as updater';
+ 
+ var callSystemValidateFirmwareImage = rpc.declare({
+ 	object: 'system',
+@@ -56,7 +57,8 @@ return view.extend({
+ 			fs.trimmed('/proc/sys/kernel/hostname'),
+ 			fs.trimmed('/proc/mtd'),
+ 			fs.trimmed('/proc/partitions'),
+-			fs.trimmed('/proc/mounts')
++			fs.trimmed('/proc/mounts'),
++			updater.load()
+ 		];
+ 
+ 		return Promise.all(tasks);
+@@ -451 +453,5 @@ return view.extend({
+-		return m.render();
++		return m.render().then(function(node) {
++			var updateNode = updater.render(rpc_replies[5]);
++			node.insertBefore(updateNode, node.firstChild);
++			return node;
++		});
+--- a/modules/luci-base/root/usr/share/rpcd/acl.d/luci-base.json
++++ b/modules/luci-base/root/usr/share/rpcd/acl.d/luci-base.json
+@@ -87,6 +87,7 @@
+ 				"/sbin/ifup": [ "exec" ],
+ 				"/sbin/reboot": [ "exec" ],
+ 				"/sbin/sysupgrade": [ "exec" ],
++				"/usr/sbin/autosysupgrade": [ "exec" ],
+ 				"/sbin/wifi": [ "exec" ],
+ 				"/bin/kill": [ "exec" ],
+ 				"/bin/tar": [ "exec" ],

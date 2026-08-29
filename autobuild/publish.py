@@ -125,8 +125,11 @@ class GitHub:
 
 
 def release_body(manifest, marker):
+    changes = "\n".join("- " + item for item in manifest["changelog"])
     return (f"HH71VM OpenWrt build `{manifest['tag']}`\n\n"
             "Automated build from the published source revision.\n\n"
+            "## Changes\n\n"
+            f"{changes}\n\n"
             f"Kernel ABI: `{manifest['kernel']}`. Architecture: `{manifest['architecture']}`.\n\n"
             "The images include the signed package feed for this build.\n\n"
             "```sh\nopkg update\nopkg install luci-app-modem-extra-tools\n"

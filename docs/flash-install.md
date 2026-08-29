@@ -222,6 +222,16 @@ approximately 5-7 minutes. Use `autosysupgrade -n` for a clean installation that
 the current configuration. `autosysupgrade --check` performs all download, signature, checksum, and
 compatibility checks without starting an upgrade.
 
+The same signed update path is available in **System > Backup / Flash Firmware**. The
+**Firmware Updates & Upgrade** section shows the installed build, checks the newest five GitHub
+Releases, and displays a signed changelog when one was published for a build. **Check Updates**
+does not download or install firmware. **Upgrade Firmware** repeats the release verification,
+downloads the selected immutable image, verifies its SHA-256 and platform compatibility, and asks
+for a final confirmation before installing it with settings preserved.
+
+Release notes are intentionally reviewed text, not an automatic summary of Git history. See the
+[release notes policy](release-notes.md) before publishing a new build.
+
 For older images without this command, use the OpenWrt updater manually. No installation tool and
 no button press is needed. Download the latest
 [`sysupgrade` image](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin)

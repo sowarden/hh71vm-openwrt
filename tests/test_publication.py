@@ -100,12 +100,41 @@ class PublicationBoundaryTests(unittest.TestCase):
             'architecture" = mipsel_24kc',
             'board_name 2>/dev/null || true)" = hh71vm',
             "releases/download/$tag",
+            "--check-json",
+            "--status-json",
+            "--expected",
+            "history_complete",
+            'LC_ALL=C sort -r "$temporary/release-order"',
+            'valid_date "$history_date"',
         ):
             self.assertIn(marker, text)
         self.assertNotIn("--no-check-certificate", text)
         self.assertIn('[ "$installed" = "$tag" ] && [ "$keep_config" = 1 ] && [ "$check_only" = 0 ]', text)
         inspector = (ROOT / "autobuild/inspect_image.py").read_text()
         self.assertIn('files.get("usr/sbin/autosysupgrade")', inspector)
+
+    def test_luci_firmware_updater_is_narrow_and_confirmed(self):
+        frontend = (ROOT /
+                    "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js").read_text()
+        patch = (ROOT / "openwrt-feed/patches/luci/200-hh71vm-firmware-updater.patch").read_text()
+        for marker in ("Check Updates", "Upgrade Firmware", "--check-json", "--expected",
+                       "ui.showModal", "ui.awaitReconnect", "state.update_available"):
+            self.assertIn(marker, frontend)
+        self.assertIn("/usr/sbin/autosysupgrade", patch)
+        self.assertIn("'require hh71vm.updater as updater';", patch)
+        self.assertNotIn("--force", frontend)
+        self.assertNotIn("innerHTML", frontend)
+
+    def test_release_notes_are_signed_and_human_authored(self):
+        common = (ROOT / "autobuild/common.py").read_text()
+        builder = (ROOT / "autobuild/build.py").read_text()
+        publisher = (ROOT / "autobuild/publish.py").read_text()
+        policy = (ROOT / "docs/release-notes.md").read_text()
+        self.assertIn('read_release_notes(source / "release-notes.json")', builder)
+        self.assertIn('manifest["changelog"]', publisher)
+        self.assertIn("validate_changelog", common)
+        self.assertIn("human review", policy)
+        self.assertNotIn("git log", builder + publisher)
 
     def test_offline_modem_bootstrap_includes_direct_runtime_dependencies(self):
         guide = (ROOT / "docs/package-feed.md").read_text()

@@ -58,6 +58,14 @@ def check_files(files, tag, key, expected_installed=None):
                "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/autosysupgrade")
     if files.get("usr/sbin/autosysupgrade") != updater.read_bytes().replace(b"\r\n", b"\n"):
         raise ValueError("image autosysupgrade differs from source")
+    frontend = (Path(__file__).parents[1] /
+                "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js")
+    if files.get("www/luci-static/resources/hh71vm/updater.js") != frontend.read_bytes().replace(b"\r\n", b"\n"):
+        raise ValueError("image LuCI updater differs from source")
+    if b"'require hh71vm.updater as updater';" not in files.get("www/luci-static/resources/view/system/flash.js", b""):
+        raise ValueError("image flash page does not load the firmware updater")
+    if b'"/usr/sbin/autosysupgrade": [ "exec" ]' not in files.get("usr/share/rpcd/acl.d/luci-base.json", b""):
+        raise ValueError("image LuCI ACL does not authorize the firmware updater")
     installed = records(files["usr/lib/opkg/status"].decode())
     if expected_installed is not None and sorted(installed, key=lambda r: r["Package"]) != sorted(expected_installed, key=lambda r: r["Package"]):
         raise ValueError("manifest package inventory differs from embedded image")
