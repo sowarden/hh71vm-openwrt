@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from common import public_key, privacy, records, sha256, read_json, feed_url
+from common import IMAGE_ASSETS, public_key, privacy, records, sha256, read_json, feed_url
 
 
 def cpio_files(blob):
@@ -76,14 +76,11 @@ def squashfs_files(path, offset):
 
 
 def inspect_release_images(build, output, tag, key, expected_kernel=None):
-    def one(pattern):
-        found = list(output.glob(pattern))
-        if len(found) != 1:
-            raise ValueError("image output is ambiguous")
-        return found[0]
-    sysupgrade = one("*-sysupgrade.bin")
-    fwupg = one("*-fwupg.bin")
-    ram = one("*-nfjrom.bin")
+    sysupgrade = output / IMAGE_ASSETS["sysupgrade"]
+    fwupg = output / IMAGE_ASSETS["fwupg"]
+    ram = output / IMAGE_ASSETS["nfjrom"]
+    if not all(path.is_file() and not path.is_symlink() for path in (sysupgrade, fwupg, ram)):
+        raise ValueError("required release image is missing or invalid")
     sysdata, fwdata, ramdata = sysupgrade.read_bytes(), fwupg.read_bytes(), ram.read_bytes()
     if len(sysdata) > 6094848 or len(sysdata) <= 2949120 or sysdata[:4] != b"cr6c":
         raise ValueError("invalid sysupgrade size/header")

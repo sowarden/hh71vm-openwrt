@@ -337,8 +337,9 @@ class ImageInspectionTests(unittest.TestCase):
             body = checked(body)
             kernel_body = checked(b"simulated kernel")
             kernel = b"cr6c" + struct.pack(">III", 0x80000000, 0x30000, len(kernel_body)) + kernel_body
-            (output / "test-fwupg.bin").write_bytes(kernel + b"r6cr" + struct.pack(">III", 0, 0x300000, len(body)) + body)
-            (output / "test-sysupgrade.bin").write_bytes(kernel.ljust(2949120, b"\xff") + body)
+            (output / auto.IMAGE_ASSETS["fwupg"]).write_bytes(
+                kernel + b"r6cr" + struct.pack(">III", 0, 0x300000, len(body)) + body)
+            (output / auto.IMAGE_ASSETS["sysupgrade"]).write_bytes(kernel.ljust(2949120, b"\xff") + body)
             cpio = bytearray()
             for name, data in list(files.items()) + [("TRAILER!!!", b"")]:
                 values = [0, 0o100644, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name) + 1, 0]
@@ -346,9 +347,16 @@ class ImageInspectionTests(unittest.TestCase):
                 cpio += b"\0" * (-len(cpio) % 4)
                 cpio += data
                 cpio += b"\0" * (-len(cpio) % 4)
-            (output / "test-nfjrom.bin").write_bytes(b"simulated loader".ljust(64, b"\0") + lzma.compress(bytes(cpio), format=lzma.FORMAT_ALONE))
+            (output / auto.IMAGE_ASSETS["nfjrom"]).write_bytes(
+                b"simulated loader".ljust(64, b"\0") + lzma.compress(bytes(cpio), format=lzma.FORMAT_ALONE))
             result = images.inspect_release_images(None, output, TAG, KEY, KERNEL)
             self.assertEqual(len(result), 3)
+            exact = output / auto.IMAGE_ASSETS["sysupgrade"]
+            renamed = output / "renamed-sysupgrade.bin"
+            exact.rename(renamed)
+            with self.assertRaisesRegex(ValueError, "required release image"):
+                images.inspect_release_images(None, output, TAG, KEY, KERNEL)
+            renamed.rename(exact)
             with self.assertRaisesRegex(ValueError, "manifest ABI"):
                 images.inspect_release_images(None, output, TAG, KEY, "other")
             auto.write_json(output / "image-packages.json", [package("kernel", version="other")])
