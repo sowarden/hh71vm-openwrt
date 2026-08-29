@@ -12,9 +12,10 @@ import time
 import zipfile
 from pathlib import Path
 
-from common import (ARCHITECTURE, ROOTS, NAME, SHA, identity, feed_url, public_key, read_json,
+from common import (ARCHITECTURE, ROOTS, IMAGE_ASSETS, NAME, SHA, identity, feed_url, public_key, read_json,
                     write_json, sha256, ipk, records, make_index, validate_closure,
                     validate_candidate, privacy)
+from flash_bundle import create as create_flash_bundle
 
 
 def run(*args, cwd=None, timeout=21600):
@@ -286,12 +287,13 @@ def collect(source, build, output, args, key, lock):
         "packages": subprocess.check_output(["dpkg-query", "-W", "-f=${Package}=${Version}\n"], text=True).splitlines(),
     })
     binaries = build / "bin/targets/rtkmipsel/rtl8197f"
-    for suffix in ("sysupgrade", "fwupg", "nfjrom"):
+    for suffix, asset_name in IMAGE_ASSETS.items():
         path = unique(binaries.glob(f"*-hh71vm-{suffix}.bin"), suffix + " image")
-        shutil.copyfile(path, output / path.name)
+        shutil.copyfile(path, output / asset_name)
     evidence = inspect_images(build, output, tag, key)
     solver_probe(build, root, output)
     write_json(output / "build-evidence.json", {"image_inspection": evidence, "opkg_solver": "PASS", "hardware": "NOT_RUN"})
+    create_flash_bundle(source, output, tag, args.commit, args.run_id, args.attempt)
     with zipfile.ZipFile(output / "packages-bundle.zip", "w", zipfile.ZIP_DEFLATED) as bundle:
         for path, _ in packages:
             item = zipfile.ZipInfo(path.name, (2020, 1, 1, 0, 0, 0))
@@ -299,7 +301,9 @@ def collect(source, build, output, args, key, lock):
             bundle.writestr(item, path.read_bytes())
     # Source archives contain only public source trees and upstream downloads.
     with (output / "source-delta.tar.gz").open("wb") as stream:
-        archive = subprocess.Popen(["git", "-C", str(source), "archive", args.commit, "autobuild", "openwrt-feed", "LICENSE", "LICENSING.md"], stdout=subprocess.PIPE)
+        archive = subprocess.Popen(["git", "-C", str(source), "archive", args.commit, "autobuild",
+                                    "openwrt-feed", "tools", "docs", "LICENSE",
+                                    "LICENSE-APACHE-2.0", "LICENSING.md"], stdout=subprocess.PIPE)
         with gzip.GzipFile(fileobj=stream, mode="wb", mtime=0) as zipped:
             shutil.copyfileobj(archive.stdout, zipped)
         if archive.wait():

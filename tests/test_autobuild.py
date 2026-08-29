@@ -14,6 +14,7 @@ import struct
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +33,7 @@ def module(name):
 builder = module("build")
 publisher = module("publish")
 images = module("inspect_image")
+flash_bundle = module("flash_bundle")
 COMMIT = "a" * 40
 TAG = auto.identity(COMMIT, 42, 1)
 KERNEL = "4.14.275-1-" + "b" * 32
@@ -77,6 +79,9 @@ def candidate(directory):
                  "source-delta.tar.gz", "upstream-sources.tar.gz", "upstream-buildsystem.tar.gz",
                  "download-checksums.json", "packages-bundle.zip"):
         (directory / name).write_bytes(b"test fixture\n")
+    for name in auto.IMAGE_ASSETS.values():
+        (directory / name).write_bytes(b"test firmware fixture\n")
+    flash_bundle.create(ROOT, directory, TAG, COMMIT, 42, 1)
     manifest = dict(schema=1, tag=TAG, source_commit=COMMIT, run_id=42, run_attempt=1,
                     architecture=auto.ARCHITECTURE, kernel=KERNEL, feed_url=auto.feed_url(TAG),
                     key_id=auto.public_key(KEY)[0],
@@ -114,12 +119,31 @@ class PackageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 auto.feed_url(tag)
 
-    def test_existing_package_payloads_parse(self):
-        paths = list((ROOT / "packages").glob("*.ipk"))
-        self.assertTrue(paths)
-        for path in paths:
-            with self.subTest(path=path.name):
-                auto.ipk(path)
+    def test_release_image_asset_names_are_stable(self):
+        self.assertEqual(auto.IMAGE_ASSETS, {
+            "fwupg": "openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin",
+            "sysupgrade": "openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin",
+            "nfjrom": "openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin",
+        })
+
+    def test_flash_bundle_is_self_contained_and_verifiable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "candidate"
+            directory.mkdir()
+            candidate(directory)
+            metadata = flash_bundle.validate(directory / flash_bundle.BUNDLE_ASSET,
+                                             TAG, COMMIT, 42, 1, directory)
+            self.assertEqual(metadata["tag"], TAG)
+            extracted = Path(temporary) / "extracted"
+            with zipfile.ZipFile(directory / flash_bundle.BUNDLE_ASSET) as archive:
+                archive.extractall(extracted)
+            root = extracted / flash_bundle.BUNDLE_ROOT
+            result = subprocess.run([sys.executable, str(root / "verify_bundle.py")],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(TAG, result.stdout)
+            self.assertTrue((root / "firmware" / auto.IMAGE_ASSETS["fwupg"]).is_file())
+            self.assertTrue((root / "tools/flash/install_openwrt_lan.py").is_file())
 
     def test_empty_and_duplicate_control_fields(self):
         self.assertEqual(auto.fields("Depends:\nDescription: test\n continuation\n")["Depends"], "")
@@ -353,6 +377,14 @@ class PublicationTests(unittest.TestCase):
         self.assertNotIn("not tested", self.github.release["body"].lower())
         self.assertNotIn("target_commitish", self.github.release)
         self.assertEqual(self.github.ref["object"]["sha"], COMMIT)
+        self.assertEqual(self.github.release["make_latest"], "false")
+        self.assertIn(auto.feed_url(TAG) + "/" + flash_bundle.BUNDLE_ASSET,
+                      self.github.release["body"])
+
+    def test_production_release_becomes_latest(self):
+        publisher.publish(self.root, self.manifest, self.github, prerelease=False)
+        self.assertFalse(self.github.release["prerelease"])
+        self.assertEqual(self.github.release["make_latest"], "true")
 
     def test_interrupted_upload_resumes_exact_draft(self):
         self.github.interrupt_after = 2
@@ -511,7 +543,10 @@ class MigrationAndSignatureTests(unittest.TestCase):
         first = (self.root / "etc/opkg/hh71vm.conf").read_bytes()
         self.migrate()
         self.assertEqual(first, (self.root / "etc/opkg/hh71vm.conf").read_bytes())
-        self.assertIn(auto.feed_url(TAG).encode(), first)
+        self.assertEqual(first, ("src/gz hh71vm " + auto.feed_url(TAG) + "\n").encode())
+        configs = [self.root / "etc/opkg.conf", *sorted((self.root / "etc/opkg").glob("*.conf"))]
+        self.assertEqual(sum(path.read_text().splitlines().count("option check_signature")
+                             for path in configs), 1)
         self.assertEqual((self.root / ("etc/opkg/keys/" + self.key_id)).read_bytes(), self.normalized)
 
     def test_upgrade_changes_url_even_if_kernel_abi_is_unchanged(self):

@@ -7,20 +7,30 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FLASH_TOOLS = ROOT / "tools" / "flash"
-FIRMWARE = ROOT / "firmware" / "openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin"
-
 sys.path.insert(0, str(FLASH_TOOLS))
+sys.path.insert(0, str(ROOT / "autobuild"))
 
+import flash_bundle  # noqa: E402
 import install_openwrt_lan  # noqa: E402
+import rtk_mkimg  # noqa: E402
 import rtk_tftp_put  # noqa: E402
 import restore_stock_lan  # noqa: E402
 import tftp_dump_mtd  # noqa: E402
+
+
+TEST_IMAGE_DIRECTORY = tempfile.TemporaryDirectory()
+FIRMWARE = Path(TEST_IMAGE_DIRECTORY.name) / "openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin"
+FIRMWARE.write_bytes(
+    rtk_mkimg.build_image("r6cr", 0x300000, b"R" * 8192)
+    + rtk_mkimg.build_image("cr6c", 0x030000, b"K" * 8192)
+)
 
 
 class VirtualRealtekRouter:
@@ -198,13 +208,13 @@ class FlashWorkflowSimulationTests(unittest.TestCase):
         self.assertEqual(fake_socket.sent[0][1], ("192.168.1.6", 69))
         self.assertTrue(all(address == server for _packet, address in fake_socket.sent[1:]))
 
-    def test_documented_root_level_offline_command_runs(self):
+    def test_offline_command_accepts_a_downloaded_image_path(self):
         result = subprocess.run(
             [
                 sys.executable,
                 "tools/flash/install_openwrt_lan.py",
                 "--image",
-                "firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin",
+                str(FIRMWARE),
                 "--dry-run",
                 "--skip-backup",
                 "--yes",
@@ -218,6 +228,36 @@ class FlashWorkflowSimulationTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("DRY RUN: nothing was written to flash", result.stdout)
+
+    def test_generated_flash_bundle_runs_the_documented_offline_dry_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "candidate"
+            candidate.mkdir()
+            for name in flash_bundle.IMAGE_ASSETS.values():
+                (candidate / name).write_bytes(FIRMWARE.read_bytes())
+            commit = "c" * 40
+            tag = "hh71vm-cccccccccccc-r7-a1"
+            flash_bundle.create(ROOT, candidate, tag, commit, 7, 1)
+            extracted = Path(temporary) / "extracted"
+            with zipfile.ZipFile(candidate / flash_bundle.BUNDLE_ASSET) as archive:
+                archive.extractall(extracted)
+            bundle = extracted / flash_bundle.BUNDLE_ROOT
+            verified = subprocess.run([sys.executable, "verify_bundle.py"], cwd=bundle,
+                                      capture_output=True, text=True, timeout=30)
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            result = subprocess.run([
+                sys.executable,
+                "tools/flash/install_openwrt_lan.py",
+                "--image",
+                "firmware/" + flash_bundle.IMAGE_ASSETS["fwupg"],
+                "--dry-run",
+                "--skip-backup",
+                "--yes",
+                "--pc-ip",
+                "192.168.1.50",
+            ], cwd=bundle, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("DRY RUN: nothing was written to flash", result.stdout)
 
     def test_missing_wps_bootloader_aborts_before_first_transfer(self):
         argv = [

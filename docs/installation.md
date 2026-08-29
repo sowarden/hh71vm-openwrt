@@ -22,7 +22,7 @@ You need:
 | Ethernet cable | Router LAN port directly to the test computer |
 | Python | Python 3; the tool was tested with Python 3.9 |
 | Python package | `pyserial`, installed from `tools/requirements.txt` |
-| Image | `firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin` |
+| Image | `firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin` from the flash bundle |
 
 You must open the enclosure. Use the labelled photo below for the Realtek-side UART
 connection. Visually confirm the board orientation before connecting anything.
@@ -41,41 +41,36 @@ It talks only to the Realtek bootloader over UART and transfers the RAM image ov
 > The HH71VM contains separate Realtek and Qualcomm systems. Use the Realtek UART. If the
 > console output is about the Qualcomm modem, stop and recheck the connection.
 
-## 1. Download and verify the repository
+## 1. Download and verify the bundle
 
-Clone the repository:
+Download the latest
+[`flash bundle`](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip)
+and its [SHA-256 file](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip.sha256).
+Verify the ZIP before extracting it, using the commands in the
+[flash installation guide](flash-install.md). Then open a terminal in the extracted
+`hh71vm-openwrt-flash-bundle` directory and run:
 
 ```text
-git clone https://github.com/sowarden/hh71vm-openwrt.git
-cd hh71vm-openwrt
+python verify_bundle.py
 ```
 
-Alternatively, use GitHub's **Code → Download ZIP**, extract it, and open a terminal in the
-extracted directory.
+Stop if verification fails. The command prints the exact immutable Release tag.
 
-Verify the image before connecting the router.
+You can also inspect the RAM image directly.
 
 Windows PowerShell:
 
 ```powershell
-Get-FileHash -Algorithm SHA256 firmware\openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin
+Get-FileHash -Algorithm SHA256 firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin
 ```
 
 Linux or macOS:
 
 ```sh
-cd firmware
-sha256sum -c SHA256SUMS
-cd ..
+grep '  firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin$' SHA256SUMS | sha256sum -c -
 ```
 
-Expected SHA-256:
-
-```text
-0dd334f2c05076498bea51668f8ba45ac3fb5651faadfd685c06939d22d8ca52
-```
-
-Stop if the checksum differs.
+Stop if the checksum differs. Record the resolved Release tag and image SHA-256.
 
 ## 2. Install the Python dependency
 

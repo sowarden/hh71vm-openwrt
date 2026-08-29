@@ -36,25 +36,16 @@ jobs:
         run: >-
           python -m py_compile
           tools/ram_boot.py
-          tools/release/build-package-bundle.py
-          tools/release/build-package-index.py
-          tools/release/package_metadata.py
-          tools/release/extras_common.py
-          tools/release/build-extras.py
-          tools/release/publish-extras.py
           autobuild/build.py
           autobuild/common.py
+          autobuild/flash_bundle.py
           autobuild/inspect_image.py
           autobuild/publish.py
+          tools/verify_bundle.py
           openwrt-feed/target/linux/rtkmipsel/image/mkrtkimg.py
-
-      - name: Verify published checksums
-        working-directory: firmware
-        run: sha256sum -c SHA256SUMS
 
       - name: Check installer syntax
         run: |
-          sh -n extras/modem-extra-tools/install.sh
           sh -n autobuild/package/hh71vm-feed/files/reconcile.sh
           sh -n autobuild/install-usign.sh
 
@@ -64,6 +55,3 @@ jobs:
           sudo apt-get install -y lua5.1
           cd openwrt-feed/package/utils/modem-extra-tools
           lua5.1 tests/unit.lua files
-
-      - name: Build optional bundle
-        run: python tools/release/build-package-bundle.py extras/modem-extra-tools

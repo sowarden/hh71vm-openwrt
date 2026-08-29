@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from common import REPOSITORY, read_json, sha256, validate_candidate, write_json
+from flash_bundle import BUNDLE_ASSET
 from inspect_image import inspect_release_images
 
 
@@ -131,6 +132,7 @@ def release_body(manifest, marker):
             "```sh\nopkg update\nopkg install luci-app-modem-extra-tools\n"
             "opkg install luci-proto-wireguard\n```\n\n"
             "Older images keep their own feeds. Do not force dependencies or run a global package upgrade.\n\n"
+            f"[Download the complete flash bundle]({manifest['feed_url']}/{BUNDLE_ASSET})\n\n"
             "Use `sysupgrade.bin` to update OpenWrt; follow the installation guide for first installation. "
             "The `nfjrom.bin` image is for RAM boot.\n\n"
             f"[Installation](https://github.com/{REPOSITORY}/blob/{manifest['source_commit']}/docs/flash-install.md)\n\n{marker}\n")
@@ -169,9 +171,10 @@ def publish(directory, manifest, github, prerelease=True, create_tag=True):
         if not release["draft"] and not release.get("immutable"):
             raise ValueError("existing public release is not immutable")
     else:
+        latest = "false" if prerelease else "true"
         release = github.api("releases", "POST", {"tag_name": tag, "name": tag,
             "body": release_body(manifest, marker), "draft": True,
-            "prerelease": prerelease, "make_latest": "false"})
+            "prerelease": prerelease, "make_latest": latest})
     local = {p.name: p for p in directory.iterdir()}
     remote = github.assets(release["id"])
     if len({a["name"] for a in remote}) != len(remote) or set(a["name"] for a in remote) - set(local):
@@ -191,7 +194,8 @@ def publish(directory, manifest, github, prerelease=True, create_tag=True):
         if github.asset_hash(asset) != sha256(local[asset["name"]]):
             raise ValueError("uploaded asset readback differs")
     if release["draft"]:
-        github.api(f"releases/{release['id']}", "PATCH", {"draft": False, "make_latest": "false"})
+        github.api(f"releases/{release['id']}", "PATCH", {
+            "draft": False, "make_latest": "false" if prerelease else "true"})
     final = github.api(f"releases/{release['id']}")
     final_ref = github.api("git/ref/tags/" + tag)
     if not final.get("immutable") or final.get("draft") or final_ref["object"]["sha"] != manifest["source_commit"]:

@@ -105,6 +105,6 @@ for old_key in "$conf/keys/"*; do
   fi
 done
 atomic_copy "$data/release.pub" "$conf/keys/$key_id"
-printf '%s\n' 'option check_signature' "src/gz hh71vm $url" > "$lock/clean"
+printf '%s\n' "src/gz hh71vm $url" > "$lock/clean"
 atomic_copy "$lock/clean" "$conf/hh71vm.conf"
 echo 'HH71VM feed matches the installed firmware.'

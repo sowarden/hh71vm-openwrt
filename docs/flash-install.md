@@ -20,16 +20,18 @@ JFFS2 partition are not written. That is what makes the rollback in this guide p
 | Computer | Windows, Linux, or macOS with Python 3 |
 | Network | Ethernet cable from the computer directly to a router LAN port |
 | Computer address | Static `192.168.1.50`, mask `255.255.255.0` |
-| Firmware image | `openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin` |
+| Firmware image | `firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin` from the flash bundle |
 | Free disk space | About 16 MiB for the stock backup |
 | UART adapter | **Not required** |
 
 Disconnect or disable any other interface on `192.168.1.0/24` so that the transfers cannot go
 to the wrong adapter.
 
-Clone or download this repository, then open PowerShell, Command Prompt, or a terminal in its
-top-level directory. All commands below are written for that directory; keep the files in their
-repository subdirectories.
+Download the latest
+[`flash bundle`](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip)
+and its [SHA-256 file](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip.sha256).
+Verify the ZIP before extracting it, then open PowerShell, Command Prompt, or a terminal in the
+extracted `hh71vm-openwrt-flash-bundle` directory. Cloning the source repository is not required.
 
 ### Host firewall
 
@@ -40,7 +42,39 @@ specific `python.exe`; a rule created for a different interpreter will not apply
 The backup step makes the router send its flash contents to your computer, so your computer
 acts as the TFTP server. Without the inbound UDP rule the backup will time out.
 
-## 1. Verify the image
+## 1. Verify the bundle and image
+
+Verify the downloaded ZIP against `hh71vm-openwrt-flash-bundle.zip.sha256`.
+
+Windows PowerShell:
+
+```powershell
+$expected = (Get-Content .\hh71vm-openwrt-flash-bundle.zip.sha256 -Raw).Split()[0]
+$actual = (Get-FileHash .\hh71vm-openwrt-flash-bundle.zip -Algorithm SHA256).Hash
+if ($actual -ne $expected) { throw "Flash bundle checksum mismatch" }
+```
+
+Linux:
+
+```sh
+sha256sum -c hh71vm-openwrt-flash-bundle.zip.sha256
+```
+
+macOS:
+
+```sh
+shasum -a 256 -c hh71vm-openwrt-flash-bundle.zip.sha256
+```
+
+After extraction, verify every bundled file on Windows, Linux, or macOS:
+
+```text
+python verify_bundle.py
+```
+
+The command prints the exact immutable Release tag. Stop if either check fails.
+
+You can also inspect the firmware image directly.
 
 Windows PowerShell:
 
@@ -60,7 +94,8 @@ Linux or macOS:
 sha256sum firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin
 ```
 
-Compare the result with [`firmware/SHA256SUMS`](../firmware/SHA256SUMS). Stop if it differs.
+Compare the result with the bundled `SHA256SUMS`. Record the exact Release tag and image
+SHA-256 for recovery and bug reports.
 
 ## 2. Back up your stock firmware
 
@@ -175,13 +210,18 @@ Then work through the [testing guide](testing.md) and send a compatibility repor
 ## Updating an installed system
 
 Use the OpenWrt updater on the device. No installation tool and no button press is needed.
+Download the latest
+[`sysupgrade` image](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin)
+and verify it against the
+[`SHA256SUMS`](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/SHA256SUMS)
+from the same Release before copying it to the router.
 
 The image has no SFTP server, so copy the file with legacy SCP mode. Dropbear only offers
 the SHA-1 `ssh-rsa` host key, which current OpenSSH releases do not accept by default, so
 `scp` needs the same option as `ssh`:
 
 ```text
-scp -O -o HostKeyAlgorithms=+ssh-rsa firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin root@192.168.1.1:/tmp/
+scp -O -o HostKeyAlgorithms=+ssh-rsa openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin root@192.168.1.1:/tmp/
 ```
 
 Then, on the router:

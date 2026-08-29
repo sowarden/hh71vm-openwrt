@@ -1,6 +1,8 @@
 # Changelog
 
-Published images are identified by their SHA-256 digest from `firmware/SHA256SUMS`.
+Published images are identified by their immutable Release tag and the SHA-256 digest in
+that Release's `SHA256SUMS` asset. Current builds are available from
+[GitHub Releases](https://github.com/sowarden/hh71vm-openwrt/releases).
 
 ## 2026-08-28
 
@@ -23,8 +25,8 @@ SHA-256:
   controls and LTE band selection based on modem-reported capabilities.
 - Include the three matching IPKs and their source packages; select the add-ons
   for package builds without including them in the base firmware image.
-- Add `extras/` installation guides, a checksum- and ABI-checked bundle builder,
-  and publication tests. The optional packages remain separate from the base firmware.
+- Add checksum- and ABI-checked optional package bundling and publication tests. This
+  historical manual path was later replaced by the unified signed per-build feed.
 
 ## 2026-08-26
 

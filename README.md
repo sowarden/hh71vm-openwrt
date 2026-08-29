@@ -19,6 +19,7 @@ the normal way to use this firmware.
 
 | You want to | Read |
 |---|---|
+| Download firmware and flashing tools | [Latest flash bundle](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip) |
 | Install OpenWrt permanently | [Flash installation guide](docs/flash-install.md) |
 | Add optional modem controls or WireGuard | [Signed package feed](docs/package-feed.md) |
 | Try the build first, without writing flash (needs UART) | [RAM boot guide](docs/installation.md) |
@@ -31,14 +32,16 @@ After any installation attempt, successful or not, please submit a
 
 ## Firmware files
 
-New builds are distributed as [immutable releases](https://github.com/sowarden/hh71vm-openwrt/releases),
-each with its own signed package feed. A separate release is retained for every
-published source revision. See [package installation](docs/package-feed.md) for usage.
+Builds are distributed as [immutable Releases](https://github.com/sowarden/hh71vm-openwrt/releases),
+each with matching checksums, source archives, and a signed package feed. The
+[latest flash bundle](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip)
+contains the firmware, flashing tools, and installation guides. No generated firmware or IPK
+files are stored in the Git repository; cloning the repository is only needed for development.
 
-[`firmware/`](firmware/) contains `fwupg`, `sysupgrade`, and `nfjrom` images with checksums.
-This is the preserved historical snapshot, not an alias for the newest release.
-The repository also includes installation and rollback utilities under [`tools/flash/`](tools/flash/)
-and matching packages under [`packages/`](packages/).
+See [firmware Releases](docs/releases.md) for the bundle checksum and individual image links.
+The floating `latest` links are only for downloading new firmware. An installed image uses
+the exact immutable Release tag embedded at build time for its package feed. See
+[package installation](docs/package-feed.md) for that ABI boundary.
 
 ## Before you install anything
 
@@ -78,10 +81,9 @@ unrecoverable mistake.
 
 ## RAM image
 
-`2026-08-28`, 4,302,595 bytes
-
-SHA-256:
-`0dd334f2c05076498bea51668f8ba45ac3fb5651faadfd685c06939d22d8ca52`
+[Download the latest `nfjrom` image](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin)
+and verify it against the Release
+[`SHA256SUMS`](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/SHA256SUMS).
 
 RAM boot is only a compatibility dry run. It does not exercise flash installation,
 persistence, `sysupgrade`, or rollback, and all OpenWrt-side changes disappear at power-off.
@@ -117,12 +119,10 @@ credentials, and keys. Attach searchable text, not screenshots of text.
 | [`docs/known-issues.md`](docs/known-issues.md) | Current limitations and expected quirks |
 | [`docs/testing.md`](docs/testing.md) | Test matrix, log collection, and reporting |
 | [`docs/sources.md`](docs/sources.md) | Source provenance and build instructions |
+| [`docs/releases.md`](docs/releases.md) | Latest downloads and immutable Release identity |
 | [`docs/driver-reuse.md`](docs/driver-reuse.md) | Advanced port-reuse guidance and coupling |
 | [`openwrt-feed/`](openwrt-feed/) | HH71VM source delta and build config |
-| [`firmware/`](firmware/) | Published images, manifest, and checksums |
-| [`packages/`](packages/) | Matching target and kernel packages plus package index |
 | [`autobuild/`](autobuild/) | Unified firmware build and immutable signed feed |
-| [`extras/`](extras/) | Historical snapshot's optional bundle recipe |
 | [`tools/flash/`](tools/flash/) | Backup, installation, update, and rollback utilities |
 | [`tools/ram_boot.py`](tools/ram_boot.py) | RAM-only loader and UART capture tool |
 | [`CHANGELOG.md`](CHANGELOG.md) | Published snapshot history |

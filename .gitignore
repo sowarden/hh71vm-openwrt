@@ -9,6 +9,3 @@ backup-stock*/
 
 __pycache__/
 *.pyc
-
-# Locally generated package bundles; publish these as release assets.
-dist/

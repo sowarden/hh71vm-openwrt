@@ -1,5 +1,3 @@
-import gzip
-import hashlib
 import re
 import subprocess
 import sys
@@ -9,9 +7,6 @@ from urllib.parse import unquote
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRMWARE = ROOT / "firmware"
-RAM_IMAGE = FIRMWARE / "openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin"
-RAM_IMAGE_SHA256 = "0dd334f2c05076498bea51668f8ba45ac3fb5651faadfd685c06939d22d8ca52"
 CYRILLIC_UTF8 = re.compile(rb"(?:\xd0[\x80-\xbf]|\xd1[\x80-\xbf])")
 EXCLUDED_TEXT_SUFFIXES = {
     ".bin",
@@ -85,44 +80,32 @@ class PublicationBoundaryTests(unittest.TestCase):
         self.assertNotIn('"hardware_tested": False', public)
 
     def test_base_image_preserves_https_dependencies(self):
-        manifest = (FIRMWARE / "openwrt-rtkmipsel-rtl8197f-hh71vm.manifest").read_text()
-        packages = {line.split(" - ", 1)[0] for line in manifest.splitlines()}
-        self.assertTrue({"ca-bundle", "libmbedtls12", "libustream-mbedtls20150806",
-                         "iptables", "libxtables12"}.issubset(packages))
         config = (ROOT / "openwrt-feed/build.config").read_text()
         for name in ("ca-bundle", "libmbedtls", "libustream-mbedtls"):
             self.assertIn(f"CONFIG_PACKAGE_{name}=y\n", config)
         self.assertIn("CONFIG_PACKAGE_kmod-wireguard=m\n", config)
 
-    def test_published_ram_image_hash(self):
-        digest = hashlib.sha256(RAM_IMAGE.read_bytes()).hexdigest()
-        self.assertEqual(digest, RAM_IMAGE_SHA256)
+    def test_generated_publication_directories_are_not_versioned(self):
+        for name in ("firmware", "packages", "extras", "dist"):
+            with self.subTest(name=name):
+                directory = ROOT / name
+                self.assertFalse(directory.exists() and any(path.is_file()
+                                                             for path in directory.rglob("*")))
 
-    def test_every_published_file_has_a_matching_checksum(self):
-        """Nothing ships from firmware/ without a digest anyone can check.
-
-        This replaced a rule that forbade flash images outright, which belonged to
-        the RAM-only test release.
-        """
-        listed = {}
-        for line in (FIRMWARE / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            digest, name = line.split(None, 1)
-            listed[name.strip().lstrip("*")] = digest
-
-        for path in sorted(FIRMWARE.iterdir()):
-            if not path.is_file() or path.name == "SHA256SUMS":
-                continue
-            with self.subTest(name=path.name):
-                self.assertIn(path.name, listed)
-                self.assertEqual(
-                    hashlib.sha256(path.read_bytes()).hexdigest(), listed[path.name]
-                )
-
-        for name in listed:
-            with self.subTest(listed=name):
-                self.assertTrue((FIRMWARE / name).is_file())
+    def test_documentation_uses_latest_only_for_human_downloads(self):
+        documents = "\n".join(path.read_text(encoding="utf-8")
+                              for path in ROOT.rglob("*.md") if ".git" not in path.parts)
+        prefix = "https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/"
+        for name in (
+            "hh71vm-openwrt-flash-bundle.zip",
+            "hh71vm-openwrt-flash-bundle.zip.sha256",
+            "openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin",
+            "openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin",
+            "openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin",
+            "SHA256SUMS",
+        ):
+            self.assertIn(prefix + name, documents)
+        self.assertNotIn(prefix + "Packages", documents)
 
     def test_public_text_is_english_only(self):
         offenders = []
@@ -130,7 +113,7 @@ class PublicationBoundaryTests(unittest.TestCase):
             if not path.is_file():
                 continue
             relative = path.relative_to(ROOT)
-            if ".git" in relative.parts or "__pycache__" in relative.parts or relative.parts[0] == "dist":
+            if ".git" in relative.parts or "__pycache__" in relative.parts:
                 continue
             if path.suffix.lower() in EXCLUDED_TEXT_SUFFIXES:
                 continue
@@ -154,7 +137,7 @@ class PublicationBoundaryTests(unittest.TestCase):
             if not path.is_file():
                 continue
             relative = path.relative_to(ROOT)
-            if ".git" in relative.parts or "__pycache__" in relative.parts or relative.parts[0] == "dist":
+            if ".git" in relative.parts or "__pycache__" in relative.parts:
                 continue
             if path.suffix.lower() in EXCLUDED_TEXT_SUFFIXES:
                 continue
@@ -164,56 +147,6 @@ class PublicationBoundaryTests(unittest.TestCase):
             if any(pattern.search(data) for pattern in private_paths):
                 offenders.append(relative.as_posix())
         self.assertEqual(offenders, [])
-
-    def test_package_index_matches_published_packages(self):
-        package_dir = ROOT / "packages"
-        index = (package_dir / "Packages").read_text(encoding="utf-8")
-        self.assertEqual(gzip.decompress((package_dir / "Packages.gz").read_bytes()),
-                         index.encode("utf-8"))
-
-        entries = {}
-        for block in index.strip().split("\n\n"):
-            fields = dict(line.split(": ", 1) for line in block.splitlines()
-                          if ": " in line)
-            entries[fields["Filename"]] = fields
-
-        for name, fields in entries.items():
-            path = package_dir / name
-            with self.subTest(name=name):
-                self.assertTrue(path.is_file())
-                self.assertEqual(path.stat().st_size, int(fields["Size"]))
-                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),
-                                 fields["SHA256sum"])
-
-        published = {path.name for path in package_dir.glob("*.ipk")}
-        self.assertEqual(set(entries), published)
-
-    def test_flash_image_can_be_validated_without_router_access(self):
-        tool = ROOT / "tools" / "flash" / "install_openwrt_lan.py"
-        image = FIRMWARE / "openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin"
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(tool),
-                "--image",
-                str(image),
-                "--dry-run",
-                "--skip-backup",
-                "--yes",
-                "--pc-ip",
-                "192.168.1.50",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("DRY RUN: nothing was written to flash", result.stdout)
-        ranges = [(int(start, 16), int(end, 16)) for start, end in re.findall(
-            r"reaches flash: 0x([0-9A-F]+)\.\.0x([0-9A-F]+)", result.stdout
-        )]
-        self.assertEqual(ranges, [(0x300000, 0x5BE001), (0x030000, 0x1C6B71)])
-        self.assertTrue(all(end < 0xC00000 for _, end in ranges))
 
     def test_rtk_mkimg_selftest_requires_explicit_inputs(self):
         tool = ROOT / "tools" / "flash" / "rtk_mkimg.py"

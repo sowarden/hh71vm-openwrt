@@ -12,6 +12,11 @@ from pathlib import Path, PurePosixPath
 REPOSITORY = "sowarden/hh71vm-openwrt"
 ARCHITECTURE = "mipsel_24kc"
 ROOTS = ("luci-app-modem-extra-tools", "luci-proto-wireguard", "wireguard-tools")
+IMAGE_ASSETS = {
+    "fwupg": "openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin",
+    "sysupgrade": "openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin",
+    "nfjrom": "openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin",
+}
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.+~-]*\Z")
 TAG = re.compile(r"hh71vm-[0-9a-f]{12}-r[1-9][0-9]*-a[1-9][0-9]*\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -237,9 +242,10 @@ def validate_candidate(directory, expected_tag=None, expected_commit=None, signe
     inventory = manifest["files"]
     if not inventory or not all(NAME.fullmatch(n) and SHA.fullmatch(h) for n, h in inventory.items()):
         raise ValueError("invalid asset inventory")
-    required = {"Packages", "Packages.gz", "hh71vm-feed.pub", "image-packages.json", "build.config",
+    required = set(IMAGE_ASSETS.values()) | {"Packages", "Packages.gz", "hh71vm-feed.pub", "image-packages.json", "build.config",
                 "build-evidence.json", "build-environment.json", "source-lock.json", "packages-bundle.zip",
-                "source-delta.tar.gz", "upstream-sources.tar.gz", "upstream-buildsystem.tar.gz", "download-checksums.json"}
+                "source-delta.tar.gz", "upstream-sources.tar.gz", "upstream-buildsystem.tar.gz", "download-checksums.json",
+                "hh71vm-openwrt-flash-bundle.zip", "hh71vm-openwrt-flash-bundle.zip.sha256"}
     if not required <= set(inventory):
         raise ValueError("required release assets missing")
     extras = {"release.json"} | ({"Packages.sig", "release.json.sig", "SHA256SUMS"} if signed else set())
@@ -249,6 +255,12 @@ def validate_candidate(directory, expected_tag=None, expected_commit=None, signe
         path = directory / name
         if not path.is_file() or path.is_symlink() or sha256(path) != expected:
             raise ValueError("asset hash/type mismatch: " + name)
+    from flash_bundle import BUNDLE_ASSET, BUNDLE_CHECKSUM, validate as validate_flash_bundle
+    expected_bundle_checksum = f"{sha256(directory / BUNDLE_ASSET)}  {BUNDLE_ASSET}\n"
+    if (directory / BUNDLE_CHECKSUM).read_text(encoding="utf-8") != expected_bundle_checksum:
+        raise ValueError("flash bundle checksum asset mismatch")
+    validate_flash_bundle(directory / BUNDLE_ASSET, tag, manifest["source_commit"],
+                          manifest["run_id"], manifest["run_attempt"], directory)
     key_id, normalized = public_key((directory / "hh71vm-feed.pub").read_bytes())
     if key_id != manifest["key_id"] or normalized != (directory / "hh71vm-feed.pub").read_bytes():
         raise ValueError("release public key mismatch")

@@ -20,11 +20,10 @@ subject to the applicable vendor terms.
 Source provenance, pinned revisions, and build instructions are documented in
 [`docs/sources.md`](docs/sources.md).
 
-The `modem-extra-tools` application, its LuCI package, package-bundle installer, and
-the `tools/release/` utilities are licensed under Apache-2.0 as stated in their
-source headers and package metadata. The `hh71vm-ipt-ipopt` module package is GPL-2.0-only.
-The bundle includes the [Apache-2.0 license text](extras/modem-extra-tools/LICENSE-APACHE-2.0)
-and a copy of the GPL-2.0 license text.
+The `modem-extra-tools` application and its LuCI package are licensed under Apache-2.0 as
+stated in their source headers and package metadata; the license text is included as
+[`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0). The `hh71vm-ipt-ipopt` module package is
+GPL-2.0-only and is covered by the repository root [`LICENSE`](LICENSE).
 
 ## Documentation and RAM boot tool
 

@@ -32,8 +32,8 @@ The first boot after installation takes about two minutes: a preinit hook erases
 hang, and power must not be removed while it happens.
 
 EXAMPLES
-    python tools/flash/install_openwrt_lan.py --image firmware/...-hh71vm-fwupg.bin --backup-dir backup-stock
-    python tools/flash/install_openwrt_lan.py --image firmware/... --backup-dir ... --dry-run
+    python tools/flash/install_openwrt_lan.py --image firmware/openwrt-...-hh71vm-fwupg.bin --backup-dir backup-stock
+    python tools/flash/install_openwrt_lan.py --image firmware/openwrt-... --backup-dir ... --dry-run
 """
 
 import argparse

@@ -1,18 +1,19 @@
 # Source provenance and build instructions
 
-This repository includes the HH71VM source delta and build configuration used for the
-2026-08-28 firmware files.
+This repository contains the HH71VM source delta, build configuration, and the disposable
+autobuild implementation. Generated firmware and packages are published in immutable
+[GitHub Releases](https://github.com/sowarden/hh71vm-openwrt/releases), not committed to Git.
 
-## Firmware artifacts
+## Release artifacts
 
-| Item | Value |
-|---|---|
-| Flash installer image | `firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-fwupg.bin` — `286e057c3b5b934c24f04d3dcf3edff5e7136c4aec3f726b9e55ea6a8d5db066` |
-| Sysupgrade image | `firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin` — `3e4527d32a30d76bf42a713280e65b531ca7cb149356b02d4dfe83535b1315e8` |
-| RAM image | `firmware/openwrt-rtkmipsel-rtl8197f-hh71vm-nfjrom.bin` — `0dd334f2c05076498bea51668f8ba45ac3fb5651faadfd685c06939d22d8ca52` |
-| Package manifest | `firmware/openwrt-rtkmipsel-rtl8197f-hh71vm.manifest` |
-| Build config | `openwrt-feed/build.config` |
-| Build-config SHA-256 | `048cdd8899f554b0821b3365c22e4e1e6a2d8da4ed1a1ae8b29ced28e49d2c4d` |
+Use the [latest production flash bundle](releases.md) for installation. For
+reproducibility, open the exact tagged Release and retain its `SHA256SUMS`, `release.json`,
+`source-lock.json`, `build.config`, `build-environment.json`, `source-delta.tar.gz`,
+`upstream-buildsystem.tar.gz`, and `upstream-sources.tar.gz`.
+
+`release.json` binds every asset hash to the source commit, workflow run, kernel ABI, signing
+key, and immutable feed URL. `source-lock.json` records the upstream revisions and downloaded
+source hashes used by that build.
 
 ## Pinned upstream revisions
 
@@ -63,7 +64,7 @@ The CA bundle and mbedTLS transport are explicitly selected to preserve the prev
 image's HTTPS dependencies rather than relying on files left in an incremental rootfs.
 WireGuard is selected as a separate kernel package (`=m`), not added to the base image.
 
-Compare final SHA-256 values with the published checksums before distributing a build.
+Compare final SHA-256 values with the exact tagged Release before claiming reproduction.
 
 ```sh
 git clone https://git.openwrt.org/openwrt/openwrt.git
@@ -114,14 +115,7 @@ Inspect the executable again inside both SquashFS images and the RAM initramfs.
 sha256sum bin/targets/rtkmipsel/rtl8197f/*.bin
 ```
 
-The published RAM-image SHA-256 is:
-
-```text
-0dd334f2c05076498bea51668f8ba45ac3fb5651faadfd685c06939d22d8ca52
-```
-
-Compare all generated files with [`firmware/SHA256SUMS`](../firmware/SHA256SUMS), not only
-the RAM image.
+Compare every generated file with the tagged Release `SHA256SUMS`, not only the RAM image.
 
 If a clean build differs, preserve both manifests, the final `.config`, tool versions, and
 the complete build log before changing source. Do not claim a reproduced build until the
@@ -144,8 +138,9 @@ make package/index
 ```
 
 Keep the entire dependency set together. OpenWrt kernel packages embed an exact kernel ABI
-dependency, so a `kmod-*.ipk` from another build must not be mixed with this image. The
-published [`packages/`](../packages/) directory contains the matching set and package index.
+dependency, so a `kmod-*.ipk` from another build must not be mixed with this image. Autobuild
+publishes the complete dependency closure, signed index, and `packages-bundle.zip` in the
+same immutable Release as the images.
 
 The optional modem controls are selected as modules in `build.config`, so a normal build also
 produces their backend, LuCI application, and kernel-dependent netfilter package. Their source
@@ -157,25 +152,8 @@ package/luci/applications/luci-app-modem-extra-tools/
 package/utils/hh71vm-ipt-ipopt/
 ```
 
-Actions builds the extras from source. See the [available bundles](../extras/README.md).
-
-For local packaging of the explicitly pinned, published IPKs without duplicating them in Git:
-
-```sh
-python3 tools/release/build-package-index.py packages
-python3 tools/release/build-package-bundle.py extras/modem-extra-tools
-```
-
-The resulting ZIP is written under the ignored `dist/` directory and is intended to be uploaded
-as a release asset. See the [bundle README](../extras/modem-extra-tools/README.md) for use and
-compatibility boundaries.
-
-When updating that local package snapshot, copy its IPKs to `packages/`, then update the exact
-filenames, hashes, architecture, firmware build and kernel dependency in `bundle.json`.
-Actions instead derives these fields from its fresh build output. The bundle builder
-generates installer variables and refuses mismatched hashes or kernel dependencies;
-it never silently picks a package with a similar name. The index builder includes the virtual
-`kernel` and `libc` packages already shipped in this repository.
+The unified workflow builds these packages from source in the same buildroot as the image.
+Do not recreate the retired manual package snapshot or commit generated IPKs to Git.
 
 The ARM helper executables are included with their C sources and verified by
 `files/helpers.sha256` during the OpenWrt package build. To regenerate them, run
@@ -184,8 +162,7 @@ The ARM helper executables are included with their C sources and verified by
 Run the backend's mocked tests with `lua5.1 tests/unit.lua files` in that directory.
 
 The supported deployment is described in the [flash installation guide](flash-install.md).
-The exact 2026-08-28 binaries still require a final installation and boot check on the
-reference device; see [known issues](known-issues.md).
+Runtime coverage and remaining limitations are recorded in [known issues](known-issues.md).
 
 ## License map
 
