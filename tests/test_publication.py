@@ -69,8 +69,11 @@ class PublicationBoundaryTests(unittest.TestCase):
         self.assertIn("artifact-ids: ${{ inputs.artifact-id }}", recovery)
         self.assertIn("run-id: ${{ inputs.source-run-id }}", recovery)
         self.assertIn("GH_TOKEN: ${{ github.token }}", recovery)
+        self.assertIn("contents: write", recovery)
+        self.assertIn("actions: write", recovery)
         self.assertIn('args.command == "resume"', publisher)
         self.assertIn('event != "workflow_dispatch"', publisher)
+        self.assertNotIn('api("immutable-releases")', publisher)
         checker = (ROOT / "autobuild/check-workflows.sh").read_text()
         for name in ("autobuild.yml", "release-resume.yml", "validate.yml"):
             self.assertIn(".github/workflows/" + name, checker)

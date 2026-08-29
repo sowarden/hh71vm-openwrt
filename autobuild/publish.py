@@ -66,7 +66,8 @@ class GitHub:
         if result.returncode:
             if missing and "(HTTP 404)" in result.stderr:
                 return None
-            raise RuntimeError("GitHub API request failed: " + endpoint)
+            detail = result.stderr.strip().replace("\n", " ")[-500:]
+            raise RuntimeError("GitHub API request failed: " + endpoint + (": " + detail if detail else ""))
         return json.loads(result.stdout or "null")
 
     def assets(self, release_id):
@@ -151,16 +152,19 @@ def publish(directory, manifest, github, prerelease=True):
     ref = github.api("git/ref/tags/" + tag, missing=True)
     if ref and (ref["object"]["type"] != "commit" or ref["object"]["sha"] != manifest["source_commit"]):
         raise ValueError("existing tag points to another source")
+    if not ref:
+        ref = github.api("git/refs", "POST", {"ref": "refs/tags/" + tag,
+            "sha": manifest["source_commit"]})
+        if ref["object"]["type"] != "commit" or ref["object"]["sha"] != manifest["source_commit"]:
+            raise ValueError("created tag points to another source")
     if release:
         if marker not in release.get("body", "") or release["tag_name"] != tag:
             raise ValueError("unmanaged release or different manifest")
         if not release["draft"] and not release.get("immutable"):
             raise ValueError("existing public release is not immutable")
     else:
-        if ref:
-            raise ValueError("tag exists without a matching managed release")
-        release = github.api("releases", "POST", {"tag_name": tag, "target_commitish": manifest["source_commit"],
-            "name": tag, "body": release_body(manifest, marker), "draft": True,
+        release = github.api("releases", "POST", {"tag_name": tag, "name": tag,
+            "body": release_body(manifest, marker), "draft": True,
             "prerelease": prerelease, "make_latest": "false"})
     local = {p.name: p for p in directory.iterdir()}
     remote = github.assets(release["id"])
@@ -191,6 +195,47 @@ def publish(directory, manifest, github, prerelease=True):
             raise ValueError("anonymous asset hash mismatch")
 
 
+RECOVERY_PATHS = {
+    ".github/workflows/autobuild.yml",
+    ".github/workflows/release-resume.yml",
+    "README.md",
+    "autobuild/build.py",
+    "autobuild/check-workflows.sh",
+    "autobuild/common.py",
+    "autobuild/publish.py",
+    "tests/test_autobuild.py",
+    "tests/test_publication.py",
+}
+
+
+def verify_recovery_source(github, commit):
+    main_ref = github.api("git/ref/heads/main")
+    if main_ref["object"]["type"] != "commit":
+        raise ValueError("main does not resolve directly to a commit")
+    main_commit = main_ref["object"]["sha"]
+    if main_commit == commit:
+        return
+    comparison = github.api(f"compare/{commit}...{main_commit}")
+    commits = comparison.get("commits", [])
+    if (comparison.get("status") != "ahead" or
+            comparison.get("merge_base_commit", {}).get("sha") != commit or
+            comparison.get("total_commits") != len(commits) or not commits):
+        raise ValueError("release recovery source is not a complete ancestor of main")
+    if any(not item.get("commit", {}).get("message", "").splitlines()[0].endswith("[release-resume]")
+           for item in commits):
+        raise ValueError("main contains a non-recovery commit after the release source")
+    identities = ((item.get("commit", {}).get(role, {}).get("name"),
+                   item.get("commit", {}).get(role, {}).get("email"))
+                  for item in commits for role in ("author", "committer"))
+    if any(identity != ("sowarden", "sowarden@proton.me") for identity in identities):
+        raise ValueError("main contains a recovery commit with an unexpected identity")
+    changed = comparison.get("files", [])
+    files = {item.get("filename") for item in changed}
+    if (not files or None in files or not files.issubset(RECOVERY_PATHS) or
+            any(item.get("status") not in ("added", "modified") for item in changed)):
+        raise ValueError("main contains non-recovery paths after the release source")
+
+
 def resume(directory, tag, commit, artifact_id, source_run_id, key, github):
     unsigned = validate_candidate(directory, tag, commit, signed=False)
     if unsigned["run_id"] != source_run_id:
@@ -201,14 +246,11 @@ def resume(directory, tag, commit, artifact_id, source_run_id, key, github):
         del unsigned["hardware_tested"]
         write_json(Path(directory) / "release.json", unsigned)
         validate_candidate(directory, tag, commit, signed=False)
-    sign(directory, tag, commit, key, expected_run_id=source_run_id)
-    main_ref = github.api("git/ref/heads/main")
-    if (main_ref["object"]["type"] != "commit" or
-            main_ref["object"]["sha"] != commit):
-        raise ValueError("release recovery source is not the current main commit")
+    verify_recovery_source(github, commit)
     artifact = github.api(f"actions/artifacts/{artifact_id}")
     if artifact["name"] != tag or artifact["workflow_run"]["id"] != source_run_id:
         raise ValueError("release recovery artifact identity differs from candidate")
+    sign(directory, tag, commit, key, expected_run_id=source_run_id)
     manifest = validate_candidate(directory, tag, commit, signed=True)
     verify_signatures(directory)
     publish(directory, manifest, github, prerelease=False)

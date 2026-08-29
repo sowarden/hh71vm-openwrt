@@ -226,7 +226,7 @@ def validate_candidate(directory, expected_tag=None, expected_commit=None, signe
     directory = Path(directory)
     manifest = read_json(directory / "release.json")
     if manifest.get("schema") != 1:
-        raise ValueError("invalid release schema or hardware assertion")
+        raise ValueError("invalid release schema")
     tag = identity(manifest["source_commit"], manifest["run_id"], manifest["run_attempt"])
     if tag != manifest["tag"] or (expected_tag and tag != expected_tag):
         raise ValueError("release identity mismatch")
