@@ -346,6 +346,7 @@ class ImageInspectionTests(unittest.TestCase):
                 "etc/opkg/hh71vm.conf": ("src/gz hh71vm " + auto.feed_url(TAG) + "\n").encode(),
                 "usr/lib/opkg/status": "".join(f"{k}: {v}\n" for k, v in package("kernel", version=KERNEL).items()).encode(),
                 "usr/sbin/xtables-legacy-multi": bytes(elf),
+                "usr/sbin/iwpriv": (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/iwpriv").read_bytes(),
                 "usr/sbin/autosysupgrade": (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/autosysupgrade").read_bytes().replace(b"\r\n", b"\n"),
                 "www/luci-static/resources/hh71vm/updater.js": (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js").read_bytes().replace(b"\r\n", b"\n"),
                 "www/luci-static/resources/view/system/flash.js": b"'require hh71vm.updater as updater';\n",
@@ -359,6 +360,8 @@ class ImageInspectionTests(unittest.TestCase):
                 path = tree / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
+                if name == "usr/sbin/iwpriv":
+                    path.chmod(0o755)
             squash = root / "rootfs.bin"
             subprocess.run(["mksquashfs", str(tree), str(squash), "-noappend", "-no-progress", "-all-root", "-processors", "1"],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -374,7 +377,8 @@ class ImageInspectionTests(unittest.TestCase):
             (output / auto.IMAGE_ASSETS["sysupgrade"]).write_bytes(kernel.ljust(2949120, b"\xff") + body)
             cpio = bytearray()
             for name, data in list(files.items()) + [("TRAILER!!!", b"")]:
-                values = [0, 0o100644, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name) + 1, 0]
+                mode = 0o100755 if name == "usr/sbin/iwpriv" else 0o100644
+                values = [0, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name) + 1, 0]
                 cpio += ("070701" + "".join(f"{v:08x}" for v in values)).encode() + name.encode() + b"\0"
                 cpio += b"\0" * (-len(cpio) % 4)
                 cpio += data
@@ -383,6 +387,10 @@ class ImageInspectionTests(unittest.TestCase):
                 b"simulated loader".ljust(64, b"\0") + lzma.compress(bytes(cpio), format=lzma.FORMAT_ALONE))
             result = images.inspect_release_images(None, output, TAG, KEY, KERNEL)
             self.assertEqual(len(result), 3)
+            mode_probe = images.ImageFiles(files)
+            mode_probe.modes = {name: 0o100644 for name in files}
+            with self.assertRaisesRegex(ValueError, "iwpriv is not executable"):
+                images.check_files(mode_probe, TAG, KEY, [package("kernel", version=KERNEL)])
             exact = output / auto.IMAGE_ASSETS["sysupgrade"]
             renamed = output / "renamed-sysupgrade.bin"
             exact.rename(renamed)

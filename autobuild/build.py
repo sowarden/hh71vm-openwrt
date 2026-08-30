@@ -80,6 +80,14 @@ def prepare(source, build, cache, key, tag, lock):
     copy_overlay(source / "openwrt-feed/target/linux/rtkmipsel", build / "target/linux/rtkmipsel")
     copy_overlay(source / "openwrt-feed/package", build / "package")
     copy_overlay(source / "autobuild/package", build / "package")
+    # iwpriv is a prebuilt MIPS ELF, not a shebang script. Its executable bit was
+    # previously lost in hosted builds because the repository entry was 0644,
+    # leaving netifd unable to configure either rtl8192cd radio. Do not depend on
+    # checkout filesystem semantics for a runtime-critical binary.
+    iwpriv = build / "target/linux/rtkmipsel/base-files/usr/sbin/iwpriv"
+    if iwpriv.read_bytes()[:4] != b"\x7fELF":
+        raise ValueError("iwpriv overlay is not an ELF executable")
+    iwpriv.chmod(0o755)
     key_id, normalized = public_key(key)
     package = build / "package/hh71vm-feed"
     (package / "files/release.pub").write_bytes(normalized)

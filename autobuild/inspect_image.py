@@ -9,8 +9,16 @@ from pathlib import Path, PurePosixPath
 from common import IMAGE_ASSETS, public_key, privacy, records, sha256, read_json, feed_url
 
 
+class ImageFiles(dict):
+    """Image file bodies plus the exact modes recorded by CPIO or SquashFS."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.modes = {}
+
+
 def cpio_files(blob):
-    offset, result = 0, {}
+    offset, result = 0, ImageFiles()
     while offset + 110 <= len(blob):
         if blob[offset:offset + 6] not in (b"070701", b"070702"):
             raise ValueError("invalid initramfs CPIO header")
@@ -29,7 +37,9 @@ def cpio_files(blob):
         if name == "TRAILER!!!":
             return result
         if mode & 0o170000 == 0o100000:
-            result[name.removeprefix("./")] = blob[start:start + size]
+            normalized = name.removeprefix("./")
+            result[normalized] = blob[start:start + size]
+            result.modes[normalized] = mode
         offset = (start + size + 3) & ~3
     raise ValueError("initramfs trailer missing")
 
@@ -75,6 +85,11 @@ def check_files(files, tag, key, expected_installed=None):
     xtables = files["usr/sbin/xtables-legacy-multi"]
     if xtables[:6] != b"\x7fELF\x01\x01" or xtables[18:20] != b"\x08\x00":
         raise ValueError("image xtables is not MIPS ELF")
+    iwpriv = files.get("usr/sbin/iwpriv", b"")
+    if iwpriv[:4] != b"\x7fELF":
+        raise ValueError("image iwpriv is not ELF")
+    if not getattr(files, "modes", {}).get("usr/sbin/iwpriv", 0) & 0o111:
+        raise ValueError("image iwpriv is not executable")
     return kernel
 
 
@@ -83,8 +98,13 @@ def squashfs_files(path, offset):
         root = Path(temporary) / "root"
         subprocess.run(["unsquashfs", "-no-progress", "-no-xattrs", "-d", str(root), "-o", str(offset), "-excludes", str(path), "dev"],
                        check=True, stdout=subprocess.DEVNULL, timeout=120)
-        return {p.relative_to(root).as_posix(): p.read_bytes()
-                for p in root.rglob("*") if p.is_file() and not p.is_symlink()}
+        result = ImageFiles()
+        for item in root.rglob("*"):
+            if item.is_file() and not item.is_symlink():
+                name = item.relative_to(root).as_posix()
+                result[name] = item.read_bytes()
+                result.modes[name] = item.stat().st_mode
+        return result
 
 
 def inspect_release_images(build, output, tag, key, expected_kernel=None):
