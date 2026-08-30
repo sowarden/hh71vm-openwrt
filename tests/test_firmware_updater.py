@@ -190,10 +190,36 @@ print(json.dumps(root))
         self.assertTrue(status["update_available"])
         self.assertFalse(status["installed_newer"])
         self.assertEqual(status["latest"], LATEST)
-        self.assertEqual([item["tag"] for item in status["releases"]], [LATEST, CURRENT],
+        self.assertEqual([item["tag"] for item in status["releases"]], [LATEST],
                          (status, result.stderr))
         self.assertEqual(status["releases"][0]["changes"], ["Add the LuCI updater."])
+        fetched = self.fetch_log.read_text()
+        self.assertNotIn("api.github.com", fetched)
+        self.assertNotIn(f"/download/{CURRENT}/", fetched)
         self.assertFalse(self.log.exists())
+
+    def test_optional_history_returns_only_signed_descriptors(self):
+        result = self.execute("--history-json", "--expected", LATEST)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = json.loads(result.stdout)
+        self.assertTrue(status["history_complete"])
+        self.assertEqual([item["tag"] for item in status["releases"]], [CURRENT])
+        self.assertEqual(status["latest_published_at"], "2026-08-30T12:00:00Z")
+        self.assertNotIn("/releases/latest/download/", self.fetch_log.read_text())
+        self.assertFalse(self.log.exists())
+
+    def test_history_downloads_each_descriptor_and_signature_in_parallel(self):
+        self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({
+            f"/download/{CURRENT}/release.json": 2,
+            f"/download/{CURRENT}/release.json.sig": 2,
+        })
+        started = time.monotonic()
+        result = self.execute("--history-json", "--expected", LATEST)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 3.5, elapsed)
+        self.assertEqual([item["tag"] for item in json.loads(result.stdout)["releases"]],
+                         [CURRENT])
 
     def test_local_status_needs_no_network_or_flash(self):
         environment = self.environment.copy()
@@ -210,22 +236,33 @@ print(json.dumps(root))
         self.assertFalse(self.log.exists())
 
     def test_check_json_has_a_bounded_total_wall_clock_budget(self):
-        self.replace_script("check_budget_seconds=20", "check_budget_seconds=4")
-        self.replace_script("optional_request_timeout=3", "optional_request_timeout=2")
+        self.replace_script("check_budget_seconds=15", "check_budget_seconds=4")
+        self.replace_script("required_request_timeout=8", "required_request_timeout=3")
         self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({
-            "/repos/sowarden/hh71vm-openwrt/releases?per_page=20": 20,
+            "/releases/latest/download/release.json.sig": 20,
+        })
+        started = time.monotonic()
+        result = self.execute("--check-json")
+        elapsed = time.monotonic() - started
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 6, elapsed)
+        self.assertRegex(result.stderr, r"signed release metadata|check timed out")
+        self.assertFalse(self.log.exists())
+
+    def test_check_downloads_required_descriptor_and_signature_in_parallel(self):
+        self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({
+            "/releases/latest/download/release.json": 2,
+            "/releases/latest/download/release.json.sig": 2,
         })
         started = time.monotonic()
         result = self.execute("--check-json")
         elapsed = time.monotonic() - started
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(elapsed, 6, elapsed)
-        status = json.loads(result.stdout)
-        self.assertTrue(status["update_available"])
-        self.assertFalse(status["history_complete"])
+        self.assertLess(elapsed, 3.5, elapsed)
+        self.assertTrue(json.loads(result.stdout)["update_available"])
 
     def test_slow_required_descriptor_fails_inside_total_budget(self):
-        self.replace_script("check_budget_seconds=20", "check_budget_seconds=4")
+        self.replace_script("check_budget_seconds=15", "check_budget_seconds=4")
         self.replace_script("required_request_timeout=8", "required_request_timeout=3")
         self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({
             "/releases/latest/download/release.json": 20,
@@ -238,9 +275,24 @@ print(json.dumps(root))
         self.assertRegex(result.stderr, r"signed release metadata|check timed out")
         self.assertFalse(self.log.exists())
 
+    def test_optional_history_has_a_bounded_total_wall_clock_budget(self):
+        self.replace_script("check_budget_seconds=15", "check_budget_seconds=4")
+        self.replace_script("optional_request_timeout=5", "optional_request_timeout=2")
+        self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({
+            "/repos/sowarden/hh71vm-openwrt/releases?per_page=5": 20,
+        })
+        started = time.monotonic()
+        result = self.execute("--history-json", "--expected", LATEST)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 6, elapsed)
+        status = json.loads(result.stdout)
+        self.assertFalse(status["history_complete"])
+        self.assertEqual(status["releases"], [])
+
     def test_unavailable_github_api_does_not_block_latest_result(self):
         self.environment["UPDATER_MOCK_FAILURES"] = json.dumps([
-            "/repos/sowarden/hh71vm-openwrt/releases?per_page=20",
+            "/repos/sowarden/hh71vm-openwrt/releases?per_page=5",
         ])
         result = self.execute("--check-json")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -248,27 +300,34 @@ print(json.dumps(root))
         self.assertTrue(status["update_available"])
         self.assertFalse(status["history_complete"])
         self.assertEqual([item["tag"] for item in status["releases"]], [LATEST])
+        self.assertNotIn("api.github.com", self.fetch_log.read_text())
+
+        history = self.execute("--history-json", "--expected", LATEST)
+        self.assertEqual(history.returncode, 0, history.stderr)
+        history_status = json.loads(history.stdout)
+        self.assertFalse(history_status["history_complete"])
+        self.assertEqual(history_status["releases"], [])
 
     def test_unavailable_history_descriptor_keeps_latest_successful(self):
         self.environment["UPDATER_MOCK_FAILURES"] = json.dumps([
             f"/download/{CURRENT}/release.json",
             f"/download/{CURRENT}/release.json.sig",
         ])
-        result = self.execute("--check-json")
+        result = self.execute("--history-json", "--expected", LATEST)
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
         self.assertTrue(status["update_available"])
         self.assertFalse(status["history_complete"])
-        self.assertEqual([item["tag"] for item in status["releases"]], [LATEST])
+        self.assertEqual(status["releases"], [])
 
     def test_malformed_history_is_ignored_without_weakening_latest(self):
         (self.fixtures / "releases.json").write_text("{not json\n")
-        result = self.execute("--check-json")
+        result = self.execute("--history-json", "--expected", LATEST)
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
         self.assertTrue(status["update_available"])
         self.assertFalse(status["history_complete"])
-        self.assertEqual([item["tag"] for item in status["releases"]], [LATEST])
+        self.assertEqual(status["releases"], [])
 
     def test_stale_lock_is_cleaned_before_check(self):
         lock = self.root / "tmp/autosysupgrade.lock"
@@ -286,6 +345,14 @@ print(json.dumps(root))
         self.assertIn("another autosysupgrade process", result.stderr)
         self.assertTrue(lock.exists())
 
+    def test_optional_history_does_not_hold_or_modify_the_upgrade_lock(self):
+        lock = self.root / "tmp/autosysupgrade.lock"
+        lock.mkdir()
+        (lock / "pid").write_text(f"{os.getpid()}\n")
+        result = self.execute("--history-json", "--expected", LATEST)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((lock / "pid").read_text(), f"{os.getpid()}\n")
+
     def test_bad_signature_fails_before_image_or_sysupgrade(self):
         (self.fixtures / "latest.sig").write_text("bad\n")
         result = self.execute("--check-json")
@@ -301,6 +368,16 @@ print(json.dumps(root))
         self.assertFalse(status["update_available"])
         self.assertFalse(status["installed_newer"])
 
+    def test_no_config_mode_does_not_reinstall_the_same_release_without_force(self):
+        (self.root / "rom/usr/share/hh71vm-feed/release.conf").write_text(f"release={LATEST}\n")
+
+        result = self.execute("-n")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already installed", result.stdout)
+        self.assertNotIn(f"/{ASSET}", self.fetch_log.read_text())
+        self.assertFalse(self.log.exists())
+
     def test_newer_installed_build_is_never_offered_as_a_downgrade(self):
         newer = "hh71vm-r00000000000000000102-a000001-cccccccccccc"
         (self.root / "rom/usr/share/hh71vm-feed/release.conf").write_text(f"release={newer}\n")
@@ -315,19 +392,19 @@ print(json.dumps(root))
             {"tag_name": CURRENT, "published_at": "not-a-date", "prerelease": False},
             {"tag_name": LATEST, "published_at": "2026-08-30T12:00:00Z", "prerelease": False},
         ]))
-        result = self.execute("--check-json")
+        result = self.execute("--history-json", "--expected", LATEST)
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
         self.assertFalse(status["history_complete"])
-        self.assertEqual([item["tag"] for item in status["releases"]], [LATEST])
+        self.assertEqual(status["releases"], [])
 
     def test_unverified_history_entry_is_omitted_without_weakening_latest(self):
         (self.fixtures / "current.sig").write_text("bad\n")
-        result = self.execute("--check-json")
+        result = self.execute("--history-json", "--expected", LATEST)
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
         self.assertFalse(status["history_complete"])
-        self.assertEqual([item["tag"] for item in status["releases"]], [LATEST])
+        self.assertEqual(status["releases"], [])
         self.assertTrue(status["update_available"])
 
     def test_expected_release_blocks_check_to_upgrade_race(self):

@@ -92,6 +92,31 @@ def candidate(directory):
 
 
 class PackageTests(unittest.TestCase):
+    def test_legacy_ipkg_outputs_are_built_by_one_ordered_recipe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary)
+            include = build / "include"
+            include.mkdir()
+            package_ipkg = include / "package-ipkg.mk"
+            package_ipkg.write_text(
+                "    $(PKG_INFO_DIR)/$(1).provides $$(IPKG_$(1)): "
+                "$(STAMP_BUILT) $(INCLUDE_DIR)/package-ipkg.mk\n"
+                "\tbuild-package\n"
+                "\t@[ -f $$(IPKG_$(1)) ]\n\n"
+                "    $(1)-clean:\n"
+            )
+
+            builder.order_ipkg_outputs(build)
+
+            result = package_ipkg.read_text()
+            self.assertIn(
+                "    $$(IPKG_$(1)): $(STAMP_BUILT) $(INCLUDE_DIR)/package-ipkg.mk\n",
+                result)
+            self.assertIn(
+                "    $(PKG_INFO_DIR)/$(1).provides: $$(IPKG_$(1))\n\t@[ -f $$@ ]\n",
+                result)
+            self.assertNotIn(".provides $$(IPKG_$(1)):", result)
+
     def test_release_notes_are_short_reviewed_plain_text(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "release-notes.json"

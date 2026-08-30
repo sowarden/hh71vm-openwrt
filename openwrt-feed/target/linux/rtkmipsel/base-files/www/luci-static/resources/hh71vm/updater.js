@@ -92,8 +92,44 @@ return baseclass.extend({
 		dom.content(this.historyNode, state.checked ? [
 			E('h4', {}, _('Recent release history')),
 			E('p', {}, _('The newest release is included. Each signed list describes changes introduced by that build.')),
-			state.history_complete ? '' : E('p', { 'class': 'alert-message warning' }, _('Some older release metadata could not be verified and was omitted.'))
+			state.history_loading
+				? E('p', { 'class': 'spinning' }, _('Loading optional signed release history…'))
+				: state.history_complete ? '' : E('p', { 'class': 'alert-message warning' }, _('Some older release metadata could not be verified and was omitted.'))
 		].concat(releases.map(this.renderRelease.bind(this))) : []);
+	},
+
+	loadHistory: function(expected) {
+		var requestId = (this.historyRequestId || 0) + 1;
+		this.historyRequestId = requestId;
+
+		return fs.exec('/usr/sbin/autosysupgrade', [ '--history-json', '--expected', expected ])
+			.then(parseReply)
+			.then(L.bind(function(history) {
+				if (requestId !== this.historyRequestId || !this.state || this.state.latest !== expected)
+					return;
+
+				this.state.current_published_at = history.current_published_at || '';
+				this.state.latest_published_at = history.latest_published_at || '';
+				this.state.history_complete = history.history_complete === true;
+				this.state.history_loading = false;
+				var latestRelease = Array.isArray(this.state.releases) ? this.state.releases[0] : null,
+				    olderReleases = Array.isArray(history.releases) ? history.releases.filter(function(release) {
+					    return release && release.tag !== expected;
+				    }).slice(0, 4) : [];
+				if (latestRelease && latestRelease.tag === expected) {
+					latestRelease.published_at = this.state.latest_published_at;
+					this.state.releases = [ latestRelease ].concat(olderReleases);
+				}
+				this.updateView();
+			}, this))
+			.catch(L.bind(function() {
+				if (requestId !== this.historyRequestId || !this.state || this.state.latest !== expected)
+					return;
+
+				this.state.history_complete = false;
+				this.state.history_loading = false;
+				this.updateView();
+			}, this));
 	},
 
 	handleCheck: function(ev) {
@@ -105,7 +141,9 @@ return baseclass.extend({
 			.then(parseReply)
 			.then(L.bind(function(state) {
 				this.state = state;
+				this.state.history_loading = true;
 				this.updateView();
+				this.loadHistory(state.latest);
 			}, this))
 			.catch(L.bind(function(error) {
 				this.state = this.state || {};

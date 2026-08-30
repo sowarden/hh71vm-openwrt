@@ -60,6 +60,27 @@ def apply_feed_patches(source, build, feed):
     run("git", "diff", "--check", cwd=checkout)
 
 
+def order_ipkg_outputs(build):
+    """Prevent the legacy IPK recipe from running once per declared output."""
+    path = build / "include/package-ipkg.mk"
+    text = path.read_text()
+    shared_rule = (
+        "    $(PKG_INFO_DIR)/$(1).provides $$(IPKG_$(1)): "
+        "$(STAMP_BUILT) $(INCLUDE_DIR)/package-ipkg.mk\n"
+    )
+    ipk_rule = "    $$(IPKG_$(1)): $(STAMP_BUILT) $(INCLUDE_DIR)/package-ipkg.mk\n"
+    recipe_end = "\t@[ -f $$(IPKG_$(1)) ]\n\n    $(1)-clean:"
+    ordered_end = (
+        "\t@[ -f $$(IPKG_$(1)) ]\n\n"
+        "    $(PKG_INFO_DIR)/$(1).provides: $$(IPKG_$(1))\n"
+        "\t@[ -f $$@ ]\n\n"
+        "    $(1)-clean:"
+    )
+    if text.count(shared_rule) != 1 or text.count(recipe_end) != 1:
+        raise ValueError("parallel IPK output patch context changed")
+    path.write_text(text.replace(shared_rule, ipk_rule).replace(recipe_end, ordered_end))
+
+
 def prepare(source, build, cache, key, tag, lock):
     if build.exists():
         raise ValueError("refusing an existing buildroot")
@@ -77,6 +98,7 @@ def prepare(source, build, cache, key, tag, lock):
     apply_feed_patches(source, build, "luci")
     run("./scripts/feeds", "update", "-i", cwd=build)
     run("./scripts/feeds", "install", "-a", cwd=build)
+    order_ipkg_outputs(build)
     copy_overlay(source / "openwrt-feed/target/linux/rtkmipsel", build / "target/linux/rtkmipsel")
     copy_overlay(source / "openwrt-feed/package", build / "package")
     copy_overlay(source / "autobuild/package", build / "package")

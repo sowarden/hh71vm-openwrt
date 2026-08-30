@@ -102,6 +102,7 @@ class PublicationBoundaryTests(unittest.TestCase):
             'board_name 2>/dev/null || true)" = hh71vm',
             "releases/download/$tag",
             "--check-json",
+            "--history-json",
             "--status-json",
             "--expected",
             "history_complete",
@@ -110,7 +111,7 @@ class PublicationBoundaryTests(unittest.TestCase):
         ):
             self.assertIn(marker, text)
         self.assertNotIn("--no-check-certificate", text)
-        self.assertIn('[ "$installed" = "$tag" ] && [ "$keep_config" = 1 ] && [ "$check_only" = 0 ]', text)
+        self.assertIn('[ "$installed" = "$tag" ] && [ "$force" = 0 ] && [ "$check_only" = 0 ]', text)
         inspector = (ROOT / "autobuild/inspect_image.py").read_text()
         self.assertIn('files.get("usr/sbin/autosysupgrade")', inspector)
 
@@ -118,7 +119,7 @@ class PublicationBoundaryTests(unittest.TestCase):
         frontend = (ROOT /
                     "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js").read_text()
         patch = (ROOT / "openwrt-feed/patches/luci/200-hh71vm-firmware-updater.patch").read_text()
-        for marker in ("Check Updates", "Upgrade Firmware", "--check-json", "--expected",
+        for marker in ("Check Updates", "Upgrade Firmware", "--check-json", "--history-json", "--expected",
                        "ui.showModal", "ui.awaitReconnect", "state.update_available"):
             self.assertIn(marker, frontend)
         self.assertIn("'require baseclass';", frontend)
@@ -174,6 +175,53 @@ const result = factory({}, {}, {}, baseclass, {}, {}, {});
 const message = result.formatError(new Error('XHR request timed out'), true);
 if (message === 'XHR request timed out' || !/internet connection/i.test(message))
     throw new Error('XHR timeout was not replaced with an actionable message: ' + message);
+"""
+        subprocess.run(
+            [shutil.which("node"), "-e", probe, str(frontend)],
+            capture_output=True, text=True, check=True,
+        )
+
+    @unittest.skipUnless(shutil.which("node"), "requires Node.js for the LuCI history probe")
+    def test_luci_history_timeout_keeps_the_verified_latest_result(self):
+        frontend = (ROOT /
+                    "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js")
+        probe = r"""
+const source = require('fs').readFileSync(process.argv[1], 'utf8');
+global._ = function(value) { return value; };
+global.E = function(tag, attrs, children) { return { tag, attrs, children }; };
+const main = {
+    current: 'hh71vm-aaaaaaaaaaaa-r100-a1', latest: 'hh71vm-aaaaaaaaaaaa-r101-a1',
+    checked: true, update_available: true, installed_newer: false,
+    history_complete: false, releases: []
+};
+const fsMock = { exec: function(path, args) {
+    if (args[0] === '--check-json')
+        return Promise.resolve({ code: 0, stdout: JSON.stringify(main), stderr: '' });
+    return Promise.reject(new Error('XHR request timed out'));
+} };
+const baseclass = { extend: function(members) {
+    function Updater() {}
+    Updater.prototype = members;
+    return Updater;
+} };
+const L = { bind: function(fn, context) { return fn.bind(context); }, raise: function() { throw new Error('invalid data'); } };
+const dom = { content: function() {} };
+const factory = new Function('window', 'document', 'L', 'baseclass', 'dom', 'fs', 'ui', source);
+const Updater = factory({}, {}, L, baseclass, dom, fsMock, {});
+const updater = new Updater();
+updater.state = {};
+updater.summaryNode = {};
+updater.historyNode = {};
+updater.upgradeButton = { disabled: true };
+const button = { disabled: false, firstChild: { data: '' } };
+updater.handleCheck({ currentTarget: button }).then(function() {
+    return new Promise(function(resolve) { setTimeout(resolve, 0); });
+}).then(function() {
+    if (!updater.state.checked || !updater.state.update_available || updater.state.error)
+        throw new Error('optional history timeout replaced the verified latest result');
+    if (updater.state.history_loading || updater.upgradeButton.disabled)
+        throw new Error('UI did not finish cleanly after optional history timeout');
+}).catch(function(error) { console.error(error); process.exit(1); });
 """
         subprocess.run(
             [shutil.which("node"), "-e", probe, str(frontend)],

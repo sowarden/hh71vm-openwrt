@@ -12,10 +12,11 @@ force=0
 assume_yes=0
 json_mode=0
 status_only=0
+history_only=0
 expected_tag=
-check_budget_seconds=20
+check_budget_seconds=15
 required_request_timeout=8
-optional_request_timeout=3
+optional_request_timeout=5
 
 usage() {
   cat <<'EOF'
@@ -24,11 +25,12 @@ Usage: autosysupgrade [-n] [--check] [--force]
 Download and verify the latest HH71VM sysupgrade image.
   -n            do not preserve the current configuration
   --check       verify availability and compatibility without upgrading
-  --force       allow replacing a build newer than the latest Release
+  --force       allow reinstalling the same Release or replacing a newer build
 
 LuCI integration options:
   --status-json print the installed build as JSON without network access
   --check-json  verify signed release metadata and print JSON without downloading the image
+  --history-json print optional signed release history as JSON
   --yes         skip the interactive prompt after all verification succeeds
   --expected ID refuse to upgrade if the latest Release changed after checking
 EOF
@@ -52,6 +54,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --status-json) status_only=1; json_mode=1 ;;
     --check-json) check_only=1; json_mode=1 ;;
+    --history-json) check_only=1; json_mode=1; history_only=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -64,6 +67,7 @@ done
     fail '--status-json cannot be combined with other options'
 }
 [ "$json_mode" = 0 ] || [ "$assume_yes" = 0 ] || fail '--yes cannot be combined with JSON output'
+[ "$history_only" = 0 ] || [ -n "$expected_tag" ] || fail '--history-json requires --expected ID'
 
 [ "$(id -u)" = 0 ] || fail 'must be run as root'
 [ "$(cat /tmp/sysinfo/board_name 2>/dev/null || true)" = hh71vm ] ||
@@ -162,16 +166,25 @@ acquire_lock() {
   }
 }
 
-acquire_lock
+lock_acquired=0
+if [ "$history_only" = 0 ]; then
+  acquire_lock
+  lock_acquired=1
+fi
 temporary=$(mktemp -d /tmp/autosysupgrade.XXXXXX) || {
-  rm -f "$lock/pid"
-  rmdir "$lock"
+  if [ "$lock_acquired" = 1 ]; then
+    rm -f "$lock/pid"
+    rmdir "$lock"
+  fi
   fail 'cannot create a temporary directory'
 }
 cleanup() {
   rm -f "$temporary"/*
-  rm -f "$lock/pid"
-  rmdir "$temporary" "$lock" 2>/dev/null || true
+  rmdir "$temporary" 2>/dev/null || true
+  if [ "$lock_acquired" = 1 ]; then
+    rm -f "$lock/pid"
+    rmdir "$lock" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -185,19 +198,43 @@ budget_timeout() {
   printf '%s\n' "$maximum"
 }
 
-download_metadata() {
-  timeout=$(budget_timeout "$required_request_timeout") || fail 'firmware update check timed out'
-  if ! uclient-fetch -q -T "$timeout" -O "$2" "$1"; then
+try_required_download() {
+  timeout=$(budget_timeout "$required_request_timeout") || return 1
+  rm -f "$2"
+  uclient-fetch -q -T "$timeout" -O "$2" "$1" >/dev/null 2>&1 && [ -s "$2" ]
+}
+
+download_metadata_pair() {
+  first_ok=1
+  second_ok=1
+  try_required_download "$1" "$2" &
+  first_pid=$!
+  try_required_download "$3" "$4" &
+  second_pid=$!
+  wait "$first_pid" || first_ok=0
+  wait "$second_pid" || second_ok=0
+  if [ "$first_ok" != 1 ] || [ "$second_ok" != 1 ]; then
     [ "$(date +%s)" -lt "$check_deadline" ] || fail 'firmware update check timed out'
     fail 'cannot download signed release metadata'
   fi
-  [ -s "$2" ] || fail 'download is empty'
 }
 
 try_download() {
   timeout=$(budget_timeout "$optional_request_timeout") || return 1
   rm -f "$2"
   uclient-fetch -q -T "$timeout" -O "$2" "$1" >/dev/null 2>&1 && [ -s "$2" ]
+}
+
+try_download_pair() {
+  first_ok=1
+  second_ok=1
+  try_download "$1" "$2" &
+  first_pid=$!
+  try_download "$3" "$4" &
+  second_pid=$!
+  wait "$first_pid" || first_ok=0
+  wait "$second_pid" || second_ok=0
+  [ "$first_ok" = 1 ] && [ "$second_ok" = 1 ]
 }
 
 download_image() {
@@ -228,28 +265,47 @@ verify_descriptor() {
     [ "$descriptor_url" = "$repository/releases/download/$descriptor_tag" ]
 }
 
-[ "$json_mode" = 1 ] || echo 'Downloading the signed latest-release descriptor...'
-download_metadata "$latest/release.json" "$temporary/release.json"
-download_metadata "$latest/release.json.sig" "$temporary/release.json.sig"
+collect_history_jobs() {
+  while IFS='|' read -r download_pid index history_tag history_date; do
+    [ -n "$download_pid" ] || continue
+    if wait "$download_pid" &&
+       verify_descriptor "$temporary/history.$index.json" "$temporary/history.$index.sig" "$history_tag"; then
+      printf '%s|%s|%s\n' "$index" "$history_tag" "$history_date" >> "$temporary/history"
+      [ "$history_tag" != "$installed" ] || current_published_at=$history_date
+    else
+      history_complete=0
+    fi
+  done < "$temporary/history-jobs"
+  : > "$temporary/history-jobs"
+}
+
 trusted_key_id=$(usign -F -p "$data/release.pub" 2>/dev/null) ||
   fail 'cannot read the installed trust anchor'
-descriptor_file="$temporary/release.json"
-tag=$(jsonfilter -i "$descriptor_file" -e '@.tag' 2>/dev/null || true)
-valid_tag "$tag" || fail 'invalid Release tag'
-[ -z "$expected_tag" ] || [ "$tag" = "$expected_tag" ] ||
-  fail 'the latest Release changed after the update check; check again before upgrading'
-verify_descriptor "$temporary/release.json" "$temporary/release.json.sig" "$tag" ||
-  fail 'release descriptor verification failed'
-image_url=$descriptor_url
-[ "$image_url" = "$repository/releases/download/$tag" ] || fail 'invalid immutable Release URL'
-checksum=$(awk -v key="\"$asset\":" '
-  $1 == key && $2 ~ /^"[0-9a-f]+",?$/ {
-    gsub(/[",]/, "", $2)
-    print $2
-  }
-' "$temporary/release.json")
-[ "${#checksum}" = 64 ] || fail 'the image checksum is missing or invalid'
-case "$checksum" in *[!0-9a-f]*) fail 'the image checksum is invalid' ;; esac
+if [ "$history_only" = 1 ]; then
+  tag=$expected_tag
+else
+  [ "$json_mode" = 1 ] || echo 'Downloading the signed latest-release descriptor...'
+  download_metadata_pair \
+    "$latest/release.json" "$temporary/release.json" \
+    "$latest/release.json.sig" "$temporary/release.json.sig"
+  descriptor_file="$temporary/release.json"
+  tag=$(jsonfilter -i "$descriptor_file" -e '@.tag' 2>/dev/null || true)
+  valid_tag "$tag" || fail 'invalid Release tag'
+  [ -z "$expected_tag" ] || [ "$tag" = "$expected_tag" ] ||
+    fail 'the latest Release changed after the update check; check again before upgrading'
+  verify_descriptor "$temporary/release.json" "$temporary/release.json.sig" "$tag" ||
+    fail 'release descriptor verification failed'
+  image_url=$descriptor_url
+  [ "$image_url" = "$repository/releases/download/$tag" ] || fail 'invalid immutable Release URL'
+  checksum=$(awk -v key="\"$asset\":" '
+    $1 == key && $2 ~ /^"[0-9a-f]+",?$/ {
+      gsub(/[",]/, "", $2)
+      print $2
+    }
+  ' "$temporary/release.json")
+  [ "${#checksum}" = 64 ] || fail 'the image checksum is missing or invalid'
+  case "$checksum" in *[!0-9a-f]*) fail 'the image checksum is invalid' ;; esac
+fi
 
 installed_run=$(release_run "$installed")
 installed_attempt=$(release_attempt "$installed")
@@ -269,16 +325,51 @@ elif [ "$installed" != "$tag" ]; then
   fail 'release identities conflict at the same workflow run and attempt'
 fi
 
-if [ "$json_mode" = 1 ]; then
+if [ "$json_mode" = 1 ] && [ "$history_only" = 0 ]; then
+  JSON_PREFIX=${JSON_PREFIX:-}
+  set +u
+  . /usr/share/libubox/jshn.sh
+  json_init
+  json_add_string current "$installed"
+  json_add_string current_published_at ""
+  json_add_string latest "$tag"
+  json_add_string latest_published_at ""
+  json_add_boolean checked 1
+  json_add_boolean update_available "$update_available"
+  json_add_boolean installed_newer "$installed_newer"
+  json_add_boolean history_complete 0
+  json_add_array releases
+  json_add_object ""
+  json_add_string tag "$tag"
+  json_add_string published_at ""
+  json_add_array changes
+  descriptor_file="$temporary/release.json"
+  jsonfilter -i "$descriptor_file" -e '@.changelog[*]' > "$temporary/changes" 2>/dev/null || true
+  change_count=0
+  while IFS= read -r change; do
+    change_count=$((change_count + 1))
+    [ "$change_count" -le 12 ] || break
+    json_add_string "" "$change"
+  done < "$temporary/changes"
+  json_close_array
+  json_close_object
+  json_close_array
+  json_dump
+  set -u
+  exit 0
+fi
+
+if [ "$history_only" = 1 ]; then
   history_complete=1
   current_published_at=
   latest_published_at=
+  seen_latest=0
   : > "$temporary/history"
-  if try_download "$api/releases?per_page=20" "$temporary/releases.json" &&
+  if try_download "$api/releases?per_page=5" "$temporary/releases.json" &&
      jsonfilter -i "$temporary/releases.json" -e '@[0].tag_name' >/dev/null 2>&1; then
     index=0
     : > "$temporary/release-order"
-    while [ "$index" -lt 20 ]; do
+    while [ "$index" -lt 5 ]; do
       history_tag=$(jsonfilter -i "$temporary/releases.json" -e "@[$index].tag_name" 2>/dev/null || true)
       [ -n "$history_tag" ] || break
       history_date=$(jsonfilter -i "$temporary/releases.json" -e "@[$index].published_at" 2>/dev/null || true)
@@ -303,45 +394,43 @@ if [ "$json_mode" = 1 ]; then
       index=$((index + 1))
     done
     LC_ALL=C sort -r "$temporary/release-order" > "$temporary/release-order.sorted"
-    accepted=0
+    : > "$temporary/history-jobs"
+    scheduled=0
+    batch_count=0
     examined=0
     while IFS='|' read -r history_date history_tag index; do
-      [ "$accepted" -lt 5 ] || break
-      if [ "$examined" -ge 8 ]; then
+      if [ "$examined" -ge 5 ]; then
         history_complete=0
         break
       fi
       examined=$((examined + 1))
       if [ "$history_tag" = "$tag" ]; then
-        cp "$temporary/release.json" "$temporary/history.$index.json"
-        cp "$temporary/release.json.sig" "$temporary/history.$index.sig"
-      elif ! try_download "$repository/releases/download/$history_tag/release.json" "$temporary/history.$index.json" ||
-           ! try_download "$repository/releases/download/$history_tag/release.json.sig" "$temporary/history.$index.sig"; then
-        history_complete=0
+        latest_published_at=$history_date
+        seen_latest=1
+        [ "$history_tag" != "$installed" ] || current_published_at=$history_date
         continue
       fi
-      if verify_descriptor "$temporary/history.$index.json" "$temporary/history.$index.sig" "$history_tag"; then
-        printf '%s|%s|%s\n' "$index" "$history_tag" "$history_date" >> "$temporary/history"
-        accepted=$((accepted + 1))
-        [ "$history_tag" != "$installed" ] || current_published_at=$history_date
-        [ "$history_tag" != "$tag" ] || latest_published_at=$history_date
-      else
+      if [ "$scheduled" -ge 4 ]; then
         history_complete=0
+        break
+      fi
+      scheduled=$((scheduled + 1))
+      try_download_pair \
+        "$repository/releases/download/$history_tag/release.json" "$temporary/history.$index.json" \
+        "$repository/releases/download/$history_tag/release.json.sig" "$temporary/history.$index.sig" &
+      printf '%s|%s|%s|%s\n' "$!" "$index" "$history_tag" "$history_date" >> "$temporary/history-jobs"
+      batch_count=$((batch_count + 1))
+      if [ "$batch_count" -eq 2 ]; then
+        collect_history_jobs
+        batch_count=0
       fi
     done < "$temporary/release-order.sorted"
+    collect_history_jobs
   else
     history_complete=0
   fi
 
-  if ! grep -q "|$tag|" "$temporary/history"; then
-    cp "$temporary/release.json" "$temporary/history.latest.json"
-    printf '%s|%s|%s\n' latest "$tag" "$latest_published_at" > "$temporary/history.new"
-    while IFS= read -r history_line; do
-      printf '%s\n' "$history_line" >> "$temporary/history.new"
-    done < "$temporary/history"
-    cp "$temporary/history.new" "$temporary/history"
-    history_complete=0
-  fi
+  [ "$seen_latest" = 1 ] || history_complete=0
 
   JSON_PREFIX=${JSON_PREFIX:-}
   set +u
@@ -385,7 +474,7 @@ if [ "$installed_newer" = 1 ] && [ "$force" = 0 ]; then
   fail 'the installed build is newer than the latest public Release; use --force only if replacement is intentional'
 fi
 
-if [ "$installed" = "$tag" ] && [ "$keep_config" = 1 ] && [ "$check_only" = 0 ]; then
+if [ "$installed" = "$tag" ] && [ "$force" = 0 ] && [ "$check_only" = 0 ]; then
   echo 'The latest Release is already installed.'
   exit 0
 fi
