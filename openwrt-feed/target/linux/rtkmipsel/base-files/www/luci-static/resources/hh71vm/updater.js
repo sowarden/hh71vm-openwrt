@@ -1,11 +1,18 @@
 'use strict';
+'require baseclass';
 'require dom';
 'require fs';
 'require ui';
 
 function parseReply(reply) {
-	if (!reply || reply.code !== 0)
-		L.raise('Error', (reply && reply.stderr || _('Firmware updater failed.')).trim());
+	if (!reply || reply.code !== 0) {
+		var stderr = reply && typeof reply.stderr === 'string' ? reply.stderr.trim() : '',
+		    match = stderr.match(/^autosysupgrade: ([^\r\n]{1,160})$/),
+		    error = new Error(match ? match[1] : _('Firmware updater failed.'));
+
+		error.firmwareUpdaterSafe = true;
+		throw error;
+	}
 
 	try {
 		return JSON.parse(reply.stdout);
@@ -13,6 +20,17 @@ function parseReply(reply) {
 	catch (error) {
 		L.raise('Error', _('Firmware updater returned invalid data.'));
 	}
+}
+
+function formatError(error, checking) {
+	if (error && error.firmwareUpdaterSafe)
+		return error.message;
+
+	var message = error && error.message || String(error || '');
+	if (checking && /timed out/i.test(message))
+		return _('Firmware update check timed out. Check the router internet connection and try again.');
+
+	return _('Firmware updater failed. Try again or run autosysupgrade from SSH for details.');
 }
 
 function formatDate(value) {
@@ -23,12 +41,12 @@ function formatDate(value) {
 	return isNaN(date.getTime()) ? _('release date unavailable') : date.toLocaleString();
 }
 
-return {
+return baseclass.extend({
 	load: function() {
 		return fs.exec('/usr/sbin/autosysupgrade', [ '--status-json' ])
 			.then(parseReply)
 			.catch(function(error) {
-				return { error: error.message || String(error), checked: false };
+				return { error: formatError(error, false), checked: false };
 			});
 	},
 
@@ -91,7 +109,7 @@ return {
 			}, this))
 			.catch(L.bind(function(error) {
 				this.state = this.state || {};
-				this.state.error = error.message || String(error);
+				this.state.error = formatError(error, true);
 				this.state.checked = false;
 				this.updateView();
 			}, this))
@@ -167,4 +185,4 @@ return {
 		this.updateView();
 		return node;
 	}
-};
+});

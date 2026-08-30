@@ -13,6 +13,9 @@ assume_yes=0
 json_mode=0
 status_only=0
 expected_tag=
+check_budget_seconds=20
+required_request_timeout=8
+optional_request_timeout=3
 
 usage() {
   cat <<'EOF'
@@ -100,12 +103,15 @@ valid_date() {
 }
 
 emit_local_status() {
+  JSON_PREFIX=${JSON_PREFIX:-}
+  set +u
   . /usr/share/libubox/jshn.sh
   json_init
   json_add_string current "$installed"
   json_add_string current_published_at ""
   json_add_boolean checked 0
   json_dump
+  set -u
 }
 
 if [ "$status_only" = 1 ]; then
@@ -118,7 +124,7 @@ if [ "$status_only" = 1 ]; then
   exit 0
 fi
 
-for command in uclient-fetch usign jsonfilter sha256sum sysupgrade mktemp awk grep sort; do
+for command in uclient-fetch usign jsonfilter sha256sum sysupgrade mktemp awk grep sort date; do
   command -v "$command" >/dev/null 2>&1 || fail "required command is missing: $command"
 done
 [ -f /usr/share/libubox/jshn.sh ] || fail 'required JSON library is missing'
@@ -126,25 +132,77 @@ valid_tag "$installed" || fail 'the installed release identity is invalid'
 [ -z "$expected_tag" ] || valid_tag "$expected_tag" || fail 'the expected release identity is invalid'
 
 lock=/tmp/autosysupgrade.lock
-mkdir "$lock" 2>/dev/null || fail 'another autosysupgrade process is already running'
+acquire_lock() {
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s\n' "$$" > "$lock/pid" || {
+      rm -f "$lock/pid"
+      rmdir "$lock" 2>/dev/null || true
+      fail 'cannot record updater lock ownership'
+    }
+    return
+  fi
+
+  [ -d "$lock" ] && [ ! -L "$lock" ] || fail 'the updater lock path is unsafe'
+  lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
+  if [ -z "$lock_pid" ]; then
+    sleep 1
+    lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
+  fi
+  case "$lock_pid" in
+    ''|*[!0-9]*) ;;
+    *) kill -0 "$lock_pid" 2>/dev/null && fail 'another autosysupgrade process is already running' ;;
+  esac
+  rm -f "$lock/pid"
+  rmdir "$lock" 2>/dev/null || fail 'the stale updater lock could not be removed safely'
+  mkdir "$lock" 2>/dev/null || fail 'another autosysupgrade process is already running'
+  printf '%s\n' "$$" > "$lock/pid" || {
+    rm -f "$lock/pid"
+    rmdir "$lock" 2>/dev/null || true
+    fail 'cannot record updater lock ownership'
+  }
+}
+
+acquire_lock
 temporary=$(mktemp -d /tmp/autosysupgrade.XXXXXX) || {
+  rm -f "$lock/pid"
   rmdir "$lock"
   fail 'cannot create a temporary directory'
 }
 cleanup() {
   rm -f "$temporary"/*
+  rm -f "$lock/pid"
   rmdir "$temporary" "$lock" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
 
-download() {
-  uclient-fetch -q -T 60 -O "$2" "$1" || fail 'download failed'
+check_deadline=$(($(date +%s) + check_budget_seconds))
+
+budget_timeout() {
+  maximum=$1
+  remaining=$((check_deadline - $(date +%s)))
+  [ "$remaining" -gt 0 ] || return 1
+  [ "$remaining" -ge "$maximum" ] || maximum=$remaining
+  printf '%s\n' "$maximum"
+}
+
+download_metadata() {
+  timeout=$(budget_timeout "$required_request_timeout") || fail 'firmware update check timed out'
+  if ! uclient-fetch -q -T "$timeout" -O "$2" "$1"; then
+    [ "$(date +%s)" -lt "$check_deadline" ] || fail 'firmware update check timed out'
+    fail 'cannot download signed release metadata'
+  fi
   [ -s "$2" ] || fail 'download is empty'
 }
 
 try_download() {
+  timeout=$(budget_timeout "$optional_request_timeout") || return 1
   rm -f "$2"
-  uclient-fetch -q -T 30 -O "$2" "$1" >/dev/null 2>&1 && [ -s "$2" ]
+  uclient-fetch -q -T "$timeout" -O "$2" "$1" >/dev/null 2>&1 && [ -s "$2" ]
+}
+
+download_image() {
+  uclient-fetch -q -T 60 -O "$2" "$1" || fail 'firmware image download failed'
+  [ -s "$2" ] || fail 'firmware image download is empty'
 }
 
 descriptor_value() {
@@ -171,8 +229,8 @@ verify_descriptor() {
 }
 
 [ "$json_mode" = 1 ] || echo 'Downloading the signed latest-release descriptor...'
-download "$latest/release.json" "$temporary/release.json"
-download "$latest/release.json.sig" "$temporary/release.json.sig"
+download_metadata "$latest/release.json" "$temporary/release.json"
+download_metadata "$latest/release.json.sig" "$temporary/release.json.sig"
 trusted_key_id=$(usign -F -p "$data/release.pub" 2>/dev/null) ||
   fail 'cannot read the installed trust anchor'
 descriptor_file="$temporary/release.json"
@@ -216,10 +274,11 @@ if [ "$json_mode" = 1 ]; then
   current_published_at=
   latest_published_at=
   : > "$temporary/history"
-  if try_download "$api/releases?per_page=100" "$temporary/releases.json"; then
+  if try_download "$api/releases?per_page=20" "$temporary/releases.json" &&
+     jsonfilter -i "$temporary/releases.json" -e '@[0].tag_name' >/dev/null 2>&1; then
     index=0
     : > "$temporary/release-order"
-    while [ "$index" -lt 100 ]; do
+    while [ "$index" -lt 20 ]; do
       history_tag=$(jsonfilter -i "$temporary/releases.json" -e "@[$index].tag_name" 2>/dev/null || true)
       [ -n "$history_tag" ] || break
       history_date=$(jsonfilter -i "$temporary/releases.json" -e "@[$index].published_at" 2>/dev/null || true)
@@ -248,7 +307,7 @@ if [ "$json_mode" = 1 ]; then
     examined=0
     while IFS='|' read -r history_date history_tag index; do
       [ "$accepted" -lt 5 ] || break
-      if [ "$examined" -ge 20 ]; then
+      if [ "$examined" -ge 8 ]; then
         history_complete=0
         break
       fi
@@ -274,23 +333,6 @@ if [ "$json_mode" = 1 ]; then
     history_complete=0
   fi
 
-  if [ -z "$current_published_at" ] &&
-     try_download "$api/releases/tags/$installed" "$temporary/current-release.json"; then
-    api_tag=$(jsonfilter -i "$temporary/current-release.json" -e '@.tag_name' 2>/dev/null || true)
-    api_date=$(jsonfilter -i "$temporary/current-release.json" -e '@.published_at' 2>/dev/null || true)
-    if [ "$api_tag" = "$installed" ] && valid_date "$api_date"; then
-      current_published_at=$api_date
-    fi
-  fi
-  if [ -z "$latest_published_at" ] &&
-     try_download "$api/releases/tags/$tag" "$temporary/latest-release.json"; then
-    api_tag=$(jsonfilter -i "$temporary/latest-release.json" -e '@.tag_name' 2>/dev/null || true)
-    api_date=$(jsonfilter -i "$temporary/latest-release.json" -e '@.published_at' 2>/dev/null || true)
-    if [ "$api_tag" = "$tag" ] && valid_date "$api_date"; then
-      latest_published_at=$api_date
-    fi
-  fi
-
   if ! grep -q "|$tag|" "$temporary/history"; then
     cp "$temporary/release.json" "$temporary/history.latest.json"
     printf '%s|%s|%s\n' latest "$tag" "$latest_published_at" > "$temporary/history.new"
@@ -301,6 +343,8 @@ if [ "$json_mode" = 1 ]; then
     history_complete=0
   fi
 
+  JSON_PREFIX=${JSON_PREFIX:-}
+  set +u
   . /usr/share/libubox/jshn.sh
   json_init
   json_add_string current "$installed"
@@ -331,6 +375,7 @@ if [ "$json_mode" = 1 ]; then
   done < "$temporary/history"
   json_close_array
   json_dump
+  set -u
   exit 0
 fi
 
@@ -346,7 +391,7 @@ if [ "$installed" = "$tag" ] && [ "$keep_config" = 1 ] && [ "$check_only" = 0 ];
 fi
 
 echo 'Downloading the immutable sysupgrade image...'
-download "$image_url/$asset" "$temporary/$asset"
+download_image "$image_url/$asset" "$temporary/$asset"
 actual=$(sha256sum "$temporary/$asset" | awk '{ print $1 }')
 [ "$actual" = "$checksum" ] || fail 'downloaded image SHA-256 mismatch'
 sysupgrade -T "$temporary/$asset" >/dev/null 2>&1 ||

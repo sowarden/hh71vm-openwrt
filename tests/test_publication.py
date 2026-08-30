@@ -1,4 +1,5 @@
 import re
+import shutil
 import subprocess
 import sys
 import unittest
@@ -120,10 +121,64 @@ class PublicationBoundaryTests(unittest.TestCase):
         for marker in ("Check Updates", "Upgrade Firmware", "--check-json", "--expected",
                        "ui.showModal", "ui.awaitReconnect", "state.update_available"):
             self.assertIn(marker, frontend)
+        self.assertIn("'require baseclass';", frontend)
+        self.assertIn("return baseclass.extend({", frontend)
+        self.assertNotIn("\nreturn {\n", frontend)
         self.assertIn("/usr/sbin/autosysupgrade", patch)
         self.assertIn("'require hh71vm.updater as updater';", patch)
         self.assertNotIn("--force", frontend)
         self.assertNotIn("innerHTML", frontend)
+        self.assertIn("Firmware update check timed out", frontend)
+        self.assertIn("firmwareUpdaterSafe", frontend)
+
+    @unittest.skipUnless(shutil.which("node"), "requires Node.js for the LuCI module probe")
+    def test_luci_firmware_updater_exports_a_constructible_class(self):
+        frontend = (ROOT /
+                    "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js")
+        probe = r"""
+const source = require('fs').readFileSync(process.argv[1], 'utf8');
+const baseclass = {
+    extend: function(members) {
+        function Updater() {}
+        Updater.prototype = members;
+        return Updater;
+    }
+};
+const factory = new Function('window', 'document', 'L', 'baseclass', 'dom', 'fs', 'ui', source);
+const Updater = factory({}, {}, {}, baseclass, {}, {}, {});
+if (typeof Updater !== 'function')
+    throw new TypeError('updater factory did not return a constructor');
+const updater = new Updater();
+for (const method of ['load', 'render', 'handleCheck', 'handleUpgrade']) {
+    if (typeof updater[method] !== 'function')
+        throw new TypeError('missing updater method: ' + method);
+}
+"""
+        subprocess.run(
+            [shutil.which("node"), "-e", probe, str(frontend)],
+            capture_output=True, text=True, check=True,
+        )
+
+    @unittest.skipUnless(shutil.which("node"), "requires Node.js for the LuCI error probe")
+    def test_luci_firmware_updater_replaces_xhr_timeout_with_actionable_error(self):
+        frontend = (ROOT /
+                    "openwrt-feed/target/linux/rtkmipsel/base-files/www/luci-static/resources/hh71vm/updater.js")
+        probe = r"""
+let source = require('fs').readFileSync(process.argv[1], 'utf8');
+source = source.replace('return baseclass.extend({', 'return { Updater: baseclass.extend({');
+source = source.replace(/\}\);\s*$/, '}), formatError: formatError };');
+global._ = function(value) { return value; };
+const baseclass = { extend: function(members) { return function Updater() {}; } };
+const factory = new Function('window', 'document', 'L', 'baseclass', 'dom', 'fs', 'ui', source);
+const result = factory({}, {}, {}, baseclass, {}, {}, {});
+const message = result.formatError(new Error('XHR request timed out'), true);
+if (message === 'XHR request timed out' || !/internet connection/i.test(message))
+    throw new Error('XHR timeout was not replaced with an actionable message: ' + message);
+"""
+        subprocess.run(
+            [shutil.which("node"), "-e", probe, str(frontend)],
+            capture_output=True, text=True, check=True,
+        )
 
     def test_release_notes_are_signed_and_human_authored(self):
         common = (ROOT / "autobuild/common.py").read_text()

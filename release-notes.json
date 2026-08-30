@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "changes": [
-    "Add signed firmware update checks and one-click sysupgrade to Backup / Flash Firmware in LuCI.",
-    "Show the five newest published builds with release dates and signed changelogs.",
-    "Sort release history by validated publication time instead of relying on GitHub API response order.",
-    "Use chronologically sortable release identifiers while retaining compatibility with existing releases."
+    "Restore Wi-Fi startup by preserving executable permissions on the rtl8192cd control utility.",
+    "Fix the Backup / Flash Firmware page by loading the signed firmware updater as a valid LuCI class.",
+    "Restore fast network-free firmware identity status with the OpenWrt jshn library under nounset.",
+    "Bound signed update checks to the LuCI request window while keeping release history optional."
   ]
 }
