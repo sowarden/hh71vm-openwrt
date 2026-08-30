@@ -35,6 +35,21 @@ local function bit(mask,band)
   local byte=tonumber(mask:sub(offset,offset+1),16)
   return math.floor(byte/2^((band-1)%8))%2==1
 end
+local function union(left,right)
+  c.need(B.hex(left) and B.hex(right),'invalid LTE mask union')
+  local result={}
+  for band=1,64 do
+    if bit(left,band) or bit(right,band) then result[#result+1]=band end
+  end
+  return B.mask(result)
+end
+local function outside(mask,capability)
+  local result={}
+  for _,band in ipairs(B.list(mask)) do
+    if not bit(capability,band) then result[#result+1]=band end
+  end
+  return result
+end
 local function subset(mask,capability)
   for _,band in ipairs(B.list(mask)) do if not bit(capability,band) then return false end end
   return true
@@ -54,22 +69,22 @@ function B.parse(text,capability)
   c.need(not (#result==1 and result[1]==32),'B32 is supplementary downlink; select an anchor band too')
   table.sort(result); return result
 end
-local function known(mask,capability)
+local function known(mask)
   c.need(B.hex(mask),'invalid 64-bit LTE preference')
-  B.parse(table.concat(B.list(mask),','),capability)
+  B.parse(table.concat(B.list(mask),','))
   return mask
 end
 local function record(mask)
   return {schema=3,board=c.board(),mask=known(mask)}
 end
-local function checked(value,capability)
+local function checked(value)
   c.need(type(value)=='table' and B.hex(value.mask),'missing or corrupt LTE restore point')
   if value.schema==3 then
     c.need(value.board==c.board(),'restore point belongs to a different OpenWrt board')
   elseif value.schema==2 then
     c.need(value.model==c.model(),'legacy restore point belongs to a different router model')
   else error('unsupported LTE restore point schema',0) end
-  return known(value.mask,capability)
+  return known(value.mask)
 end
 local function read(q)
   local mask=q:run(q.helper .. ' get')
@@ -81,27 +96,30 @@ local function capabilities(q)
   c.need(B.hex(mask) and #B.list(mask)>0,'invalid QMI LTE capability reply')
   return mask
 end
-local function managed(state,capability)
+local function managed(state)
   local saved=c.json(desired)
   state.managed=saved~=nil
   if saved then
-    local ok,value=pcall(checked,saved,capability)
+    local ok,value=pcall(checked,saved)
     if ok then state.desired_bands=B.list(value) else state.desired_error=tostring(value) end
   end
   return state
 end
 local function describe(mask,capability)
+  local extra=outside(mask,capability)
   local state={ok=true,refreshed=os.time(),current_bands=B.list(mask),
     supported_bands=B.list(capability),capability_source='qmi-dms',backend='qmi-nas',
-    backup_present=false,pending=fs.access(pending) and true or false}
-  state.editable=pcall(known,mask,capability)
+    selectable_bands=B.list(union(mask,capability)),unconfirmed_bands=extra,
+    capability_mismatch=#extra>0,backup_present=false,
+    pending=fs.access(pending) and true or false}
+  state.editable=pcall(known,mask)
   local saved=c.json(backup)
   if saved then
-    local ok,value=pcall(checked,saved,capability)
+    local ok,value=pcall(checked,saved)
     state.backup_present=ok
     if ok then state.backup_bands=B.list(value) else state.backup_error=tostring(value) end
   end
-  return managed(state,capability)
+  return managed(state)
 end
 function B.cached()
   local state=c.json(cache) or {ok=true,unread=true,supported_bands={},
@@ -112,7 +130,10 @@ end
 local function save_desired(value)
   if value then c.atomic(desired,value) else fs.unlink(desired); c.need(c.exec('sync'),'sync failed') end
 end
-local function transaction(q,before,target,recovering,next_desired)
+local function command(q,operation,target,expected)
+  return q:run(q.helper .. ' ' .. operation .. ' ' .. target .. ' ' .. expected,12)
+end
+local function transaction(q,before,target,recovering,next_desired,operation)
   if not recovering then
     c.atomic(pending,{schema=3,before=record(before),target=record(target),
       desired_before=c.json(desired) or false,desired_after=next_desired or false})
@@ -122,12 +143,21 @@ local function transaction(q,before,target,recovering,next_desired)
     error('LTE preference changed concurrently; no write performed',0)
   end
   local ok,err=pcall(function()
-    q:run(q.helper .. ' set ' .. target,12)
+    command(q,operation,target,before)
     c.need(read(q)==target,'QMI readback mismatch')
   end)
+  if not ok and tostring(err):find('changed concurrently; no write performed',1,true) then
+    if not recovering then fs.unlink(pending); c.exec('sync') end
+    error(err,0)
+  end
+  if not ok then
+    local readable,current=pcall(read,q)
+    if readable and current==target then ok=true end
+  end
   if not ok then
     local restored=pcall(function()
-      q:run(q.helper .. ' set ' .. before,12)
+      local current=read(q)
+      if current~=before then command(q,'restore',before,current) end
       c.need(read(q)==before,'rollback readback mismatch')
     end)
     if restored and not recovering then fs.unlink(pending); c.exec('sync') end
@@ -148,31 +178,35 @@ function B.execute(operation,text)
     if operation=='reconcile' and not fs.access(desired) then return B.cached() end
     q=require('qualcomm').open('nas')
     local capability=capabilities(q)
-    local selection=operation=='set' and B.parse(text,capability) or nil
     local before=read(q)
+    local available=union(capability,before)
+    local selection=operation=='set' and B.parse(text,available) or nil
     if operation=='show' then return describe(before,capability) end
-    known(before,capability)
+    known(before)
     if operation=='backup' then
       c.need(not fs.access(backup),'restore point already exists; it will not be overwritten')
       c.atomic(backup,record(before)); return describe(before,capability)
     end
     local target,next_desired
     if operation=='set' then
-      if not fs.access(backup) then c.atomic(backup,record(before)) else checked(c.json(backup),capability) end
+      if not fs.access(backup) then c.atomic(backup,record(before)) else checked(c.json(backup)) end
       target=B.mask(selection); next_desired=record(target)
-    elseif operation=='restore' then target=checked(c.json(backup),capability)
-    elseif operation=='undo' then target=checked(c.json(last),capability); next_desired=record(target)
+    elseif operation=='restore' then target=checked(c.json(backup))
+    elseif operation=='undo' then target=checked(c.json(last)); next_desired=record(target)
     elseif operation=='reconcile' then
-      checked(c.json(backup),capability)
-      next_desired=c.json(desired); target=checked(next_desired,capability)
+      checked(c.json(backup))
+      next_desired=c.json(desired); target=checked(next_desired)
     elseif operation=='recover' then
       local journal=c.need(c.json(pending),'no pending transaction')
       c.need(journal.schema==2 or journal.schema==3,'unsupported pending transaction schema')
-      target=checked(journal.before,capability); next_desired=journal.desired_before
-      if next_desired then checked(next_desired,capability) end
+      target=checked(journal.before); next_desired=journal.desired_before
+      if next_desired then checked(next_desired) end
     else error('unknown band operation',0) end
-    c.need(subset(target,capability),'target LTE preference exceeds modem capabilities')
-    if before~=target then transaction(q,before,target,operation=='recover',next_desired)
+    if operation=='set' then
+      c.need(subset(target,available),'target LTE preference contains a band that is neither reported nor currently enabled')
+    end
+    local helper_operation=operation=='set' and 'apply' or 'restore'
+    if before~=target then transaction(q,before,target,operation=='recover',next_desired,helper_operation)
     else
       if operation~='reconcile' then save_desired(next_desired) end
       if operation=='recover' then fs.unlink(pending); c.exec('sync') end

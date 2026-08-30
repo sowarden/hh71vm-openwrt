@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "changes": [
-    "Restore Wi-Fi startup by preserving executable permissions on the rtl8192cd control utility.",
-    "Fix the Backup / Flash Firmware page by loading the signed firmware updater as a valid LuCI class.",
-    "Restore fast network-free firmware identity status with the OpenWrt jshn library under nounset.",
-    "Bound signed update checks to the LuCI request window while keeping release history optional."
+    "Return the verified latest signed firmware release promptly and load optional history separately.",
+    "Avoid parallel legacy IPK output races during clean builds.",
+    "Publish kmod-pppol2tp in the matching signed package feed.",
+    "Preserve or remove modem-reported current-only LTE bands safely without fixed operator band lists."
   ]
 }

@@ -7,7 +7,7 @@ LUCI_TITLE:=Extra modem controls for HH71VM
 LUCI_DESCRIPTION:=A separate Modem page for modem-extra-tools.
 LUCI_DEPENDS:=+luci-base +luci-app-hh71vm-modem +modem-extra-tools
 LUCI_PKGARCH:=all
-PKG_VERSION:=1.1.1
+PKG_VERSION:=1.1.2
 PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0

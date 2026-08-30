@@ -126,26 +126,32 @@ return view.extend({
 
 			var selected = {}, choices = E('div', { 'class': 'cbi-checkboxes' });
 			(b.current_bands || []).forEach(function(band) { selected[band] = true; });
-			(b.supported_bands || []).forEach(function(band) {
+			var unconfirmed = {};
+			(b.unconfirmed_bands || []).forEach(function(band) { unconfirmed[band] = true; });
+			(b.selectable_bands || b.supported_bands || []).forEach(function(band) {
 				choices.appendChild(E('label', { 'style': 'display:inline-block;min-width:6em;margin:.5em 1em .5em 0' }, [
 					E('input', { 'type': 'checkbox', 'value': band, 'checked': selected[band] ? 'checked' : null,
-						'disabled': b.unread || b.pending ? 'disabled' : null }), ' LTE B' + band ]));
+						'disabled': b.unread || b.pending ? 'disabled' : null }), ' LTE B' + band,
+					unconfirmed[band] ? E('small', {}, ' ' + _('(current only)')) : '' ]));
 			});
-			if (!(b.supported_bands || []).length) choices.appendChild(E('em', {}, _('Read bands to query this modem.')));
+			if (!(b.selectable_bands || b.supported_bands || []).length) choices.appendChild(E('em', {}, _('Read bands to query this modem.')));
 			var bandsChildren = [
 				E('p', {}, _('Restrict the LTE bands the modem may use. This does not lock a cell tower or force carrier aggregation. The fastest choice depends on local coverage and congestion.')),
-				E('p', {}, _('The available checkboxes come from the Qualcomm modem\'s QMI capability response, not from a fixed router or operator list.')),
+				E('p', {}, _('The available checkboxes are discovered from the Qualcomm modem. Bands already present in the current preference remain visible even when the capability response omits them. No fixed router or operator band list is used.')),
 				E('p', {}, b.managed ? _('Maintained selection: ') + names(b.desired_bands) : _('Automatic maintenance is off.')),
 				E('p', { 'class': 'cbi-value-description' }, _('OpenWrt stores your selection and checks it once per minute, restoring it after modem startup or stock software changes. No write is sent while it already matches. Restore original also turns maintenance off.')),
 				E('p', {}, b.unread ? _('No modem reading yet. Read bands to query capabilities and the current preference without restarting the modem.') :
 					_('Last read preference: ') + names(b.current_bands) + ' | ' + new Date((b.refreshed || 0) * 1000).toLocaleString()),
-				row(_('Supported LTE bands'), choices, _('B32 is supplementary downlink and cannot be selected alone.')),
+				row(_('Available LTE bands'), choices, _('Bands marked current only are enabled in the modem preference but are not confirmed by its capability response. B32 is supplementary downlink and cannot be selected alone.')),
 				E('p', { 'class': 'cbi-value-description' }, b.backup_present ?
 					_('Original restore point: ') + names(b.backup_bands) :
 					_('The original LTE preference is saved before the first change and is never overwritten. Band control uses QMI and does not edit radio calibration NV items.'))
 			];
-			if (!b.unread && b.editable === false) bandsChildren.push(E('p', { 'class': 'alert-message warning' },
-				_('The current preference is inconsistent with the modem capability response. Changes are blocked instead of dropping unknown bits.')));
+			if (!b.unread && b.capability_mismatch) bandsChildren.push(E('p', { 'class': 'alert-message warning' },
+				_('The current preference contains bands omitted by the modem capability response: ') + names(b.unconfirmed_bands) +
+				_('. They can be preserved or explicitly removed, but no new unreported band can be added.')));
+			if (!b.unread && b.editable === false) bandsChildren.push(E('p', { 'class': 'alert-message error' },
+				_('The modem returned an invalid LTE preference. Changes remain blocked.')));
 			if (b.backup_error) bandsChildren.push(E('p', { 'class': 'alert-message error' }, b.backup_error));
 			if (b.desired_error) bandsChildren.push(E('p', { 'class': 'alert-message error' }, b.desired_error));
 			if (b.pending) bandsChildren.push(E('p', { 'class': 'alert-message error' },
@@ -164,7 +170,12 @@ return view.extend({
 					if (!values.length || (values.length === 1 && values[0] === 32)) {
 						notify(new Error(_('Select at least one anchor band; B32 alone is not valid.'))); return;
 					}
-					confirmBands(_('Apply LTE bands'), _('Allow only ') + names(values) + '?', function() { return bandSet(values); });
+					var kept = {};
+					values.forEach(function(band) { kept[band] = true; });
+					var removed = (b.unconfirmed_bands || []).filter(function(band) { return !kept[band]; });
+					var message = _('Allow only ') + names(values) + '?';
+					if (removed.length) message += ' ' + _('This explicitly removes current-only bands: ') + names(removed) + '.';
+					confirmBands(_('Apply LTE bands'), message, function() { return bandSet(values); });
 				}) ]));
 			content.push(section(_('LTE band selection'), bandsChildren));
 

@@ -27,6 +27,10 @@ static int parse_mask(const char *s,unsigned char *out)
 }
 static int subset(const unsigned char *mask,const unsigned char *cap)
 { unsigned i; for(i=0;i<8;i++) if(mask[i]&~cap[i]) return 0; return 1; }
+static int same(const unsigned char *left,const unsigned char *right)
+{ unsigned i; for(i=0;i<8;i++) if(left[i]!=right[i]) return 0; return 1; }
+static void merge(unsigned char *out,const unsigned char *left,const unsigned char *right)
+{ unsigned i; for(i=0;i<8;i++) out[i]=left[i]|right[i]; }
 static void print_mask(const unsigned char *v)
 {
     static const char d[]="0123456789abcdef"; char text[17]; unsigned i;
@@ -94,21 +98,35 @@ static int nas(int setting,unsigned char *mask)
 }
 __attribute__((used)) static int main_c(int argc,char **argv)
 {
-    unsigned char mask[8]={0},cap[8]={0}; int setting;
-    if(argc<2||(!equal(argv[1],"get")&&!equal(argv[1],"set")&&!equal(argv[1],"capabilities")))
-        return fail("usage: hh71-nas get | capabilities | set 16_LOWERCASE_HEX_CHARS");
+    unsigned char mask[8]={0},cap[8]={0},expected[8]={0},current[8]={0},available[8]={0};
+    int setting,compatible,restoring;
+    if(argc<2||(!equal(argv[1],"get")&&!equal(argv[1],"set")&&!equal(argv[1],"apply")&&
+        !equal(argv[1],"restore")&&!equal(argv[1],"capabilities")))
+        return fail("usage: hh71-nas get | capabilities | set MASK | apply MASK EXPECTED | restore MASK EXPECTED");
     if(equal(argv[1],"capabilities")) {
         if(argc!=2||capabilities(mask))return fail("QMI DMS LTE capabilities unavailable");
         print_mask(mask);return 0;
     }
-    setting=equal(argv[1],"set");
-    if((!setting&&argc!=2)||(setting&&(argc!=3||parse_mask(argv[2],mask))))return fail("invalid LTE preference mask");
+    setting=equal(argv[1],"set"); compatible=equal(argv[1],"apply"); restoring=equal(argv[1],"restore");
+    if((!setting&&!compatible&&!restoring&&argc!=2)||
+       (setting&&(argc!=3||parse_mask(argv[2],mask)))||
+       ((compatible||restoring)&&(argc!=4||parse_mask(argv[2],mask)||parse_mask(argv[3],expected))))
+        return fail("invalid LTE preference mask");
     if(setting) {
         if(capabilities(cap))return fail("QMI DMS LTE capabilities unavailable");
         if(!subset(mask,cap))return fail("LTE preference exceeds modem capabilities");
     }
-    if(nas(setting,mask))return fail("QMI NAS request failed, timed out or returned an invalid reply");
-    if(!setting) print_mask(mask);
+    if(compatible||restoring) {
+        if(nas(0,current))return fail("QMI NAS current preference unavailable");
+        if(!same(current,expected))return fail("LTE preference changed concurrently; no write performed");
+        if(compatible) {
+            if(capabilities(cap))return fail("QMI DMS LTE capabilities unavailable");
+            merge(available,cap,current);
+            if(!subset(mask,available))return fail("LTE preference contains a new unreported band");
+        }
+    }
+    if(nas(setting||compatible||restoring,mask))return fail("QMI NAS request failed, timed out or returned an invalid reply");
+    if(!setting&&!compatible&&!restoring) print_mask(mask);
     return 0;
 }
 __attribute__((naked,noreturn)) void _start(void)

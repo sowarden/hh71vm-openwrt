@@ -5,6 +5,7 @@ local stored,remote,capability,band_fault,opens,writes={},'',nil,nil,0,0
 local imei_raw,imei_fault,imei_writes,reported_imei='',nil,0,nil
 local original='c500088820000000'
 local regional='c700088820000000' -- Same modem plus LTE B2 capability.
+local six_band='c500080800000000' -- B1/B3/B7/B8/B20/B28 only.
 local label_imei='490154203237518'
 local donor_imei='356938035643809'
 local fs={access=function(p) return stored[p]~=nil end,
@@ -32,10 +33,15 @@ local function encode_imei(value)
 end
 local qnas={helper='/tmp/test/nas',close=function() end}
 function qnas:run(command)
-  if command==self.helper .. ' get' then return remote end
+  if command==self.helper .. ' get' then
+    if band_fault=='unreachable' then error('connection lost',0) end
+    return remote
+  end
   if command==self.helper .. ' capabilities' then return capability end
-  local mask=command:match(' set ([a-f0-9]+)$')
-  if mask then
+  local operation,mask,expected=command:match(' ([a-z]+) ([a-f0-9]+) ([a-f0-9]+)$')
+  if operation=='apply' or operation=='restore' then
+    if band_fault=='race' then remote='4000000000000000'; band_fault=nil end
+    if remote~=expected then error('LTE preference changed concurrently; no write performed',0) end
     writes=writes+1
     if band_fault=='unreachable' then error('connection lost',0) end
     if band_fault=='reject' and mask~=original then error('QMI rejected',0) end
@@ -121,13 +127,30 @@ reset(); band_fault='lost-ack'
 rejects(function() B.execute('set','3') end,'recovery required')
 test(stored[c.directory .. '/band-pending.json'].before.mask==original,'interruption keeps original band journal')
 rejects(function() B.execute('set','7') end,'interrupted transaction')
-rejects(function() B.execute('recover') end,'recovery required')
+rejects(function() B.execute('recover') end,'connection lost')
 band_fault=nil; B.execute('recover')
 test(remote==original and not stored[c.directory .. '/band-pending.json'],'band recovery restores original')
-reset(); remote='d500088820000000' -- B5 current preference, absent in capabilities.
-rejects(function() B.execute('set','3') end,'not supported by this modem: B5')
-test(writes==0,'capability mismatch never written')
-test(not B.execute('show').editable,'capability mismatch still readable')
+reset(); capability=six_band; remote=original
+shown=B.execute('show')
+test(shown.editable and shown.capability_mismatch,'capability mismatch remains explicitly editable')
+test(table.concat(shown.supported_bands,',')=='1,3,7,8,20,28','DMS bands remain authoritative capabilities')
+test(table.concat(shown.unconfirmed_bands,',')=='32,38','current-only bands are discovered dynamically')
+test(table.concat(shown.selectable_bands,',')=='1,3,7,8,20,28,32,38','current-only bands stay visible')
+B.execute('set','3,32,38')
+test(remote==B.mask({3,32,38}),'current-only bands may be preserved while changing confirmed bands')
+rejects(function() B.execute('set','3,5,32,38') end,'not supported by this modem: B5')
+test(remote==B.mask({3,32,38}),'a new unreported band is never written')
+B.execute('set','3,7')
+test(remote==B.mask({3,7}),'current-only bands may be removed by an explicit selection')
+B.execute('restore')
+test(remote==original,'exact original mismatch mask remains restorable')
+reset(); capability=B.mask({3,7}); remote=B.mask({3,7,40})
+shown=B.execute('show')
+test(table.concat(shown.unconfirmed_bands,',')=='40','compatibility behavior is not hardcoded to B32 or B38')
+test(table.concat(shown.selectable_bands,',')=='3,7,40','dynamic current-only B40 is selectable')
+reset(); band_fault='race'
+rejects(function() B.execute('set','3') end,'changed concurrently')
+test(writes==0,'helper-side race gate prevents a stale write')
 reset(); stored[c.directory .. '/band-original.json']={schema=3,board='another-board',mask=original}
 rejects(function() B.execute('restore') end,'different OpenWrt board')
 test(writes==0,'wrong-board backup never applied')

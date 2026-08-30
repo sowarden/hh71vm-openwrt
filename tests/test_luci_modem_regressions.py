@@ -112,7 +112,7 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         self.assertIn("ubus call hh71vm-modem device_refresh", backend)
 
     def test_ui_distinguishes_readback_cache_and_network_activation(self):
-        view = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/htdocs/luci-static/resources/view/modem-extra-tools/main-1-1-0.js").read_text()
+        view = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/htdocs/luci-static/resources/view/modem-extra-tools/main-1-1-2.js").read_text()
         for marker in (
             "NV 550 readback completed",
             "Fully shut down the router",
@@ -126,12 +126,31 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         self.assertNotIn("localStorage", view)
         self.assertNotIn("sessionStorage", view)
 
+    def test_band_capability_mismatch_is_dynamic_and_explicit(self):
+        view = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/htdocs/luci-static/resources/view/modem-extra-tools/main-1-1-2.js").read_text()
+        backend = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/files/bands.lua").read_text()
+        helper = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/src/hh71-nas.c").read_text()
+        for marker in (
+            "selectable_bands",
+            "unconfirmed_bands",
+            "current only",
+            "This explicitly removes current-only bands",
+        ):
+            self.assertIn(marker, view)
+        self.assertIn("selectable_bands=B.list(union(mask,capability))", backend)
+        self.assertIn("target LTE preference contains a band that is neither reported nor currently enabled", backend)
+        self.assertIn('q.helper .. \' \' .. operation .. \' \' .. target .. \' \' .. expected', backend)
+        self.assertIn('equal(argv[1],"apply")', helper)
+        self.assertIn('equal(argv[1],"restore")', helper)
+        self.assertIn("merge(available,cap,current)", helper)
+        self.assertNotIn("B32/B38", backend + helper + view)
+
     def test_optional_packages_ship_the_same_backend_ui_version(self):
         backend = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/Makefile").read_text()
         frontend = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/Makefile").read_text()
         config = (ROOT / "openwrt-feed/build.config").read_text()
-        self.assertIn("PKG_VERSION:=1.1.1", backend)
-        self.assertIn("PKG_VERSION:=1.1.1", frontend)
+        self.assertIn("PKG_VERSION:=1.1.2", backend)
+        self.assertIn("PKG_VERSION:=1.1.2", frontend)
         self.assertIn("CONFIG_PACKAGE_modem-extra-tools=m", config)
         self.assertIn("CONFIG_PACKAGE_luci-app-modem-extra-tools=m", config)
 
