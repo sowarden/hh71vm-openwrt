@@ -13,20 +13,30 @@ Log out of LuCI and sign in again, then open **Modem > SMS to Telegram**.
 
 ## Telegram setup
 
-1. Create a bot with [BotFather](https://t.me/BotFather) and copy its token.
-2. Open a private chat with the new bot and send it any message. Telegram bots cannot start
-   a private conversation; the bot can write to you only after you contact it.
-3. Enter the token in **Telegram Bot Token**.
-4. Enter the positive numeric private `chat_id` in **Send to User**. A normal `@username`
-   is not a private recipient identifier for this purpose.
-5. Alternatively, select **Detect chat ID** after sending the bot a message. Detection reads
-   pending Bot API updates without acknowledging them and succeeds only if exactly one private
-   chat is present. It refuses zero or multiple candidates instead of guessing.
-6. Choose whether confirmed messages should be removed from the SIM, then save.
+The LuCI page presents the initial setup as six short steps:
+
+1. Create a bot with [BotFather](https://t.me/BotFather), copy its token, and paste it into
+   **Telegram Bot Token**.
+2. Open a private chat with the new bot and send it a fresh message. Telegram bots cannot
+   start a private conversation.
+3. Select **Detect Chat IDs**. Detection may use the token currently entered in the form
+   without saving it first. If the field is blank, it uses the saved token.
+4. Select one detected private recipient, or enter its positive numeric ID in
+   **Destination Chat ID**. A normal `@username`, link, zero or negative ID is not accepted.
+5. Choose whether confirmed messages should be removed from the SIM.
+6. Select the standard **Save & Apply** action.
+
+Detection reads a bounded set of currently available Bot API updates without acknowledging
+them. It is not a permanent address book: old updates may already have been consumed. The
+page shows up to 20 unique private-chat candidates and excludes groups and channels. Each
+candidate contains only its numeric `chat_id` and any username or first/last name actually
+returned by Telegram. Duplicate updates are merged, message text is discarded, and malformed
+private-chat data is rejected instead of being guessed.
 
 The token field is intentionally blank whenever the page is opened. Leaving it blank while
-saving keeps the existing token. The status interface reports only whether configuration is
-present; it does not return the token, recipient, or SMS text.
+saving keeps the existing token. Selecting a detected candidate updates only the editable
+form field; UCI is not changed until **Save & Apply**. The status interface reports only
+whether configuration is present; it does not return the token, recipient, or SMS text.
 
 ## Delivery model
 

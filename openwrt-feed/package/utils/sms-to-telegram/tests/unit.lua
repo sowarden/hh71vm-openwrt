@@ -146,6 +146,10 @@ do
 	local limited = core.telegram_response(429, { ok = false, parameters = { retry_after = 37 } })
 	equal(limited.error, 'telegram_rate_limited', '429 class')
 	equal(limited.retry_after, 37, '429 retry_after')
+	equal(core.telegram_response(429, { parameters = { retry_after = 99999 } }).retry_after, 3600,
+		'429 retry_after bounded')
+	equal(core.telegram_response(401, {}).error, 'invalid_token', '401 is invalid token')
+	equal(core.telegram_response(404, {}).error, 'invalid_token', '404 is invalid token')
 end
 
 -- 10: blank token updates preserve the stored secret; status contains no secret fields.
@@ -179,16 +183,60 @@ do
 	truth(core.fingerprint_material(composite):find('2,3,4', 1, true), 'composite slots normalized')
 end
 
--- Safe getUpdates discovery refuses ambiguity.
+-- Safe getUpdates discovery returns normalized private candidates.
 do
-	equal(core.unique_private_chat({ { message = { chat = { id = 123456789, type = 'private' } } } }), CHAT,
-		'single private chat')
-	local id, err = core.unique_private_chat({
-		{ message = { chat = { id = 123456789, type = 'private' } } },
-		{ message = { chat = { id = 987654321, type = 'private' } } },
+	local candidates = assert(core.private_chat_candidates({
+		{ message = { text = 'must not escape', chat = { id = 123456789, type = 'private',
+			username = 'example_user', first_name = CYRILLIC } } },
+	}))
+	equal(#candidates, 1, 'single private chat')
+	equal(candidates[1].chat_id, CHAT, 'single numeric chat ID')
+	equal(candidates[1].username, 'example_user', 'username retained')
+	equal(candidates[1].first_name, CYRILLIC, 'Unicode name retained')
+	equal(candidates[1].text, nil, 'message text omitted')
+
+	candidates = assert(core.private_chat_candidates({
+		{ message = { chat = { id = 123456789, type = 'private', first_name = 'Alice' } } },
+		{ message = { chat = { id = 987654321, type = 'private', first_name = 'Bob' } } },
+		{ message = { chat = { id = 123456789, type = 'private', first_name = 'Alice' } } },
+		{ message = { chat = { id = -100123456789, type = 'supergroup', title = 'ignored' } } },
+		{ message = { chat = { id = -100987654321, type = 'channel', title = 'ignored' } } },
+	}))
+	equal(#candidates, 2, 'multiple private chats returned')
+	equal(candidates[1].chat_id, CHAT, 'duplicate private chat merged')
+	equal(candidates[2].chat_id, '987654321', 'second private chat retained')
+	equal(candidates[2].username, nil, 'username is optional')
+
+	local value, err = core.private_chat_candidates({
+		{ message = { chat = { id = -100123456789, type = 'group' } } },
 	})
-	equal(id, nil, 'ambiguous chat omitted')
-	equal(err, 'multiple_private_chats', 'ambiguous chat refused')
+	equal(value, nil, 'group-only result omitted')
+	equal(err, 'no_private_chat', 'empty private result classified')
+
+	value, err = core.private_chat_candidates({
+		{ message = { chat = { id = '@invalid', type = 'private' } } },
+	})
+	equal(value, nil, 'malformed private chat refused')
+	equal(err, 'telegram_invalid_response', 'malformed result classified')
+
+	candidates = assert(core.private_chat_candidates({
+		{ message = { chat = { id = 123456789, type = 'private', username = 'old_name' } } },
+		{ message = { chat = { id = 123456789, type = 'private', username = 'new_name' } } },
+	}))
+	equal(candidates[1].username, nil, 'conflicting duplicate metadata omitted')
+
+	local normalized = core.discovery_result({ ok = true, result = {
+		{ message = { text = 'private body', chat = { id = 123456789, type = 'private' } } },
+	} })
+	truth(normalized.ok, 'mock discovery response accepted')
+	equal(normalized.candidates[1].chat_id, CHAT, 'mock discovery candidate normalized')
+	equal(normalized.candidates[1].text, nil, 'mock discovery body omitted')
+	normalized = core.discovery_result({ ok = false, error = 'telegram_transport_failed',
+		description = 'raw upstream detail' })
+	equal(normalized.error, 'telegram_transport_failed', 'mock timeout classified')
+	equal(normalized.description, nil, 'mock upstream error detail omitted')
+	normalized = core.discovery_result({ ok = false, error = 'telegram_rate_limited', retry_after = 99999 })
+	equal(normalized.retry_after, 3600, 'mock discovery rate limit bounded')
 end
 
 print(('sms-to-telegram tests: PASS (%d assertions)'):format(assertions))

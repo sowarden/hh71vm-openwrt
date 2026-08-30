@@ -153,11 +153,8 @@ function R.discover_chat(token)
 	local config = R.read_config()
 	token = token ~= '' and token or config.token
 	if not core.valid_token(token) then return { ok = false, error = 'invalid_token' } end
-	local response = http_request(token, 'getUpdates', { limit = 20, timeout = 0, allowed_updates = { 'message' } })
-	if not response.ok then return response end
-	local id, err = core.unique_private_chat(response.result)
-	if not id then return { ok = false, error = err } end
-	return { ok = true, chat_id = id }
+	local response = http_request(token, 'getUpdates', { limit = 50, timeout = 0, allowed_updates = { 'message' } })
+	return core.discovery_result(response)
 end
 
 function R.run(once)

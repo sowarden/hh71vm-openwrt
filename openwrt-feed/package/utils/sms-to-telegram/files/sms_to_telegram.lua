@@ -93,9 +93,11 @@ end
 function M.telegram_response(status, parsed)
 	status = tonumber(status)
 	if status == 429 and type(parsed) == 'table' then
-		return { ok = false, error = 'telegram_rate_limited',
-			retry_after = type(parsed.parameters) == 'table' and tonumber(parsed.parameters.retry_after) or nil }
+		local retry_after = type(parsed.parameters) == 'table' and tonumber(parsed.parameters.retry_after) or nil
+		if retry_after then retry_after = math.max(1, math.min(3600, math.floor(retry_after))) end
+		return { ok = false, error = 'telegram_rate_limited', retry_after = retry_after }
 	end
+	if status == 401 or status == 404 then return { ok = false, error = 'invalid_token' } end
 	if status ~= 200 then return { ok = false, error = 'telegram_http_error' } end
 	if type(parsed) ~= 'table' then return { ok = false, error = 'telegram_invalid_response' } end
 	if parsed.ok ~= true then return { ok = false, error = 'telegram_api_error' } end
@@ -254,21 +256,75 @@ function Engine:step(config)
 	return false
 end
 
-function M.unique_private_chat(updates)
-	local found = {}
-	for _, update in ipairs(updates or {}) do
+local function optional_name(value, maximum)
+	if value == nil or value == '' then return nil end
+	if type(value) ~= 'string' or #value > maximum or value:find('%c') then return false end
+	return value
+end
+
+local function merge_identity(candidate, conflicts, key, value)
+	if value == nil or conflicts[key] then return end
+	if candidate[key] == nil then candidate[key] = value
+	elseif candidate[key] ~= value then candidate[key], conflicts[key] = nil, true end
+end
+
+function M.private_chat_candidates(updates)
+	if type(updates) ~= 'table' or #updates > 100 then return nil, 'telegram_invalid_response' end
+	local found, order, conflicts = {}, {}, {}
+	for _, update in ipairs(updates) do
+		if type(update) ~= 'table' then return nil, 'telegram_invalid_response' end
 		local message = update.message
-		local chat = type(message) == 'table' and message.chat or nil
-		if type(chat) == 'table' and chat.type == 'private' and chat.id ~= nil then
-			local id = type(chat.id) == 'number' and ('%.0f'):format(chat.id) or tostring(chat.id)
-			if M.valid_chat_id(id) then found[id] = true end
+		if message ~= nil then
+			if type(message) ~= 'table' or type(message.chat) ~= 'table' or
+			   type(message.chat.type) ~= 'string' then
+				return nil, 'telegram_invalid_response'
+			end
+			local chat = message.chat
+			if chat.type == 'private' then
+				local id = type(chat.id) == 'number' and ('%.0f'):format(chat.id) or chat.id
+				local username = optional_name(chat.username, 64)
+				local first_name = optional_name(chat.first_name, 128)
+				local last_name = optional_name(chat.last_name, 128)
+				if not M.valid_chat_id(id) or username == false or first_name == false or last_name == false or
+				   (username and not username:match('^[A-Za-z0-9_]+$')) then
+					return nil, 'telegram_invalid_response'
+				end
+				if not found[id] then
+					if #order >= 20 then return nil, 'too_many_private_chats' end
+					found[id] = { chat_id = id }
+					conflicts[id] = {}
+					order[#order + 1] = id
+				end
+				merge_identity(found[id], conflicts[id], 'username', username)
+				merge_identity(found[id], conflicts[id], 'first_name', first_name)
+				merge_identity(found[id], conflicts[id], 'last_name', last_name)
+			end
 		end
 	end
-	local only, count
-	count = 0
-	for id in pairs(found) do only, count = id, count + 1 end
-	if count == 1 then return only end
-	return nil, count == 0 and 'no_private_chat' or 'multiple_private_chats'
+	if #order == 0 then return nil, 'no_private_chat' end
+	local result = {}
+	for _, id in ipairs(order) do result[#result + 1] = found[id] end
+	return result
+end
+
+function M.discovery_result(response)
+	if type(response) ~= 'table' then return { ok = false, error = 'telegram_invalid_response' } end
+	if response.ok ~= true then
+		local allowed = {
+			invalid_token = true, telegram_rate_limited = true, telegram_http_error = true,
+			telegram_api_error = true, telegram_transport_failed = true,
+			telegram_invalid_response = true,
+		}
+		local error_code = allowed[response.error] and response.error or 'telegram_invalid_response'
+		local result = { ok = false, error = error_code }
+		if error_code == 'telegram_rate_limited' and tonumber(response.retry_after) then
+			result.retry_after = math.max(1, math.min(3600, math.floor(tonumber(response.retry_after))))
+		end
+		return result
+	end
+	local candidates, err = M.private_chat_candidates(response.result)
+	if not candidates then return { ok = false, error = err } end
+	return { ok = true, candidates = candidates }
 end
 
 M.copy = copy

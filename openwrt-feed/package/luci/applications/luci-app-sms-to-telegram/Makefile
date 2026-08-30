@@ -7,7 +7,7 @@ LUCI_TITLE:=SMS to Telegram for HH71VM
 LUCI_DESCRIPTION:=Configure the optional sms-to-telegram delivery service.
 LUCI_DEPENDS:=+luci-base +luci-app-hh71vm-modem +sms-to-telegram
 LUCI_PKGARCH:=all
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
