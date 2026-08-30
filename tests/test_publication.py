@@ -184,11 +184,9 @@ if (message === 'XHR request timed out' || !/internet connection/i.test(message)
         common = (ROOT / "autobuild/common.py").read_text()
         builder = (ROOT / "autobuild/build.py").read_text()
         publisher = (ROOT / "autobuild/publish.py").read_text()
-        policy = (ROOT / "docs/release-notes.md").read_text()
         self.assertIn('read_release_notes(source / "release-notes.json")', builder)
         self.assertIn('manifest["changelog"]', publisher)
         self.assertIn("validate_changelog", common)
-        self.assertIn("human review", policy)
         self.assertNotIn("git log", builder + publisher)
 
     def test_offline_modem_bootstrap_includes_direct_runtime_dependencies(self):

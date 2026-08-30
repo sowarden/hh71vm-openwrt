@@ -229,9 +229,6 @@ does not download or install firmware. **Upgrade Firmware** repeats the release 
 downloads the selected immutable image, verifies its SHA-256 and platform compatibility, and asks
 for a final confirmation before installing it with settings preserved.
 
-Release notes are intentionally reviewed text, not an automatic summary of Git history. See the
-[release notes policy](release-notes.md) before publishing a new build.
-
 For older images without this command, use the OpenWrt updater manually. No installation tool and
 no button press is needed. Download the latest
 [`sysupgrade` image](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/openwrt-rtkmipsel-rtl8197f-hh71vm-sysupgrade.bin)
