@@ -1,9 +1,10 @@
 {
   "schema": 1,
   "changes": [
-    "Return the verified latest signed firmware release promptly and load optional history separately.",
+    "Eliminate Port 0 ingress CRC errors by matching the stock RGMII transmit compensation timing.",
+    "Return the verified latest signed firmware release promptly, load optional history separately, and reject accidental same-release upgrades unless explicitly forced.",
     "Avoid parallel legacy IPK output races during clean builds.",
-    "Publish kmod-pppol2tp in the matching signed package feed.",
+    "Expand the matching signed package feed with CIFS, NFSv3/NFSv4, FUSE, GRE, IPIP, L2TP/L2TPv3, PPTP, MPPE, and their required protocol helpers.",
     "Preserve or remove modem-reported current-only LTE bands safely without fixed operator band lists."
   ]
 }

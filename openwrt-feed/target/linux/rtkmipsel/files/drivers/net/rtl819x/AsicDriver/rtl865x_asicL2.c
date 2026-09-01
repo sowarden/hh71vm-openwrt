@@ -6931,7 +6931,11 @@ int init_p0(void)
 	REG32(PCRP0) = (REG32(PCRP0) & ~(0x1F << ExtPHYID_OFFSET)) \
 		| ((PORT0_RGMII_PHYID << ExtPHYID_OFFSET) | MIIcfg_RXER |  EnablePHYIf | MacSwReset);
 	REG32(MACCR) |= (1<<12);
-	REG32(P0GMIICR) = (REG32(P0GMIICR) & ~((1<<4)|(7<<0))) | ((1<<4) | (5<<0));
+	/* TCOMP 4.0 ns is marginal on HH71VM and produces Port 0 CRCAlignErr
+	 * under ingress traffic. Keep the existing RCOMP and use stock's 3.0 ns
+	 * output compensation. */
+	REG32(P0GMIICR) = (REG32(P0GMIICR) & ~(RGMII_RCOMP_MASK | RGMII_TCOMP_MASK))
+		| RGMII_RCOMP_1DOT5NS | RGMII_TCOMP_3NS;
 
 	if (IS_8197F_VG()) {
 		REG32(PAD_CTRL_1) = (REG32(PAD_CTRL_1) & ~(0xFE600000)) | (0xDA600000);
