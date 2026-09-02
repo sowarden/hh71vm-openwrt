@@ -42,6 +42,39 @@ drv_rtl8192cd_init_device_config() {
 	# A radio is bound to a fixed netdev of the driver (wlan0, wlan1). With the option unset,
 	# the name is derived from the section name: radio0 -> wlan0.
 	config_add_string ifname
+	# The vendor private-MIB default is zero, unlike its cfg80211 and net80211 setup paths.
+	# Enable A-MPDU for HT/VHT by default; `option ampdu '0'` remains an explicit opt-out.
+	config_add_boolean ampdu
+	# The vendor default of `disable_txpwrlmt` is 1, and while it is set the driver zeroes
+	# every per-rate transmit power limit (8192cd_hw.c, the else branch that clears
+	# txpwr_lmt_CCK/OFDM/HT1S/HT2S/VHT1S/VHT2S). High-order VHT rates then go out without
+	# their backoff. Apply the limits by default; `option txpwrlmt '0'` restores the vendor
+	# behaviour.
+	config_add_boolean txpwrlmt
+	# `mustAmsdu` defaults to zero, so MSDUs are only packed into an A-MSDU when the driver
+	# happens to find several already queued for the same station. Forcing it packs them
+	# every time, which cuts the number of MPDUs and the per-frame overhead with them.
+	# Measured on 5 GHz VHT80: +4.6% median throughput and 1.7x fewer transmit retries.
+	# `option amsdu '0'` restores the vendor default.
+	config_add_boolean amsdu
+	# Airtime between the access point and its clients is shared by contention, and the
+	# vendor defaults hand the client the larger half: measured 1.7-2.4x in favour of the
+	# uplink whenever both directions run at once. Two EDCA knobs fix that, and both are
+	# behind `manual_edca` (8192cd_sme.c default_WMM_para, EdcaTurboCheck.c EdcaParaInit):
+	# a longer contention window for the client (advertised in the beacon) and a transmit
+	# opportunity for ourselves. The driver's own dynamic tuning already computes the same
+	# 94, but EdcaTurboCheck() keeps switching it off while traffic runs both ways; manual
+	# mode pins it. Measured on 5 GHz VHT80: skew 2.07x -> 1.17x and the weak direction
+	# +27%, paid for with about 3% of one-way downlink and 6% of one-way uplink.
+	# `option edca_fairness '0'` restores the vendor behaviour.
+	config_add_boolean edca_fairness
+	# Short guard interval at 80 MHz: 800 ns between symbols becomes 400, which is the
+	# difference between a 780 and an 866 Mbit/s VHT NSS2-MCS9 link. The vendor default
+	# is off. Measured on 5 GHz VHT80 over five interleaved pairs: +10.5% median,
+	# +9.3% p75, and the best second of a run rises from about 590 to about 650.
+	# The field only governs 80 MHz, so the option is named for it and the narrower
+	# widths keep their vendor settings - they were not measured.
+	config_add_boolean shortgi80
 }
 
 drv_rtl8192cd_init_iface_config() {
@@ -260,12 +293,21 @@ rtl_setup_vif() {
 	# `wireless_add_vif()` followed. The interface came up with whatever part of the
 	# settings had made it in: a new SSID with the old key, for instance. Now the first
 	# failure leaves the interface down.
+	# `disable_txpwrlmt` is read while the channel is applied, so it has to be written first:
+	# the limit table for the channel is worked out during that apply, not afterwards.
 	rtl_apply_mib "$ifname" \
 		"ssid=$ssid" \
 		"band=$band" \
+		"disable_txpwrlmt=$disable_txpwrlmt" \
 		"channel=$channel" \
 		"use40M=$use40m" \
 		"2ndchoffset=$choffset" \
+		"ampdu=$ampdu" \
+		"mustAmsdu=$amsdu" \
+		"shortGI80M=$shortgi80" \
+		"manual_edca=$edca_manual" \
+		"sta_beq_cwmin=$edca_sta_cwmin" \
+		"ap_beq_txoplimit=$edca_ap_txop" \
 		"opmode=16" \
 		"hiddenAP=${hidden:-0}" \
 		"authtype=0" \
@@ -297,11 +339,13 @@ rtl_setup_vif() {
 
 drv_rtl8192cd_setup() {
 	local dev="$1"
-	local dev_ifname raw_htmode band vif_idx=0
+	local dev_ifname raw_htmode band ampdu amsdu txpwrlmt disable_txpwrlmt vif_idx=0
+	local edca_fairness edca_manual edca_sta_cwmin edca_ap_txop
+	local shortgi80
 	local ht_bit vht_bit use40m choffset
 
 	json_select config
-	json_get_vars ifname
+	json_get_vars ifname ampdu amsdu txpwrlmt edca_fairness shortgi80
 	json_get_var raw_htmode htmode
 	json_select ..
 
@@ -313,6 +357,31 @@ drv_rtl8192cd_setup() {
 	}
 
 	rtl_parse_htmode "$raw_htmode"
+	# A-MSDU only exists inside an A-MPDU, so it follows the same aggregation gate.
+	case "$raw_htmode" in
+		HT*|VHT*) ampdu="${ampdu:-1}"; amsdu="${amsdu:-1}" ;;
+		*)        ampdu=0; amsdu=0 ;;
+	esac
+	# Only VHT80 runs at 80 MHz, so only VHT80 has a short guard interval to gain.
+	case "$raw_htmode" in
+		VHT80) shortgi80="${shortgi80:-1}" ;;
+		*)     shortgi80=0 ;;
+	esac
+	# The MIB is inverted: applying the limits means writing a zero.
+	[ "${txpwrlmt:-1}" = 0 ] && disable_txpwrlmt=1 || disable_txpwrlmt=0
+	# Only 5 GHz by default: that is where the split was measured, and a 3 ms transmit
+	# opportunity is a far larger slice of airtime at 2.4 GHz rates than at VHT80 ones.
+	case "$hwmode" in
+		a) edca_fairness="${edca_fairness:-1}" ;;
+		*) edca_fairness="${edca_fairness:-0}" ;;
+	esac
+	if [ "$edca_fairness" = 1 ]; then
+		edca_manual=1; edca_sta_cwmin=6; edca_ap_txop=94
+	else
+		# The vendor values, restored explicitly: a radio must not inherit the
+		# previous setup's EDCA just because this one turned the option off.
+		edca_manual=0; edca_sta_cwmin=4; edca_ap_txop=0
+	fi
 	# $hwmode and $channel are filled in by _wdev_prepare_channel before this function runs.
 	band="$(rtl_band_mask "$hwmode")"
 

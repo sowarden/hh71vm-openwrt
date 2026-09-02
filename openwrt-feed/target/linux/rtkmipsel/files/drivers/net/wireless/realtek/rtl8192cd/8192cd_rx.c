@@ -1808,7 +1808,9 @@ int gothrough_brsrc(struct rtl8192cd_priv *priv, struct sk_buff *pskb, struct st
 			cached_dev->netdev_ops->ndo_start_xmit(pskb,cached_dev);
 #endif
 #endif
+#if defined(CONFIG_RTL_BRSHORTCUT_LINUX_VLAN_CTL)
 			statistic_brsc_wlan_xmit_to_eth++;
+#endif
 			return 1;
 		}
 	}
@@ -5519,7 +5521,6 @@ typedef struct tag_Tx_Status_Feedback
 	tx_sts    Tx_Sts[NUM_STAT];
 } CMPK_TX_STATUS_T;
 */
-
 
 
 

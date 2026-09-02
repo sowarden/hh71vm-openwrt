@@ -4081,7 +4081,7 @@
 #define __MIPS16 
 #endif
 
-#ifndef RTK_NL80211
+#if !defined(RTK_NL80211) && !defined(CONFIG_RTL_8197F)
 #undef BR_SHORTCUT
 #endif
 #if defined(NOT_RTK_BSP) && defined(BR_SHORTCUT_SUPPORT)
@@ -4836,4 +4836,3 @@ static inline int is_opt_trapDHCP_set(int val)
 
 
 #endif // _8192CD_CFG_H_
-

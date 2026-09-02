@@ -2,6 +2,8 @@
   "schema": 1,
   "changes": [
     "Eliminate Port 0 ingress CRC errors by matching the stock RGMII transmit compensation timing.",
+    "Raise 5 GHz throughput by applying the per-rate transmit power limits, forcing A-MSDU aggregation, enabling the 80 MHz short guard interval, and keeping the bridge shortcut on this platform.",
+    "Share 5 GHz airtime evenly between the access point and its clients, so neither direction starves while traffic runs both ways at once.",
     "Return the verified latest signed firmware release promptly, load optional history separately, and reject accidental same-release upgrades unless explicitly forced.",
     "Avoid parallel legacy IPK output races during clean builds.",
     "Expand the matching signed package feed with CIFS, NFSv3/NFSv4, FUSE, GRE, IPIP, L2TP/L2TPv3, PPTP, MPPE, and their required protocol helpers.",
