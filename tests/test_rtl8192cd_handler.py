@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import unittest
 
 
@@ -184,6 +186,32 @@ class Rtl8192cdHandlerTests(unittest.TestCase):
         interface_loop = body.index('for_each_interface "ap" rtl_setup_vif')
         self.assertLess(mode_gate, interface_loop)
         self.assertIn("*)        ampdu=0; amsdu=0 ;;", body)
+
+
+class Rtl8192cdHandlerModeTests(unittest.TestCase):
+    """netifd executes the handler; a non-executable one leaves both radios missing."""
+
+    def test_handler_is_recorded_executable_in_git(self):
+        # This is not cosmetic. netifd runs `<handler> <driver> dump` to learn the option
+        # schema, and registers no radio at all when that fails with EACCES: the radios
+        # simply do not exist, `wifi up` is silent and `ubus call network.wireless status`
+        # returns an empty object. The file shipped as 0644 for a long time and the defect
+        # stayed hidden because every local build had it uncommitted, and the build manifest
+        # infers 0755 from the shebang for dirty files while taking the recorded mode for
+        # clean ones. The first build made from a committed tree shipped both radios dead.
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is not available")
+        relative = (
+            "openwrt-feed/target/linux/rtkmipsel/base-files/lib/netifd/wireless/rtl8192cd.sh"
+        )
+        result = subprocess.run(
+            [git, "ls-files", "-s", "--", relative],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            self.skipTest("the handler is not tracked in a git checkout here")
+        self.assertEqual(result.stdout.split()[0], "100755", relative)
 
 
 class Rtl8192cdDriverConfigTests(unittest.TestCase):
