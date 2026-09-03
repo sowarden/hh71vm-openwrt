@@ -1,0 +1,17 @@
+# Storage borrowed from the Qualcomm half.  See /usr/sbin/hh71vm-extern-mount.
+#
+# 'options' has no noexec on purpose - the whole point is to run from here what does
+# not fit in the 6 MiB overlay.  vers=1.0 is required: the other side is Samba with
+# security = SHARE and speaks SMB1 only.
+
+config mount 'extern'
+	option enabled '1'
+	option share '//192.168.225.1/shared_rom'
+	option target '/mnt/extern'
+	option options 'guest,sec=none,vers=1.0,nodev,nosuid,noatime'
+	# The share appears only after the other half's smbd is up: retry rather than fail.
+	option tries '10'
+	option delay '3'
+	# Publish /mnt/extern/opkg as the opkg destination "extern" while it is mounted,
+	# so `opkg install -d extern <pkg>` lands there instead of on the overlay.
+	option opkg_dest '1'

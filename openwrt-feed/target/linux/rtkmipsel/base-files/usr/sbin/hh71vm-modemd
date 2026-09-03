@@ -49,6 +49,11 @@ local CFG = {
 	-- minutes of reconnect loops.  Waiting it out is the only thing that works: ESC
 	-- does not interrupt a submit already in flight.
 	sms_send_timeout = 330,
+	-- USSD answers arrive as a +CUSD URC some time after the command itself says OK,
+	-- and how long that takes is the network's business, not ours.  This clock starts
+	-- when the request leaves the queue, so it is a network budget and not a queue
+	-- budget; the request is polled, so it is free to be longer than any RPC ceiling.
+	ussd_timeout  = 90,
 	connect_wait  = 10,    -- TCP connect deadline
 	sync_window   = 1.2,   -- discard shell noise for this long after `cat` starts
 	setup_deadline = 45,   -- whole bring-up, all stages together: see M.set_stage
@@ -917,8 +922,13 @@ function M.write_raw(payload)
 end
 
 --- Build a request.  steps = { {cmd=..., term="final"|"prompt", parse=fn, timeout=n}, }
-local function request(name, steps, cb)
-	return { name = name, steps = steps, idx = 0, lines = {}, cb = cb, raw = "" }
+--- `on_dispatch` runs when the request leaves the queue and becomes the current one.
+--- Anything whose deadline should measure the network's answer rather than our own
+--- queue has to start its clock there: the queue can hold a request for minutes
+--- behind an operator scan or an SMS submit.
+local function request(name, steps, cb, on_dispatch)
+	return { name = name, steps = steps, idx = 0, lines = {}, cb = cb, raw = "",
+	         on_dispatch = on_dispatch }
 end
 
 function M.enqueue(req, front)
@@ -995,6 +1005,10 @@ function M.start_next()
 	if not r then return end
 	M.cur = r
 	r.result = {}
+	if r.on_dispatch then
+		local good, e = pcall(r.on_dispatch, r)
+		if not good then log("dispatch hook %s failed: %s", r.name, tostring(e)) end
+	end
 	M.step_send()
 end
 
@@ -2969,37 +2983,115 @@ function API.phonebook_delete(cli, args)
 	})
 end
 
---- USSD: the reply arrives as a +CUSD URC, not in the command's own response.
-function API.ussd(cli, args)
-	local code = tostring(args.code or "")
-	if not code:match("^[%*#%d%+]+$") then
-		return reply(cli, { error = "invalid USSD code" })
-	end
-	if not need_link(cli) then return end
-	local answered = false
-	-- Must expire before the rpcd plugin's own 28 s read timeout, otherwise the
-	-- caller sees "no answer from modem daemon" instead of a clean USSD timeout.
-	local deadline = mono() + 25
-	M.ussd_wait = function(line)
-		if answered then return end
-		answered = true
-		M.ussd_wait = nil
-		local n, body = line:match('^%+CUSD:%s*(%d+),?%s*"?([^"]*)"?')
-		reply(cli, { ok = true, status = tonumber(n), text = decode_body(body or ""),
-		             raw = line })
-	end
-	M.ussd_deadline = deadline
-	M.ussd_client = cli
+--- USSD.  The answer does not come back in the command's own response: AT+CUSD
+--- returns OK almost at once and the text arrives later as a +CUSD URC, whenever the
+--- network feels like it.
+---
+--- This is therefore a job, started by `ussd_start` and polled with `ussd_result`,
+--- for the same reason the operator scan is one: LuCI's /admin/ubus proxy cuts any
+--- single call at 30 s, so anything that can outlast that has to be polled instead of
+--- waited on.  The old blocking `ussd` had a 25 s budget that started when the request
+--- was QUEUED, so an operator scan (up to 180 s) or an SMS submit (up to 330 s) still
+--- running ahead of it could burn the whole window before the code was even sent, and
+--- the user saw "USSD timeout" from a network that had never been asked anything.
+---
+--- One job at a time.  Nothing in a +CUSD line says which request it answers, so two
+--- overlapping ones cannot be told apart; a second start while one runs reports the
+--- running one instead of racing it.
+local USSD_IDLE = { state = "idle" }
+
+local function ussd_snapshot()
+	local u = M.ussd or USSD_IDLE
+	return {
+		ok = (u.state ~= "failed"),
+		state = u.state,
+		code = u.code,
+		text = u.text,
+		status = u.status,
+		raw = u.raw,
+		error = u.error,
+		started = u.started,
+		finished = u.finished,
+		elapsed = u.started and ((u.finished or os.time()) - u.started) or nil,
+	}
+end
+
+local function ussd_finish(state, fields)
+	local u = M.ussd
+	if not u or u.state ~= "running" then return end
+	u.state = state
+	u.finished = os.time()
+	u.deadline = nil
+	M.ussd_wait = nil
+	for k, v in pairs(fields or {}) do u[k] = v end
+end
+
+--- Called from M.on_urc for every +CUSD line while a job is waiting for one.
+local function ussd_on_urc(line)
+	local n, body = line:match('^%+CUSD:%s*(%d+),?%s*"?([^"]*)"?')
+	ussd_finish("done", {
+		status = tonumber(n),
+		text = decode_body(body or ""),
+		raw = line,
+	})
+end
+
+--- Start the job.  Returns nil plus a reason when the code itself is unusable or the
+--- channel is down; returns true when the code has been queued.
+local function ussd_begin(code)
+	if not code:match("^[%*#%d%+]+$") then return nil, "invalid USSD code" end
+	if M.link.state ~= "ready" then return nil, "modem channel " .. M.link.state end
+	if M.ussd and M.ussd.state == "running" then return true end
+
+	M.ussd = { state = "running", code = code, started = os.time() }
+	M.ussd_wait = ussd_on_urc
+
 	M.enqueue(request("ussd", {
 		{ cmd = ('AT+CUSD=1,"%s",15'):format(code), timeout = 30, tolerate = true },
 	}, function(ok, _, err)
-		if not ok and not answered then
-			answered = true
-			M.ussd_wait = nil
-			reply(cli, { ok = false, error = err })
+		-- The command failing is final.  The command succeeding only means the code
+		-- went out; the answer is still to come as a URC.
+		if not ok then
+			ussd_finish("failed", { error = err or "the modem refused the code" })
+		end
+	end, function()
+		-- Dispatch, not enqueue: this is the budget the network gets, and the time
+		-- the request spent behind other traffic is not charged to it.
+		if M.ussd and M.ussd.state == "running" then
+			M.ussd.deadline = mono() + CFG.ussd_timeout
+			M.ussd.started = os.time()
 		end
 	end))
 	M.start_next()
+	return true
+end
+
+function API.ussd_start(cli, args)
+	local ok, err = ussd_begin(tostring(args.code or ""))
+	if not ok then
+		return reply(cli, { ok = false, state = "failed", error = err })
+	end
+	reply(cli, ussd_snapshot())
+end
+
+function API.ussd_result(cli)
+	reply(cli, ussd_snapshot())
+end
+
+--- The blocking call an older web page uses.  Kept so a new daemon still answers an
+--- old page: it starts the same job and waits on it, with a budget that fits under
+--- the rpcd plugin's 28 s read timeout.  A slow network now ends as a plain "USSD
+--- timeout" here while the job itself keeps waiting, so the answer is still there in
+--- `ussd_result` afterwards.
+function API.ussd(cli, args)
+	if M.ussd and M.ussd.state == "running" then
+		return reply(cli, { ok = false, error = "another USSD request is still running" })
+	end
+	local ok, err = ussd_begin(tostring(args.code or ""))
+	if not ok then
+		return reply(cli, { ok = false, error = err })
+	end
+	M.ussd_blocking = { cli = cli, deadline = mono() + 24 }
 end
 
 function API.usage(cli)
@@ -3278,12 +3370,29 @@ local function main_loop()
 			end
 		end
 
-		if M.ussd_deadline and mono() > M.ussd_deadline then
-			M.ussd_deadline = nil
-			if M.ussd_wait then
-				M.ussd_wait = nil
-				if M.ussd_client and not M.ussd_client.dead then
-					reply(M.ussd_client, { ok = false, error = "USSD timeout" })
+		-- A USSD job whose network budget ran out.  The clock only starts once the
+		-- request is dispatched, so this really is the network having gone quiet.
+		if M.ussd and M.ussd.state == "running" and M.ussd.deadline
+		   and mono() > M.ussd.deadline then
+			ussd_finish("failed", { error = "no answer from the network" })
+		end
+
+		-- The compatibility path: an old page called `ussd` and is waiting on the
+		-- socket for the job to end.  It gets whatever the job has by then.
+		if M.ussd_blocking then
+			local b = M.ussd_blocking
+			local u = M.ussd or USSD_IDLE
+			if u.state ~= "running" or mono() > b.deadline then
+				M.ussd_blocking = nil
+				if b.cli and not b.cli.dead then
+					if u.state == "done" then
+						reply(b.cli, { ok = true, status = u.status,
+						               text = u.text, raw = u.raw })
+					elseif u.state == "failed" then
+						reply(b.cli, { ok = false, error = u.error or "USSD failed" })
+					else
+						reply(b.cli, { ok = false, error = "USSD timeout" })
+					end
 				end
 			end
 		end

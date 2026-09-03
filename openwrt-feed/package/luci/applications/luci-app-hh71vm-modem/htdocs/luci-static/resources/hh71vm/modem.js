@@ -86,6 +86,12 @@ var api = {
 	netScan:       decl('net_scan'),
 	netScanResult: decl('net_scan_result'),
 
+	/* USSD is a job for the same reason: AT+CUSD returns OK at once and the text
+	   arrives later as a +CUSD URC, on the network's schedule.  A single RPC cannot
+	   outlive the 30 s /admin/ubus ceiling, so start it and poll it. */
+	ussdStart:     decl('ussd_start', ['code']),
+	ussdResult:    decl('ussd_result'),
+
 	/* slower than rpc.js's own 20 s, but still inside the 30 s ubus ceiling */
 	smsList:      function ()        { return callLong('sms_list', {}, 28); },
 	smsDelete:    function (i, list) { return callLong('sms_delete',
@@ -94,9 +100,40 @@ var api = {
 	at:           function (cmds, t) { return callLong('at',
 	                                       { cmds: cmds, timeout: t || 22 }, 28); },
 
-	/* The network's answer arrives as a +CUSD URC well after the AT command itself
-	   returns OK, so this is a slow call too and must not use rpc.js's 20 s. */
-	ussd:         function (code)    { return callLong('ussd', { code: code }, 28); }
+	/* The blocking form, kept only so this page still works against a daemon that
+	   has no ussd_start.  Prefer ussdRun. */
+	ussd:         function (code)    { return callLong('ussd', { code: code }, 28); },
+
+	/* Start a USSD job and poll it to the end.  onProgress, when given, is called
+	   with the seconds elapsed, so the dialog can say something while the network
+	   thinks.  Falls back to the blocking call against a daemon with no job API. */
+	ussdRun: function (code, onProgress) {
+		var self = this;
+		var deadline = Date.now() + 120000;
+
+		function poll() {
+			return new Promise(function (r) { window.setTimeout(r, 1500); })
+				.then(function () { return self.ussdResult(); })
+				.then(function (r) {
+					r = r || {};
+					if (r.state !== 'running') return r;
+					if (Date.now() > deadline)
+						return { ok: false, state: 'failed', error: _('The network did not answer.') };
+					if (onProgress) onProgress(r.elapsed || 0);
+					return poll();
+				});
+		}
+
+		return self.ussdStart(code).then(function (res) {
+			res = res || {};
+			/* A daemon without ussd_start answers nothing recognisable, so fall back
+			   to the call it does have rather than reporting a bogus failure. */
+			if (res.state == null && res.error == null) return self.ussd(code);
+			if (res.state !== 'running') return res;
+			if (onProgress) onProgress(res.elapsed || 0);
+			return poll();
+		});
+	}
 };
 
 /* ------------------------------------------------------------------ format */

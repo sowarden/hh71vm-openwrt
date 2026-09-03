@@ -40,6 +40,10 @@ local METHODS = {
 	-- state changing
 	net_scan        = {},
 	net_scan_result = {},
+	-- USSD is a job for the same reason the operator scan is: the network answers in
+	-- its own time and a single RPC cannot be held open past 30 s.
+	ussd_start      = { code = "str" },
+	ussd_result     = {},
 	usage_reset     = {},
 	reconnect       = {},
 	sms_delete      = { index = 0, indexes = { 0 } },

@@ -1,0 +1,127 @@
+#!/bin/sh
+#
+# Mount the Qualcomm half's /extern partition on this side.
+#
+# The two halves are separate Linux systems on one internal USB/RNDIS link.  The
+# Qualcomm half owns a 55 MiB UBI volume mounted there as /extern (mtd11 "cache" ->
+# ubi3_0 "jrd_vol"; the mtd labels and the mount points do not line up, /cache is the
+# small one).  It exports that directory over SMB and only to us:
+#
+#     [shared_rom]                      /etc/samba/smb.conf, Qualcomm side
+#     path = /extern
+#     read only = No
+#     hosts allow = 192.168.225.111     <- this board
+#     interfaces = 192.168.225.1
+#     force user = smbuser
+#     public = yes                      security = SHARE, i.e. SMB1 only
+#
+# The stock Realtek firmware mounted exactly this, from /bin/mount_cache:
+#
+#     mount.cifs //192.168.225.1/shared_rom /cache -o noexec,nodev,nosuid,guest,sec=none
+#
+# We differ in one deliberate way: no `noexec`.  The point of having the space is to
+# keep programs too large for a 6 MiB overlay, and running them from here is proven to
+# work (busybox copied over and executed, 2026-09-02).
+#
+# vers=1.0 is mandatory, not a preference.  Samba with `security = SHARE` speaks SMB1
+# only, while Linux 4.14 defaults to SMB2.1+; without it the mount fails as
+# "Host is down" and the kernel says so in dmesg.  CIFS Unix extensions negotiate on
+# (the mount reports `unix,posixpaths`), so ownership and the execute bit survive.
+#
+# Usage: hh71vm-extern-mount [mount|umount|status]
+#
+
+. /lib/functions.sh
+
+CONF=hh71vm-extern
+DEFAULT_TARGET=/mnt/extern
+DEFAULT_SHARE=//192.168.225.1/shared_rom
+DEFAULT_OPTIONS=guest,sec=none,vers=1.0,nodev,nosuid,noatime
+OPKG_CONF=/etc/opkg/extern.conf
+LOCK=/var/lock/hh71vm-extern.lock
+
+config_load "$CONF" 2>/dev/null
+
+enabled=1;      config_get enabled  extern enabled  1
+target=;        config_get target   extern target   "$DEFAULT_TARGET"
+share=;         config_get share    extern share    "$DEFAULT_SHARE"
+options=;       config_get options  extern options  "$DEFAULT_OPTIONS"
+tries=;         config_get tries    extern tries    10
+delay=;         config_get delay    extern delay    3
+opkg_dest=;     config_get opkg_dest extern opkg_dest 1
+
+is_mounted() {
+	grep -q " $target cifs " /proc/mounts
+}
+
+# opkg reads every /etc/opkg/*.conf, so an extra `dest` there is enough to allow
+# `opkg install -d extern <pkg>`.  It is written only while the share is really
+# mounted and removed again when it is not: left behind on an empty mount point it
+# would quietly fill the 6 MiB overlay instead.
+opkg_dest_sync() {
+	if [ "$opkg_dest" = 1 ] && is_mounted; then
+		mkdir -p "$target/opkg"
+		printf 'dest extern %s\n' "$target/opkg" > "$OPKG_CONF"
+	else
+		rm -f "$OPKG_CONF"
+	fi
+}
+
+do_mount() {
+	[ "$enabled" = 1 ] || { echo "hh71vm-extern: disabled in /etc/config/$CONF"; return 0; }
+	is_mounted && { opkg_dest_sync; return 0; }
+
+	# cifs.ko ships in the image and kmod-fs-cifs autoloads it at boot, so this is a
+	# safety net rather than the normal path.  If it is still missing after modprobe,
+	# say so in one line instead of failing as an unactionable mount error.
+	if ! grep -q '^cifs ' /proc/modules; then
+		modprobe cifs 2>/dev/null
+		grep -q '^cifs ' /proc/modules || {
+			echo "hh71vm-extern: cifs module missing from this image" >&2
+			return 1
+		}
+	fi
+
+	mkdir -p "$target"
+	i=1
+	while [ "$i" -le "$tries" ]; do
+		# The other half brings smbd up on its own schedule, and on a cold start it
+		# is regularly not listening yet when we get here.
+		mount -t cifs "$share" "$target" -o "$options" 2>/dev/null
+		if is_mounted; then
+			opkg_dest_sync
+			return 0
+		fi
+		i=$((i + 1))
+		sleep "$delay"
+	done
+	echo "hh71vm-extern: could not mount $share on $target" >&2
+	return 1
+}
+
+do_umount() {
+	is_mounted || { opkg_dest_sync; return 0; }
+	umount "$target" 2>/dev/null || umount -l "$target" 2>/dev/null
+	opkg_dest_sync
+	is_mounted && return 1
+	return 0
+}
+
+do_status() {
+	if is_mounted; then
+		echo "mounted: $share on $target"
+		df -h "$target" | tail -1
+	else
+		echo "not mounted ($share -> $target)"
+		grep -q '^cifs ' /proc/modules || echo "cifs module not loaded"
+	fi
+}
+
+exec 9>"$LOCK" 2>/dev/null && flock 9 2>/dev/null
+
+case "${1:-status}" in
+	mount)  do_mount ;;
+	umount) do_umount ;;
+	status) do_status ;;
+	*) echo "usage: $0 [mount|umount|status]" >&2; exit 2 ;;
+esac

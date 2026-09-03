@@ -1,0 +1,20 @@
+#!/bin/sh /etc/rc.common
+# Mount the Qualcomm half's /extern share (55 MiB) over CIFS.  See
+# /usr/sbin/hh71vm-extern-mount for why, and for the SMB1 constraint.
+
+START=94
+STOP=11
+
+boot() {
+	# Do not hold the rest of the boot: the other half's smbd may need a while and
+	# the helper retries on its own.
+	start "$@" &
+}
+
+start() {
+	/usr/sbin/hh71vm-extern-mount mount
+}
+
+stop() {
+	/usr/sbin/hh71vm-extern-mount umount
+}

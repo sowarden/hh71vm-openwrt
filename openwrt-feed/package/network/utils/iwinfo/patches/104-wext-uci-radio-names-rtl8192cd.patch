@@ -1,0 +1,60 @@
+--- a/iwinfo_wext.c
++++ b/iwinfo_wext.c
+@@ -42,10 +42,57 @@
+ 	}
+ }
+ 
++/*
++ * HH71VM: resolve a UCI wifi-device section name to the netdev behind it.
++ *
++ * LuCI queries iwinfo per RADIO, that is with the section name out of
++ * /etc/config/wireless ("radio1"), not with a netdev name. The nl80211 backend resolves
++ * that itself, so on a mac80211 board nobody ever notices; wext never had to and answers
++ * "Not found" instead.
++ *
++ * The damage was not cosmetic. With no frequency list the wireless page built an empty
++ * channel and band list, and saving the form then wrote an empty hwmode and channel over
++ * a working radio; netifd brought the 5 GHz chip up on channel 1, iwinfo reported 2.4 GHz
++ * capabilities from then on, and 802.11ac disappeared from the mode list for good.
++ * Reproduced on the board 2026-09-03.
++ *
++ * Scoped to this driver on purpose: iwinfo_uci_get_radio() only returns a section whose
++ * type option is rtl8192cd, so nothing else changes behaviour.
++ */
++static const char * wext_uci_ifname(const char *name)
++{
++	static char ifname[IFNAMSIZ];
++	struct uci_section *s;
++	const char *opt;
++
++	ifname[0] = 0;
++
++	if( strncmp(name, "radio", 5) )
++		return NULL;
++
++	s = iwinfo_uci_get_radio(name, "rtl8192cd");
++
++	if( s )
++	{
++		opt = uci_lookup_option_string(uci_ctx, s, "ifname");
++
++		if( opt )
++			snprintf(ifname, sizeof(ifname), "%s", opt);
++	}
++
++	iwinfo_uci_free();
++
++	return ifname[0] ? ifname : NULL;
++}
++
+ static inline int wext_ioctl(const char *ifname, int cmd, struct iwreq *wrq)
+ {
++	const char *resolved;
++
+ 	if( !strncmp(ifname, "mon.", 4) )
+ 		strncpy(wrq->ifr_name, &ifname[4], IFNAMSIZ);
++	else if( (resolved = wext_uci_ifname(ifname)) != NULL )
++		strncpy(wrq->ifr_name, resolved, IFNAMSIZ);
+ 	else
+ 		strncpy(wrq->ifr_name, ifname, IFNAMSIZ);
+ 

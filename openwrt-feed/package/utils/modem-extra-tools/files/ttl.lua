@@ -59,8 +59,16 @@ local function apply_family(command, chain, version, s, device)
   lines[#lines+1]='COMMIT'
   local path=c.runtime .. '/rules' .. version
   c.atomic(path,table.concat(lines,'\n'))
-  c.need(c.exec(command .. '-restore -w 5 --noflush < ' .. c.quote(path)),
-    command .. ' rejected TTL/HL rules (missing module or incompatible userspace)')
+  -- Keep what iptables actually said. The old wording lumped an absent kernel target
+  -- together with an absent userspace extension, and those need different packages.
+  local report=path .. '.error'
+  if not c.exec(command .. '-restore -w 5 --noflush < ' .. c.quote(path) ..
+      ' 2>' .. c.quote(report)) then
+    local detail=(c.read(report) or ''):match('^[^\n]*') or ''
+    error(command .. ' rejected the TTL/HL rules: ' ..
+      (detail~='' and detail or 'no diagnostic') ..
+      ' (install iptables-mod-ipopt and kmod-ipt-ipopt from the release feed)',0)
+  end
   if not active then c.exec(command .. ' -t mangle -X ' .. chain .. ' 2>/dev/null') end
 end
 function T.apply(s)
@@ -86,8 +94,15 @@ function T.change(s)
   if s.enabled then c.need(not T.offload(),'disable firewall flow offloading before enabling TTL Fix') end
   local ok,err=pcall(function() T.apply(s); T.save(s) end)
   if not ok then
-    local restored,restore_error=pcall(function() T.apply(old); T.save(old) end)
-    error(tostring(err) .. (restored and '; previous settings restored' or '; rollback failed: ' .. tostring(restore_error)),0)
+    local restored=pcall(function() T.apply(old); T.save(old) end)
+    if restored then error(tostring(err) .. '; previous settings restored',0) end
+    -- Rolling back into a state the board cannot reapply turns one failure into a permanent
+    -- one: every later save, and every firewall reload, retries the same broken rules and
+    -- fails the same way. Switching the feature off is always applicable, so fall back to it.
+    local off={}; for key,value in pairs(old) do off[key]=value end; off.enabled=false
+    local cleared,clear_error=pcall(function() T.apply(off); T.save(off) end)
+    error(tostring(err) .. (cleared and '; TTL Fix switched off'
+      or '; rollback failed: ' .. tostring(clear_error)),0)
   end
   return T.status()
 end

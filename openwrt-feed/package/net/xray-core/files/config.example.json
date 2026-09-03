@@ -1,0 +1,86 @@
+{
+  // A VLESS client over REALITY, with a SOCKS and an HTTP proxy for the LAN.
+  // Replace every value marked REPLACE with the ones your server gave you.
+  //
+  // Note what is NOT here: "flow": "xtls-rprx-vision".
+  //
+  // Measured on this board 2026-09-03: with xtls-rprx-vision, downloads from real
+  // HTTPS sites break part way through almost every time - 15 truncated transfers out
+  // of 16, at random offsets, against two different servers. The same board, the same
+  // binary and the same servers complete every transfer once the flow is removed
+  // (6 of 6), and a PC client using Vision against those same servers completes every
+  // transfer too (9 of 9), so the fault is on this side. Only traffic that is itself
+  // TLS is affected, which is to say all ordinary browsing.
+  //
+  // If your server pins a flow on the user, ask for a second user without one; a
+  // client that omits the flow when the server requires it is rejected outright.
+  //
+  // Throughput to expect: about 14 Mbit/s each way, with the CPU at 100%. That is the
+  // hardware, not the configuration - this SoC has no AES acceleration.
+
+  "log": {
+    "loglevel": "warning",
+    "error": "/var/log/xray-error.log",
+    "access": "none"
+  },
+
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "listen": "192.168.1.1",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": { "auth": "noauth", "udp": true }
+    },
+    {
+      "tag": "http-in",
+      "listen": "192.168.1.1",
+      "port": 1081,
+      "protocol": "http",
+      "settings": {}
+    }
+  ],
+
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "REPLACE.example.com",
+            "port": 443,
+            "users": [
+              {
+                "id": "REPLACE-0000-0000-0000-000000000000",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "REPLACE.example.com",
+          "fingerprint": "chrome",
+          "publicKey": "REPLACE",
+          "shortId": "REPLACE",
+          "spiderX": "/"
+        }
+      }
+    },
+    { "tag": "direct", "protocol": "freedom", "settings": {} }
+  ],
+
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      // Anything on the LAN stays on the LAN, so the web interface and SSH keep
+      // working while the proxy is up.
+      { "type": "field", "ip": ["192.168.0.0/16", "127.0.0.0/8"], "outboundTag": "direct" },
+      { "type": "field", "inboundTag": ["socks-in", "http-in"], "outboundTag": "proxy" }
+    ]
+  }
+}

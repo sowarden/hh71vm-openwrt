@@ -138,7 +138,13 @@ publishes them. Some codes cost money.'))])
 							if (!c) return;
 							out.style.display = '';
 							out.textContent = _('Waiting for the network…');
-							return m.api.ussd(c).then(function (res) {
+							/* The daemon runs this as a job and we poll it, so a slow network no
+							   longer ends as a timeout at the 30 s /admin/ubus ceiling. */
+							return m.api.ussdRun(c, function (sec) {
+								out.textContent = sec > 3
+									? _('Waiting for the network… %ds').format(sec)
+									: _('Waiting for the network…');
+							}).then(function (res) {
 								res = res || {};
 								out.textContent = res.text || res.error ||
 									_('No answer from the network.');

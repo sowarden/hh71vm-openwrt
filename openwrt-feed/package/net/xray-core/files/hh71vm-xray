@@ -1,0 +1,100 @@
+#!/bin/sh
+#
+# Find the Xray binary and run it.
+#
+# The binary is 34 MB and normally lives on the /mnt/extern share, which is mounted by
+# hh71vm-extern at START=94 in the background and retries for a while. So at the moment
+# this service starts, the binary may legitimately not be there yet. Rather than block
+# the boot or fail once and stay dead, `run` waits for it and procd respawns us if the
+# wait runs out.
+#
+# Usage: hh71vm-xray {run|binary|status|test|version}
+#
+
+. /lib/functions.sh
+
+CONF=xray
+EXTERN_PREFIX=/mnt/extern/opkg
+
+config_load "$CONF" 2>/dev/null
+config_get binary    main binary    ""
+config_get conffile  main config    /etc/xray/config.json
+config_get assets    main assets    /mnt/extern/xray
+config_get wait_secs main wait      120
+
+# Search order matters: an explicit setting wins, then the share (where the package is
+# meant to be), then the ordinary path for anyone who installed it there anyway.
+candidates() {
+	[ -n "$binary" ] && echo "$binary"
+	echo "$EXTERN_PREFIX/usr/bin/xray"
+	echo /usr/bin/xray
+}
+
+find_binary() {
+	candidates | while read -r path; do
+		[ -x "$path" ] && { echo "$path"; return 0; }
+	done
+	return 1
+}
+
+do_binary() {
+	path=$(find_binary)
+	[ -n "$path" ] || { echo "xray binary not found" >&2; return 1; }
+	echo "$path"
+}
+
+do_status() {
+	path=$(find_binary)
+	if [ -n "$path" ]; then
+		echo "binary:  $path"
+		echo "version: $("$path" version 2>/dev/null | head -1)"
+	else
+		echo "binary:  NOT FOUND"
+		echo "         looked in: $(candidates | tr '\n' ' ')"
+	fi
+	if grep -q ' /mnt/extern cifs ' /proc/mounts; then
+		echo "share:   mounted"
+	else
+		echo "share:   not mounted - run 'hh71vm-extern-mount status'"
+	fi
+	echo "config:  $conffile$([ -f "$conffile" ] || echo ' (missing)')"
+	echo "assets:  $assets$([ -d "$assets" ] || echo ' (missing; geoip/geosite rules will fail)')"
+	if [ -f /var/run/xray.pid ] && kill -0 "$(cat /var/run/xray.pid)" 2>/dev/null; then
+		echo "service: running, pid $(cat /var/run/xray.pid)"
+	else
+		echo "service: not running"
+	fi
+}
+
+do_test() {
+	path=$(do_binary) || return 1
+	XRAY_LOCATION_ASSET="$assets" "$path" run -test -c "$conffile"
+}
+
+do_run() {
+	waited=0
+	while :; do
+		path=$(find_binary)
+		[ -n "$path" ] && break
+		[ "$waited" -ge "$wait_secs" ] && {
+			echo "hh71vm-xray: binary still not found after ${wait_secs}s" >&2
+			echo "hh71vm-xray: install it with 'hh71vm-extern-pkg install xray-core'" >&2
+			return 1
+		}
+		[ "$waited" = 0 ] && echo "hh71vm-xray: waiting for the binary to appear"
+		sleep 5
+		waited=$((waited + 5))
+	done
+	[ -f "$conffile" ] || { echo "hh71vm-xray: no config at $conffile" >&2; return 1; }
+	# exec, so procd supervises xray itself rather than this shell.
+	XRAY_LOCATION_ASSET="$assets" exec "$path" run -c "$conffile"
+}
+
+case "${1:-status}" in
+	run)     do_run ;;
+	binary)  do_binary ;;
+	status)  do_status ;;
+	test)    do_test ;;
+	version) path=$(do_binary) && "$path" version ;;
+	*) echo "usage: $0 {run|binary|status|test|version}" >&2; exit 2 ;;
+esac

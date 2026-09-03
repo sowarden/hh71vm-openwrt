@@ -1,69 +1,125 @@
-#!/bin/sh
-#
-# Write to front panel indicator HH71VM.
-#
-# The panel is physically connected to the Qualcomm-half: on our, Realtek-side
-# /sys/class/leds not at all (docs/hardware-facts.md). There are classes on the other side
-# yes - net-blue, net-green, net-red, power, signal-blue, signal-green,
-# signal-red, wlan - and the entry in brightness there SURVIVES the vendor
-# /usr/oem/core_app: checked 2026-08-24 (probe_leds.py --toggle gave OURS,
-# the value lasted three seconds and no one interrupted it). Therefore the channel is
-# regular sysfs through passwordless telnet, not RPC MainLedStatus through kcap.
-#
-# The connection is short-lived: panel events are rare (radio up/down), and
-# There is no need to hold another permanent session to the other side for their sake -
-# hh71vm-modemd occupies its space for relaying AT.
-#
-# The failure here does not break anything and is intentionally silent: the indicator is not a function.
-#
-# Usage: hh71vm-panel-led <name> <0..255>
-#
+#!/usr/bin/lua
+--[[
+hh71vm-panel-led -- report a front panel event to the Qualcomm half.
 
-QC_HOST=192.168.225.1
-QC_PORT=23
-LOCK=/var/lock/hh71vm-panel-led.lock
-TRIES=3
+The panel is physically on the Qualcomm half: our side has no /sys/class/leds at all
+(docs/hardware-facts.md).  For a long time this script wrote
+/sys/class/leds/<name>/brightness over the password-less telnet, and that was wrong.
+The write does land, and `core_app` on the other side paints over it again about 1.5 s
+later -- measured 2026-09-02 by sampling the file at 300 ms:
 
-led="$1"
-value="$2"
+    0=255 1=255 2=255 3=255 4=255 5=0 6=0 ... 29=0
 
-case "$led" in
-	net-blue|net-green|net-red|power|signal-blue|signal-green|signal-red|wlan) ;;
-	*)
-		echo "usage: $0 <net-blue|net-green|net-red|power|signal-*|wlan> <0..255>" >&2
-		exit 2
-	;;
-esac
-case "$value" in
-	''|*[!0-9]*)
-		echo "$0: brightness must be the number 0..255, received '$value'" >&2
-		exit 2
-	;;
-esac
-[ "$value" -le 255 ] || value=255
+The earlier probe that "proved" the write survives only looked once, inside that window.
 
-# One session at a time: telnetd serves one client on the other side, and
-# two simultaneous attempts (two radios rise almost synchronously) give
-# the second one refused.
-exec 9>"$LOCK" 2>/dev/null && flock 9 2>/dev/null
+The stock firmware never touched that file from here either.  Its Realtek `core_app`
+carries this template verbatim:
 
-qc_shell() {
-	# `sleep 1` holds stdin open while telnetd negotiates options and
-	# manages to execute the command; without it, nc closes the channel too early.
-	{ printf '%s\nexit\n' "$1"; sleep 1; } | nc "$QC_HOST" "$QC_PORT" 2>/dev/null
+    {"jsonrpc": "2.0","method": "MainLedStatus","params": {"MainLedEvent": %d},"id": "10.13"}
+
+i.e. we report an *event* over the kcap channel on TCP 2016 and `core_app` decides what
+to light, from /jrd-resource/resource/led-cfg/hh71/*/led_event_map.ini.  A value set that
+way sticks, because it becomes `core_app`'s own state instead of fighting it.
+
+Event numbers come from that same map (hh71/generic and hh71/n1ru agree) and from the
+E_JRD_LED_EVENT_* name table in the stock binary, which is in declaration order.
+
+Failure here is deliberately silent and never fatal: the indicator is not a function.
+
+Usage: hh71vm-panel-led <event-name|number>
+       hh71vm-panel-led --list
+]]
+
+local nixio = require "nixio"
+
+local HOST, PORT = "192.168.225.1", 2016
+local TIMEOUT    = 6
+
+-- Only the events this firmware has any business sending.  A bare number is accepted
+-- too, for probing, but nothing here guesses at an event we have not read out of the
+-- vendor's own map.
+local EVENTS = {
+	["wifi-off"] = 11,
+	["wifi-on"]  = 12,
+	["wifi-wps"] = 14,
 }
 
-i=1
-while [ "$i" -le "$TRIES" ]; do
-	qc_shell "echo $value > /sys/class/leds/$led/brightness" >/dev/null
-	# Let’s check by reading: the passwordless telnet does not have a return code to which
-	# You can rely on it, but silently missing the indicator is worse than not lighting it.
-	# tr -d: telnet returns rows with CR, and without cleaning the comparison does not match
-	# never, although the recording took place (caught live 2026-08-24).
-	if qc_shell "cat /sys/class/leds/$led/brightness" | tr -d "\r" | grep -qx "$value"; then
-		exit 0
-	fi
-	i=$((i + 1))
-	sleep 1
-done
-exit 1
+local function usage(code)
+	io.stderr:write("usage: hh71vm-panel-led <wifi-on|wifi-off|wifi-wps|number>\n")
+	os.exit(code)
+end
+
+local arg1 = arg[1]
+if not arg1 or arg1 == "-h" or arg1 == "--help" then usage(2) end
+if arg1 == "--list" then
+	for name, id in pairs(EVENTS) do print(string.format("%-10s %d", name, id)) end
+	os.exit(0)
+end
+
+local event = EVENTS[arg1] or tonumber(arg1)
+if not event or event < 0 or event > 28 or event ~= math.floor(event) then usage(2) end
+
+local function le32(n)
+	n = n % 4294967296
+	return string.char(n % 256, math.floor(n / 256) % 256,
+	                   math.floor(n / 65536) % 256, math.floor(n / 16777216) % 256)
+end
+
+local function rd32(s, pos)
+	local a, b, c, d = s:byte(pos, pos + 3)
+	if not d then return nil end
+	return a + b * 256 + c * 65536 + d * 16777216
+end
+
+-- The same frame hh71vm-modemd builds; kept separate on purpose, so the indicator does
+-- not depend on the modem daemon being up.  Header is 44 bytes, magic "kcap", little
+-- endian, JSON NUL-terminated after it.  An event frame from the other side stops at 28
+-- bytes and carries no JSON, so the reader must not assume 44.
+local function kcap_call(method, params_json)
+	local sock = nixio.socket("inet", "stream")
+	sock:setblocking(true)
+	sock:setopt("socket", "sndtimeo", TIMEOUT)
+	sock:setopt("socket", "rcvtimeo", TIMEOUT)
+	if not sock:connect(HOST, PORT) then
+		sock:close()
+		return nil, "connect failed"
+	end
+
+	local seq  = 1
+	local body = '{"id": "12", "jsonrpc": "2.0", "method": "' .. method ..
+	             '", "params": ' .. params_json .. "}\0"
+	local out  = "kcap" .. le32(44 + #body) .. le32(seq) .. le32(1)
+	             .. le32(0) .. le32(0) .. le32(0) .. le32(0)
+	             .. le32(0x77000001) .. le32(0) .. le32(0) .. body
+	while #out > 0 do
+		local n = sock:write(out)
+		if not n or n <= 0 then sock:close(); return nil, "write failed" end
+		out = out:sub(n + 1)
+	end
+
+	local deadline, buf = os.time() + TIMEOUT, ""
+	while os.time() <= deadline do
+		while #buf >= 28 do
+			if buf:sub(1, 4) ~= "kcap" then sock:close(); return nil, "out of sync" end
+			local total = rd32(buf, 5)
+			if not total or total < 28 or total > 262144 then
+				sock:close(); return nil, "bad frame length"
+			end
+			if #buf < total then break end
+			local frame = buf:sub(1, total)
+			buf = buf:sub(total + 1)
+			if total > 44 and rd32(frame, 13) == 1 and rd32(frame, 9) == seq then
+				sock:close()
+				return true
+			end
+		end
+		local data = sock:read(65536)
+		if data == nil or data == "" then sock:close(); return nil, "closed" end
+		buf = buf .. data
+	end
+	sock:close()
+	return nil, "no answer"
+end
+
+local ok = kcap_call("MainLedStatus", string.format('{"MainLedEvent": %d}', event))
+os.exit(ok and 0 or 1)
