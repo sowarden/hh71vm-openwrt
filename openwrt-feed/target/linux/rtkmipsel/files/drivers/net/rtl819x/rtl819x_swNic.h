@@ -663,5 +663,43 @@ void New_swNic_freeTxRing(void);
 
 extern uint32  size_of_cluster;
 
+/*
+ * Transmit datapath corrections, selected at run time through /proc/rtl_txfix.
+ *
+ * The switch core damages a few bytes of a frame it assembles from more than one
+ * descriptor: one 32-bit word arrives a byte or two late with zeros shifted in behind
+ * it, a few times per 100 MiB at 100 Mbit/s. The frame length never changes and
+ * CONFIG_RTL_97F_HW_TX_CSUM means the checksum is recomputed over whatever the switch
+ * core read, so TCP cannot see it.
+ *
+ * The driver comes up with LINEARIZE | CSUM_HONOUR, which is the fix: a frame the switch
+ * core has to assemble from several buffers is copied into one first, and the checksum
+ * offload is claimed only when the stack actually asked for it. Writing 0 to
+ * /proc/rtl_txfix restores the vendor path, defect and all, which is how the fix is
+ * checked on a board that is already running it. The remaining bits are the candidate
+ * corrections that were measured and did not help; they are kept so the measurement can
+ * be repeated rather than believed.
+ */
+#define RTL_TXFIX_CSUM_HONOUR		0x0001	/* offload the checksum only for CHECKSUM_PARTIAL */
+#define RTL_TXFIX_CSUM_FIRST_ONLY	0x0002	/* set the checksum bits on the header descriptor only */
+#define RTL_TXFIX_LINEARIZE		0x0004	/* copy every fragmented frame into one buffer */
+#define RTL_TXFIX_ALIGN_SEAM		0x0008	/* pull payload so the header descriptor ends on a word */
+#define RTL_TXFIX_LIN_MISALIGNED	0x0010	/* linearize only frames with an unaligned fragment */
+#define RTL_TXFIX_LIN_ODDLEN		0x0020	/* linearize only frames with an odd-length fragment */
+#define RTL_TXFIX_TXDONE_MARGIN		0x0040	/* keep skbs alive a few descriptors past the CDP */
+#define RTL_TXFIX_ALL			0x007f
+
+#define RTL_TXFIX_STAT_LINEARIZED	0
+#define RTL_TXFIX_STAT_LIN_FAILED	1
+#define RTL_TXFIX_STAT_SEAM_PULLED	2
+#define RTL_TXFIX_STAT_SEAM_FAILED	3
+#define RTL_TXFIX_STAT_SG_FRAMES	4
+#define RTL_TXFIX_STAT_CSUM_LEFT	5
+#define RTL_TXFIX_STAT_HELD		6
+#define RTL_TXFIX_STAT_COUNT		8
+
+extern unsigned int rtl_txfix_flags;
+extern unsigned int rtl_txfix_stat[RTL_TXFIX_STAT_COUNT];
+
 #endif
 
