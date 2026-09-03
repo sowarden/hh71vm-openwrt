@@ -1,0 +1,180 @@
+#!/bin/sh
+#
+# Install packages that do not fit the 6 MiB overlay onto the Qualcomm half's share.
+#
+# The overlay (`rootfs_data`, mtd5) is 6 MiB and holds everything opkg installs the
+# ordinary way.  The share mounted at /mnt/extern is about 55 MiB and belongs to the
+# other half of the device, so it survives sysupgrade, which erases the overlay.  A
+# 34 MB binary has exactly one place to live here, and it is not the overlay.
+#
+# /usr/sbin/hh71vm-extern-mount already publishes the share as an opkg destination
+# named "extern" while it is mounted, so the raw operation is just
+# `opkg install -d extern <pkg>`.  What that raw command does not do:
+#
+#   * mount the share first, or say anything useful when it is not mounted;
+#   * check beforehand that the package fits.  opkg does check, but against
+#     Installed-Size, and on OpenWrt 19.07 that field is the size of the COMPRESSED
+#     payload, so a large package can report 10 534 017 while the file it installs
+#     is 34 341 021.
+#     A check against it under-counts by a factor of three, which is the difference
+#     between "refuses cleanly" and "fills the share and fails half way";
+#   * tell you what is installed over there, since `opkg list-installed` shows every
+#     destination at once;
+#   * put the share's bin directories on PATH - /etc/profile.d/hh71vm-extern.sh does
+#     that for logins, and /etc/init.d/hh71vm-extern-services does it for services.
+#
+# Usage: hh71vm-extern-pkg [status|list|install <pkg|file.ipk>...|remove <pkg>...|space]
+#
+
+. /lib/functions.sh
+
+CONF=hh71vm-extern
+DEST=extern
+MOUNT_HELPER=/usr/sbin/hh71vm-extern-mount
+WORK=/tmp/hh71vm-extern-pkg.$$
+
+config_load "$CONF" 2>/dev/null
+target=; config_get target extern target /mnt/extern
+prefix="$target/opkg"
+
+cleanup() {
+	rm -rf "$WORK"
+}
+trap cleanup EXIT INT TERM
+
+fail() {
+	echo "hh71vm-extern-pkg: $1" >&2
+	exit "${2:-1}"
+}
+
+is_mounted() {
+	grep -q " $target cifs " /proc/mounts
+}
+
+# Free kibibytes on the share.  Two things to be careful about: ask for a fixed block
+# size, because busybox df's default units vary, and count columns from the RIGHT.
+# `//192.168.225.1/shared_rom` is too long for the Filesystem column, so busybox wraps
+# it onto its own line and the numbers land on the next one - a fixed `NR==2 {print $4}`
+# reads the device name and returns nothing.
+free_kb() {
+	df -k "$target" 2>/dev/null | awk 'END {print $(NF-2)}'
+}
+
+ensure_share() {
+	is_mounted || {
+		echo "hh71vm-extern-pkg: share not mounted, mounting it now"
+		"$MOUNT_HELPER" mount >/dev/null 2>&1
+	}
+	is_mounted || fail "the share is not mounted; run '$MOUNT_HELPER status' to see why" 3
+	[ -f /etc/opkg/extern.conf ] || "$MOUNT_HELPER" mount >/dev/null 2>&1
+	[ -f /etc/opkg/extern.conf ] || \
+		fail "opkg destination '$DEST' is not published; check option opkg_dest in /etc/config/$CONF" 3
+}
+
+# The real installed size of an .ipk: the uncompressed length of its data payload.
+# Nothing in the package metadata carries this on 19.07, so measure it.
+# The member is named "data.tar.gz" by some tar implementations and "./data.tar.gz" by
+# others, and busybox is not consistent with GNU here, so try both.
+ipk_unpacked_kb() {
+	for member in data.tar.gz ./data.tar.gz; do
+		bytes=$(tar -xzOf "$1" "$member" 2>/dev/null | gzip -d 2>/dev/null | wc -c)
+		[ "${bytes:-0}" -gt 0 ] && { echo $(((bytes + 1023) / 1024)); return 0; }
+	done
+	return 1
+}
+
+# Resolve every argument to a local .ipk when possible, so the size check is a
+# measurement rather than a guess.  A name that cannot be downloaded still installs -
+# it just carries a warning instead of a number.
+resolve() {
+	mkdir -p "$WORK"
+	resolved=""
+	measured_kb=0
+	unmeasured=""
+	for item in "$@"; do
+		case "$item" in
+			*.ipk)
+				[ -f "$item" ] || fail "no such file: $item" 2
+				file="$item"
+				;;
+			*)
+				file=""
+				( cd "$WORK" && opkg download "$item" >/dev/null 2>&1 ) &&
+					file=$(ls "$WORK"/"$item"_*.ipk 2>/dev/null | head -1)
+				;;
+		esac
+		if [ -n "$file" ] && [ -f "$file" ]; then
+			size=$(ipk_unpacked_kb "$file")
+			case "$size" in
+				''|0|*[!0-9]*) unmeasured="$unmeasured $item" ;;
+				*) measured_kb=$((measured_kb + size)) ;;
+			esac
+			resolved="$resolved $file"
+		else
+			unmeasured="$unmeasured $item"
+			resolved="$resolved $item"
+		fi
+	done
+}
+
+do_install() {
+	[ "$#" -gt 0 ] || fail "install needs at least one package name or .ipk file" 2
+	ensure_share
+	resolve "$@"
+	available=$(free_kb)
+	if [ "$measured_kb" -gt 0 ]; then
+		echo "hh71vm-extern-pkg: measured ${measured_kb} KiB, ${available} KiB free on $target"
+		[ "$measured_kb" -lt "$available" ] || \
+			fail "not enough room: need ${measured_kb} KiB, have ${available} KiB" 4
+	fi
+	[ -n "$unmeasured" ] && {
+		echo "hh71vm-extern-pkg: could not measure$unmeasured (not downloadable here);"
+		echo "hh71vm-extern-pkg: opkg will check by itself, but its Installed-Size is the"
+		echo "hh71vm-extern-pkg: compressed size and under-counts. ${available} KiB free."
+	}
+	# shellcheck disable=SC2086 - deliberate word splitting of the resolved list
+	opkg install -d "$DEST" $resolved || fail "opkg install failed" 5
+	echo "hh71vm-extern-pkg: installed into $prefix, $(free_kb) KiB left"
+	echo "hh71vm-extern-pkg: log out and back in for PATH to pick up $prefix/usr/bin"
+}
+
+do_remove() {
+	[ "$#" -gt 0 ] || fail "remove needs at least one package name" 2
+	ensure_share
+	opkg remove "$@" || fail "opkg remove failed" 5
+}
+
+# opkg keeps a separate status file per destination, so this lists what lives on the
+# share alone - which is what a person wants to know before a sysupgrade.
+do_list() {
+	status="$prefix/usr/lib/opkg/status"
+	[ -f "$status" ] || { echo "nothing installed on $target"; return 0; }
+	awk '/^Package:/ {name=$2} /^Version:/ {printf "%-28s %s\n", name, $2}' "$status"
+}
+
+do_status() {
+	if is_mounted; then
+		echo "share:     mounted on $target, $(free_kb) KiB free"
+	else
+		echo "share:     NOT mounted ($target)"
+	fi
+	if [ -f /etc/opkg/extern.conf ]; then
+		echo "opkg dest: $(cat /etc/opkg/extern.conf)"
+	else
+		echo "opkg dest: not published"
+	fi
+	echo "installed:"
+	do_list | sed 's/^/  /'
+}
+
+command="${1:-status}"
+[ "$#" -gt 0 ] && shift
+
+case "$command" in
+	install) do_install "$@" ;;
+	remove)  do_remove "$@" ;;
+	list)    do_list ;;
+	space)   ensure_share; free_kb ;;
+	status)  do_status ;;
+	*) echo "usage: $0 [status|list|install <pkg|file.ipk>...|remove <pkg>...|space]" >&2; exit 2 ;;
+esac

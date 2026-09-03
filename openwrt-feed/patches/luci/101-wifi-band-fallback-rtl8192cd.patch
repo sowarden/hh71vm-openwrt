@@ -1,0 +1,38 @@
+From: sowarden <sowarden@proton.me>
+Subject: [PATCH] luci-mod-network: never clear the radio band when iwinfo is silent
+
+The wireless page fills its Band and Channel selects from an iwinfo frequency list.
+When that list is empty both selects end up with no options at all, and the form then
+saved an empty hwmode and an empty channel over a working configuration.
+
+Keep the configured values instead of writing an empty one.
+---
+ .../resources/view/network/wireless.js | 14 ++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js b/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js
+--- a/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js
++++ b/modules/luci-mod-network/htdocs/luci-static/resources/view/network/wireless.js
+@@ -510,8 +510,18 @@
+ 
+ 	write: function(section_id, value) {
+ 		uci.set('wireless', section_id, 'htmode', value[0] || null);
+-		uci.set('wireless', section_id, 'hwmode', value[1]);
+-		uci.set('wireless', section_id, 'channel', value[2]);
++
++		/* An empty band or channel means the widget had nothing to offer, not that the
++		 * user asked for the radio to lose its band. iwinfo answers per netdev, so a
++		 * driver whose radio sections are not netdev names, or a radio that is simply
++		 * down, leaves both selects empty; writing that through cleared hwmode and
++		 * channel, and the rtl8192cd 5 GHz radio then came up on channel 1 with only
++		 * 2.4 GHz capabilities left to report. Keep what is already configured. */
++		if (value[1])
++			uci.set('wireless', section_id, 'hwmode', value[1]);
++
++		if (value[2])
++			uci.set('wireless', section_id, 'channel', value[2]);
+ 	}
+ });
+ 
+-- 
+2.43.0

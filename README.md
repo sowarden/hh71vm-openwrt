@@ -22,6 +22,7 @@ the normal way to use this firmware.
 | Download firmware and flashing tools | [Latest flash bundle](https://github.com/sowarden/hh71vm-openwrt/releases/latest/download/hh71vm-openwrt-flash-bundle.zip) |
 | Install OpenWrt permanently | [Flash installation guide](docs/flash-install.md) |
 | Add optional modem controls or WireGuard | [Signed package feed](docs/package-feed.md) |
+| See what the packages of this port do | [Packages built for this port](docs/extra/custom-packages.md) |
 | Try the build first, without writing flash (needs UART) | [RAM boot guide](docs/ram-boot.md) |
 | Check what works and what does not | [Known issues](docs/known-issues.md) |
 | Test a subsystem and report results | [Testing guide](docs/testing.md) |
@@ -121,6 +122,7 @@ credentials, and keys. Attach searchable text, not screenshots of text.
 | [`docs/sources.md`](docs/sources.md) | Source provenance and build instructions |
 | [`docs/releases.md`](docs/releases.md) | Latest downloads and immutable Release identity |
 | [`docs/driver-reuse.md`](docs/driver-reuse.md) | Advanced port-reuse guidance and coupling |
+| [`docs/extra/`](docs/extra/custom-packages.md) | The packages and kernel modules built for this port |
 | [`openwrt-feed/`](openwrt-feed/) | HH71VM source delta and build config |
 | [`autobuild/`](autobuild/) | Unified firmware build and immutable signed feed |
 | [`tools/flash/`](tools/flash/) | Backup, installation, update, and rollback utilities |

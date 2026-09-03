@@ -119,6 +119,22 @@ def prepare(source, build, cache, key, tag, lock):
     if "+iptables-mod-ipopt +kmod-ipt-ipopt" not in text:
         raise ValueError("modem dependency patch context changed")
     backend.write_text(text.replace("+iptables-mod-ipopt +kmod-ipt-ipopt", "+iptables-mod-ipopt +kmod-hh71vm-ipt-ipopt +hh71vm-feed"))
+    # The IP option extensions live in kmod-hh71vm-ipt-ipopt, which builds them out of tree
+    # against the unchanged release kernel so the vermagic of every published module stays
+    # valid. Upstream keys the USERSPACE half of the same feature off the very kernel symbols
+    # that are deliberately unset here (include/netfilter.mk fills IPT_IPOPT-m from
+    # CONFIG_NETFILTER_XT_TARGET_HL and friends), so iptables-mod-ipopt was built empty and
+    # `-j TTL` fell through to a jump to a nonexistent chain: "unknown option --ttl-set".
+    # Name the extensions explicitly. BuildPlugin only copies the ones that exist, so this
+    # cannot break the build, and it changes no kernel configuration.
+    plugins = build / "package/network/utils/iptables/Makefile"
+    text = plugins.read_text()
+    anchor = "$(eval $(call BuildPlugin,iptables-mod-ipopt,$(IPT_IPOPT-m)))"
+    if text.count(anchor) != 1:
+        raise ValueError("ipopt userspace plugin patch context changed")
+    extensions = "xt_dscp xt_DSCP xt_tos xt_TOS xt_length xt_statistic xt_tcpmss xt_CLASSIFY ipt_ECN xt_ecn xt_hl xt_HL ipt_ttl ipt_TTL"
+    plugins.write_text(text.replace(
+        anchor, "$(eval $(call BuildPlugin,iptables-mod-ipopt,$(IPT_IPOPT-m) " + extensions + "))"))
     # Never depend on executable bits inherited from a Windows checkout.
     driver = build / "target/linux/rtkmipsel/files/drivers/net/wireless/realtek/rtl8192cd/Makefile"
     driver.write_text(re.sub(r"(?m)^(\s*)\$\(obj\)/bin2c.pl", r"\1perl $(obj)/bin2c.pl", driver.read_text()))

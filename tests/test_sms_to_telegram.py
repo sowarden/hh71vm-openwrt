@@ -165,7 +165,7 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
         self.assertIn("luci-app-sms-to-telegram_*.ipk", docs)
 
     def test_new_delta_contains_only_synthetic_identifiers(self):
-        paths = [*BACKEND.rglob("*"), *LUCI.rglob("*"), ROOT / "docs/sms-to-telegram.md"]
+        paths = [*BACKEND.rglob("*"), *LUCI.rglob("*"), ROOT / "docs/extra/sms-to-telegram.md"]
         data = b"\n".join(path.read_bytes() for path in paths if path.is_file())
         forbidden = [
             rb"[A-Za-z]:[\\/]Users[\\/]",

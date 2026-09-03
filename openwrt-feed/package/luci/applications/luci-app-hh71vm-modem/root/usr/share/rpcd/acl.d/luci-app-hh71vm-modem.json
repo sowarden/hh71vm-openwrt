@@ -16,6 +16,7 @@
 					"apn_list",
 					"net_mode",
 					"net_scan_result",
+					"ussd_result",
 					"sms_list",
 					"sms_snapshot",
 					"sms_settings",
@@ -48,6 +49,7 @@
 					"data_connect",
 					"data_disconnect",
 					"ussd",
+					"ussd_start",
 					"phonebook_add",
 					"phonebook_delete",
 					"at"

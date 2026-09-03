@@ -1,20 +1,25 @@
 #!/bin/sh
 #
-# Makes the front panel indicator Wi-Fi match the actual
-# radio condition.
+# Makes the front panel Wi-Fi indicator match the actual radio state.
 #
-# Lights up if at least one radio is up. The state is taken from the flags
-# interface, and not from UCI: UCI says what they wanted, and the panel should
-# show what happened. IFF_UP - least significant bit /sys/class/net/*/flags;
-# operstate for the vendor driver is always `unknown`, you cannot rely on it.
+# Lit if at least one radio is up.  The state is taken from the interface flags and not
+# from UCI: UCI says what was wanted, the panel must show what happened.  IFF_UP is the
+# least significant bit of /sys/class/net/*/flags; `operstate` is always `unknown` for
+# this vendor driver and cannot be used.
 #
-# Only the radios themselves (wlan0, wlan1) are counted. VAP- and WDS-interfaces
-# (wlan0-va0, wlan0-wds3 and further - there are two dozen of them) always exist and
-# Radio states are not reflected.
+# Only the radios themselves (wlan0, wlan1) count.  The VAP and WDS interfaces
+# (wlan0-va0, wlan0-wds3 and two dozen more) always exist and never reflect radio state.
 #
-# Called from /lib/netifd/wireless/rtl8192cd.sh on setup and teardown, i.e.
-# based on the fact of the event, and not on the timer.
+# Called from /lib/netifd/wireless/rtl8192cd.sh on setup and on teardown, i.e. off the
+# event and not off a timer.
 #
+# The flags are read *inside* the lock: netifd tears one radio down while it brings the
+# other up, both call this in the background, and without the lock the loser could send
+# `wifi-off` after the winner had already sent `wifi-on`.
+#
+LOCK=/var/lock/hh71vm-wifi-led.lock
+
+exec 9>"$LOCK" 2>/dev/null && flock 9 2>/dev/null
 
 on=0
 for dev in /sys/class/net/wlan0 /sys/class/net/wlan1; do
@@ -23,5 +28,5 @@ for dev in /sys/class/net/wlan0 /sys/class/net/wlan1; do
 	[ $(( flags & 1 )) -eq 1 ] && on=1
 done
 
-[ "$on" = "1" ] && exec /usr/sbin/hh71vm-panel-led wlan 255
-exec /usr/sbin/hh71vm-panel-led wlan 0
+[ "$on" = "1" ] && exec /usr/sbin/hh71vm-panel-led wifi-on
+exec /usr/sbin/hh71vm-panel-led wifi-off
