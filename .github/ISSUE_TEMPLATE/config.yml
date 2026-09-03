@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: RAM boot guide
-    url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/ram-boot.md
-    about: Follow the supported procedure before opening a report.
-  - name: Testing and log collection
-    url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/testing.md
-    about: Required checks, diagnostic commands, and privacy guidance.
+  - name: Flash installation guide
+    url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/flash-install.md
+    about: Backup, installation, update and rollback. Read this before opening a report.
   - name: Known issues
     url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/known-issues.md
     about: Check whether the behavior is already documented.
+  - name: Testing and log collection
+    url: https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/testing.md
+    about: Diagnostic commands and what to redact before posting.

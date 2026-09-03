@@ -3,9 +3,9 @@
 The overlay is 6 MiB and some packages are 34 MB, so the share is the only place they
 can go. Two things here have already been wrong once and would be wrong silently:
 
-* `Installed-Size` on OpenWrt 19.07 is the size of the COMPRESSED payload - xray-core
-  reports 10 534 017 for a file of 34 341 021 - so a space check against it under-counts
-  by a factor of three;
+* `Installed-Size` on OpenWrt 19.07 is the size of the COMPRESSED payload - a large
+  package reports 10 534 017 for a file of 34 341 021 - so a space check against it
+  under-counts by a factor of three;
 * busybox `df` wraps a long device name onto its own line, so `NR==2 {print $4}` reads
   the device name and returns an empty string, which then compares as "fits".
 """

@@ -1,97 +1,68 @@
-name: Reproducible bug report
-description: Report a software defect after checking known issues
+name: Bug report
+description: Report something that does not work
 title: "[Bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Use this form for a reproducible software defect. For a first test on a new device or revision, use the **Hardware compatibility report** instead.
+        Please check [known issues](https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/known-issues.md) first.
 
-        Check [known issues](https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/known-issues.md) first. Attach searchable, sanitized text logs rather than screenshots.
+        Only the first two fields are required. Fill in the rest if you can — it makes the report much easier to act on.
+
+        Review anything you paste and redact what you do not want public: full MAC addresses, serial numbers, IMEI/IMSI, phone numbers, message text, passwords and keys.
 
   - type: textarea
     id: summary
     attributes:
-      label: Defect summary
-      description: What happened, and what did you expect instead?
+      label: What happens
+      description: What went wrong, and what did you expect instead?
     validations:
       required: true
 
   - type: textarea
     id: steps
     attributes:
-      label: Exact reproduction steps
+      label: How to reproduce it
+      description: If you cannot reproduce it on purpose, say so and describe what you were doing when it happened.
       placeholder: |
-        1. Booted the published RAM image
-        2. ...
-        3. The failure occurred
-    validations:
-      required: true
+        1.
+        2.
+        3.
 
-  - type: dropdown
-    id: reproducibility
-    attributes:
-      label: Reproducibility
-      options:
-        - Every attempt
-        - Most attempts
-        - Intermittent with a measured pattern
-        - Happened once
-    validations:
-      required: true
-
-  - type: input
-    id: image-sha256
-    attributes:
-      label: RAM image SHA-256
-      value: 6b839ec1c2b1d7a2ac23550aa1bc24308c7fc71b4eac8a7c374f11e977d47a07
-    validations:
-      required: true
-
-  - type: input
-    id: device-report
-    attributes:
-      label: Related compatibility report
-      description: Link the compatibility report for this device, if available.
-      placeholder: https://github.com/sowarden/hh71vm-openwrt/issues/...
-    validations:
-      required: false
-
-  - type: textarea
-    id: uart-log
-    attributes:
-      label: Complete sanitized UART log
-      description: Drag the text log from tools/ram-boot-logs/ into this field.
-      placeholder: Attach the sanitized .log file here.
+        Or: cannot reproduce on purpose — it happened while ...
     validations:
       required: true
 
   - type: textarea
-    id: system-logs
+    id: version
     attributes:
-      label: Relevant dmesg and logread output
-      description: Include the full surrounding context, not only the final error line.
+      label: Firmware and kernel version
+      description: |
+        Run this on the router over SSH and paste the output:
+
+        ```
+        ubus call system board
+        cat /etc/openwrt_release
+        ```
       render: text
     validations:
       required: false
 
-  - type: textarea
-    id: environment
+  - type: input
+    id: model
     attributes:
-      label: Environment and comparison
-      description: Client hardware/software, connection type, duration, and behavior under stock firmware.
+      label: Exact router model
+      description: As printed on the label. Not the serial number.
+      placeholder: Alcatel LINKHUB HH71VM
     validations:
       required: false
 
-  - type: checkboxes
-    id: confirmation
+  - type: textarea
+    id: logs
     attributes:
-      label: Final checks
-      options:
-        - label: This is not already described in the known-issues document.
-          required: true
-        - label: I used the published nfjrom RAM image and did not attempt flash installation.
-          required: true
-        - label: I reviewed all logs and redacted sensitive device-unique data.
-          required: true
+      label: Anything from the log
+      description: "`logread` and `dmesg` on the router. Include the lines around the failure, not only the last one."
+      render: text
+    validations:
+      required: false

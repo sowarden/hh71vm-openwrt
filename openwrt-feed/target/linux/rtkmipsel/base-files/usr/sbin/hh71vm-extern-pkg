@@ -14,7 +14,8 @@
 #   * mount the share first, or say anything useful when it is not mounted;
 #   * check beforehand that the package fits.  opkg does check, but against
 #     Installed-Size, and on OpenWrt 19.07 that field is the size of the COMPRESSED
-#     payload: xray-core reports 10 534 017 while the file it installs is 34 341 021.
+#     payload, so a large package can report 10 534 017 while the file it installs
+#     is 34 341 021.
 #     A check against it under-counts by a factor of three, which is the difference
 #     between "refuses cleanly" and "fills the share and fails half way";
 #   * tell you what is installed over there, since `opkg list-installed` shows every

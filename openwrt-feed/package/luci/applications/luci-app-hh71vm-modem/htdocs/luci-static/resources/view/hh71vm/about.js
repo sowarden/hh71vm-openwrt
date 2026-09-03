@@ -84,6 +84,13 @@ HH71VM.').format('<strong>' + (rel.version || '19.07') + '</strong>')),
 			]),
 
 			E('div', { 'class': 'cbi-section fade-in' }, [
+				E('h3', {}, _('Special Thanks')),
+				m.facts([
+					['2rt', _('For helping with testing and debugging on their own router')]
+				])
+			]),
+
+			E('div', { 'class': 'cbi-section fade-in' }, [
 				E('h3', {}, _('Source code and the GPL')),
 				E('p', {}, _('This firmware contains software licensed under the GNU \
 General Public License, version 2. You are entitled to the complete corresponding source \

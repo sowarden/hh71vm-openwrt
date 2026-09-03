@@ -13,6 +13,9 @@ opkg install luci-proto-wireguard
 Dependencies, including the matching WireGuard kernel module, are resolved by
 opkg. HTTPS requires a working Internet connection and a correct system clock.
 
+What each of these packages does is described in
+[Packages built for this port](extra/custom-packages.md).
+
 After installing a package that adds a LuCI page, log out of LuCI and sign in
 again. The active browser session can retain its previous menu tree even after
 the router-side index cache is rebuilt. A router reboot is not required.
@@ -53,7 +56,7 @@ opkg install \
   /tmp/hh71vm-offline/luci-app-sms-to-telegram_*.ipk
 ```
 
-Configuration and delivery semantics are documented in [SMS to Telegram](sms-to-telegram.md).
+Configuration and delivery semantics are documented in [SMS to Telegram](extra/sms-to-telegram.md).
 
 Stop if the Release tag does not match the installed image or opkg reports a kernel ABI or
 dependency error. Do not use `--force-depends`, install IPKs from another Release, or run a

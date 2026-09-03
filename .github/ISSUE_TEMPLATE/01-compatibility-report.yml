@@ -1,21 +1,21 @@
 name: Hardware compatibility report
-description: Report any HH71VM test, including a complete success
+description: Tell us whether this firmware worked on your router
 title: "[Compatibility] "
 labels: ["hardware"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you for testing. Successful reports are just as important as failures.
+        This port was developed on one physical HH71VM. Other board revisions, regions and carrier variants are unverified, so a report saying "it just worked" is as useful as one saying it did not.
 
-        Follow the [testing guide](https://github.com/sowarden/hh71vm-openwrt/blob/main/docs/testing.md). Attach a log if you have one: the installer output for a flash installation, or the UART log from `tools/ram-boot-logs/` for a RAM dry run.
+        The dropdowns are the important part and take a minute. Everything else is optional.
 
-        **Before posting:** review every file and redact full MAC addresses, serial numbers, IMEI/IMSI, SIM data, phone numbers, messages, credentials, and keys.
+        If you paste logs, redact what you do not want public: full MAC addresses, serial numbers, IMEI/IMSI, phone numbers and message text.
 
   - type: dropdown
     id: install-path
     attributes:
-      label: How did you run the build
+      label: How did you run it
       options:
         - Installed into flash
         - RAM dry run over UART
@@ -28,159 +28,97 @@ body:
       label: Overall result
       options:
         - Booted and worked as documented
-        - Booted with hardware or behavior differences
+        - Booted, but something behaved differently
         - Failed before OpenWrt finished booting
         - OpenWrt booted but networking failed
     validations:
       required: true
 
-  - type: input
-    id: model
-    attributes:
-      label: Exact marketed model
-      description: Copy the model name, but not the serial number, from the label.
-      placeholder: Alcatel LINKHUB HH71VM
-    validations:
-      required: true
-
-  - type: input
-    id: board-revision
-    attributes:
-      label: PCB or board revision
-      description: Copy visible PCB markings. Do not include a device serial number.
-      placeholder: Not visible / exact marking
-    validations:
-      required: true
-
-  - type: input
-    id: region-carrier
-    attributes:
-      label: Purchase region and carrier branding
-      placeholder: Country, unbranded or carrier name
-    validations:
-      required: true
-
-  - type: input
-    id: stock-version
-    attributes:
-      label: Stock firmware version
-      description: Record this before you install or RAM boot.
-    validations:
-      required: true
-
-  - type: input
-    id: image-sha256
-    attributes:
-      label: Firmware image SHA-256
-      description: The digest of the exact image file you used.
-    validations:
-      required: true
-
-  - type: textarea
-    id: host-setup
-    attributes:
-      label: Test host setup
-      description: Host OS/version and Python version. For a RAM dry run, add the USB-UART adapter, serial port, and wiring notes.
-      placeholder: |
-        Host OS:
-        Python:
-    validations:
-      required: true
-
-  - type: textarea
-    id: uart-log
-    attributes:
-      label: Sanitized log
-      description: Installer output for a flash installation, or the text log from tools/ram-boot-logs/ for a RAM dry run. Do not upload screenshots of text.
-      placeholder: Attach the sanitized log here.
-    validations:
-      required: false
-
-  - type: textarea
-    id: radio-markers
-    attributes:
-      label: Radio and SoC markers
-      description: Output of dmesg | grep -iE "PHY_REG_PG|Bonding|RFE type|chip_version", if a shell was reached.
-      render: text
-    validations:
-      required: false
-
-  - type: textarea
-    id: switch-mac
-    attributes:
-      label: Switch mapping and MAC result
-      description: Include the eth0/eth1 member masks and state whether eth0 matched the label. Redact unique MAC bytes.
-      placeholder: |
-        eth0 member mask:
-        eth1 member mask:
-        eth0 MAC matched label: yes/no/not reached
-    validations:
-      required: false
-
   - type: dropdown
     id: ethernet
     attributes:
-      label: Ethernet result
+      label: Ethernet
       options:
-        - Not reached or not tested
-        - Link, DHCP, and traffic worked
-        - Link worked but DHCP or traffic failed
-        - No link
+        - Worked
+        - Partly worked
+        - Did not work
+        - Not tested
     validations:
       required: true
 
   - type: dropdown
     id: wifi-24
     attributes:
-      label: 2.4 GHz Wi-Fi result
+      label: 2.4 GHz Wi-Fi
       options:
-        - Not reached or not tested
-        - SSID, association, DHCP, and traffic worked
-        - SSID visible but association or traffic failed
-        - SSID not visible
+        - Worked
+        - Partly worked
+        - Did not work
+        - Not tested
     validations:
       required: true
 
   - type: dropdown
     id: wifi-5
     attributes:
-      label: 5 GHz Wi-Fi result
+      label: 5 GHz Wi-Fi
       options:
-        - Not reached or not tested
-        - SSID, association, DHCP, and traffic worked
-        - SSID visible but association or traffic failed
-        - SSID not visible
+        - Worked
+        - Partly worked
+        - Did not work
+        - Not tested
     validations:
       required: true
 
   - type: dropdown
     id: modem
     attributes:
-      label: Qualcomm modem and mobile Internet result
+      label: Mobile Internet through the modem
       options:
-        - Not reached or not tested
-        - RNDIS, modem status, and mobile Internet worked
-        - RNDIS appeared but modem control or Internet failed
-        - No RNDIS eth2 interface
+        - Worked
+        - Partly worked
+        - Did not work
+        - Not tested
     validations:
       required: true
 
-  - type: textarea
-    id: differences
+  - type: input
+    id: model
     attributes:
-      label: Differences, failures, and timing
-      description: State what was expected, what happened, the last successful step, and whether it repeats.
+      label: Exact router model and region
+      description: As printed on the label. Not the serial number.
+      placeholder: Alcatel LINKHUB HH71VM, unbranded, Poland
+    validations:
+      required: true
+
+  - type: input
+    id: stock-version
+    attributes:
+      label: Stock firmware version it came with
+      description: If you noted it before installing. Leave blank if you did not.
     validations:
       required: false
 
-  - type: checkboxes
-    id: confirmation
+  - type: input
+    id: release
     attributes:
-      label: Final checks
-      options:
-        - label: I used the published nfjrom RAM image and did not attempt flash installation.
-          required: true
-        - label: I reviewed the attached logs and redacted sensitive device-unique data.
-          required: true
-        - label: I searched existing reports for the same model and revision.
-          required: true
+      label: Which release did you install
+      description: "The tag, or the output of `cat /usr/share/hh71vm-feed/release.conf` on the router."
+    validations:
+      required: false
+
+  - type: input
+    id: board-revision
+    attributes:
+      label: Visible PCB markings
+      description: Only if you opened the case. Not a serial number.
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: What was different, and anything from the log
+      description: What you expected, what happened, and where it stopped. Installer output or `logread` if you have it.
+    validations:
+      required: false

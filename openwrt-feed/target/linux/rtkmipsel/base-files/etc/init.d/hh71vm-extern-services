@@ -9,7 +9,7 @@
 # START is 95 so this runs after hh71vm-extern (94) has had its turn at mounting the
 # share.  That helper mounts in the background and retries, so the share can still be
 # late; a service that must survive that is better shipped as a small overlay package
-# whose init script waits, which is what luci-app-xray and xray do.
+# whose init script waits for the share before it starts the real binary.
 
 START=95
 STOP=10

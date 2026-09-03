@@ -349,21 +349,29 @@ updater.handleCheck({ currentTarget: button }).then(function() {
         bug = (template_dir / "02-bug-report.yml").read_text(encoding="utf-8")
         config = (template_dir / "config.yml").read_text(encoding="utf-8")
 
+        # The forms are deliberately short: a report nobody fills in is worth nothing.
+        # These are the fields a report cannot be acted on without.
         for marker in (
+            "id: install-path",
             "id: outcome",
             "id: model",
             "id: board-revision",
             "id: stock-version",
-            "id: image-sha256",
-            "id: uart-log",
+            "id: release",
+            "id: ethernet",
             "id: wifi-24",
             "id: wifi-5",
             "id: modem",
         ):
             self.assertIn(marker, compatibility)
-        for marker in ("id: summary", "id: steps", "id: uart-log"):
+        for marker in ("id: summary", "id: steps", "id: version", "id: model"):
             self.assertIn(marker, bug)
         self.assertIn("blank_issues_enabled: false", config)
+
+        # Flash installation is the supported path; a UART log only ever applied to the
+        # optional RAM dry run and must not be demanded of a reporter.
+        for form in (compatibility, bug):
+            self.assertNotIn("id: uart-log", form)
 
     def test_device_backups_and_transfer_logs_are_gitignored(self):
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
