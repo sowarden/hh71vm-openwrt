@@ -1693,6 +1693,57 @@ static ssize_t rtl_asic_operation_layer_single_write(struct file * file, const c
 {
 	    return rtl_asic_operation_layer_write(file, userbuf,count, off);
 }
+/*
+ * /proc/rtl_txfix - which of the transmit datapath corrections are in force.
+ *
+ * Reading prints the mask and the counters; writing a number sets the mask and clears
+ * the counters. Zero, the value the driver comes up with, is the vendor path.
+ */
+static int rtl_txfix_proc_read(struct seq_file *s, void *v)
+{
+	seq_printf(s, "flags 0x%04x\n", rtl_txfix_flags);
+	seq_printf(s, "sg_frames %u\n", rtl_txfix_stat[RTL_TXFIX_STAT_SG_FRAMES]);
+	seq_printf(s, "linearized %u\n", rtl_txfix_stat[RTL_TXFIX_STAT_LINEARIZED]);
+	seq_printf(s, "linearize_failed %u\n", rtl_txfix_stat[RTL_TXFIX_STAT_LIN_FAILED]);
+	seq_printf(s, "seam_pulled %u\n", rtl_txfix_stat[RTL_TXFIX_STAT_SEAM_PULLED]);
+	seq_printf(s, "seam_failed %u\n", rtl_txfix_stat[RTL_TXFIX_STAT_SEAM_FAILED]);
+	seq_printf(s, "csum_left_alone %u\n", rtl_txfix_stat[RTL_TXFIX_STAT_CSUM_LEFT]);
+	seq_printf(s, "txdone_held %u\n", rtl_txfix_stat[RTL_TXFIX_STAT_HELD]);
+	return 0;
+}
+
+static int rtl_txfix_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rtl_txfix_proc_read, NULL);
+}
+
+static ssize_t rtl_txfix_proc_write(struct file *file, const char __user *userbuf,
+				    size_t count, loff_t *off)
+{
+	char text[24];
+	unsigned long value;
+
+	if (count == 0 || count >= sizeof(text))
+		return -EINVAL;
+	if (copy_from_user(text, userbuf, count))
+		return -EFAULT;
+	text[count] = '\0';
+	if (kstrtoul(strim(text), 0, &value))
+		return -EINVAL;
+
+	rtl_txfix_flags = (unsigned int)value & RTL_TXFIX_ALL;
+	memset(rtl_txfix_stat, 0, sizeof(rtl_txfix_stat));
+	return count;
+}
+
+struct file_operations rtl_txfix_proc_fops = {
+	.open		= rtl_txfix_proc_open,
+	.write		= rtl_txfix_proc_write,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 struct file_operations rtl_asic_operation_layer_proc_fops= {
         .open           = rtl_asic_operation_layer_single_open,
         .write		     = rtl_asic_operation_layer_single_write,
@@ -13041,6 +13092,54 @@ if(multi_phy_vir_wan_enable)
 	}
 #endif
 
+	/* Transmit datapath corrections, selected at run time through /proc/rtl_txfix.
+	   The switch core damages a few bytes of a frame it assembles from more than one
+	   descriptor; each option below is one candidate correction and none of them is on
+	   by default, so an untouched board runs exactly the vendor path. */
+	if (rtl_txfix_flags && skb_is_nonlinear(tx_skb)) {
+		unsigned int want_linear = 0;
+
+		if (rtl_txfix_flags & RTL_TXFIX_LINEARIZE)
+			want_linear = 1;
+
+		if (!want_linear &&
+		    (rtl_txfix_flags & (RTL_TXFIX_LIN_MISALIGNED | RTL_TXFIX_LIN_ODDLEN))) {
+			int index, count = skb_shinfo(tx_skb)->nr_frags;
+
+			for (index = 0; index < count; index++) {
+				skb_frag_t *frag = &skb_shinfo(tx_skb)->frags[index];
+				unsigned long address = (unsigned long)page_address(frag->page.p)
+							+ frag->page_offset;
+
+				if ((rtl_txfix_flags & RTL_TXFIX_LIN_MISALIGNED) && (address & 3))
+					want_linear = 1;
+				if ((rtl_txfix_flags & RTL_TXFIX_LIN_ODDLEN) &&
+				    index != count - 1 && (frag->size & 3))
+					want_linear = 1;
+			}
+		}
+
+		if (want_linear) {
+			if (skb_linearize(tx_skb) == 0)
+				rtl_txfix_stat[RTL_TXFIX_STAT_LINEARIZED]++;
+			else
+				rtl_txfix_stat[RTL_TXFIX_STAT_LIN_FAILED]++;
+		} else if (rtl_txfix_flags & RTL_TXFIX_ALIGN_SEAM) {
+			/* The header descriptor always covers 14 bytes of Ethernet plus a whole
+			   number of words of IP and TCP, so the seam between it and the first
+			   fragment sits two bytes into a word and never on one. Pull enough
+			   payload into the linear part to end it on a word boundary. */
+			unsigned int need = (4 - (skb_headlen(tx_skb) & 3)) & 3;
+
+			if (need && tx_skb->data_len >= need) {
+				if (__pskb_pull_tail(tx_skb, need))
+					rtl_txfix_stat[RTL_TXFIX_STAT_SEAM_PULLED]++;
+				else
+					rtl_txfix_stat[RTL_TXFIX_STAT_SEAM_FAILED]++;
+			}
+		}
+	}
+
 	if (tx_skb->len < 60) 
 	{
 		int pending_flag = 1;
@@ -16324,6 +16423,7 @@ struct proc_dir_entry *rtl_8367r_vlan;
 
 #ifdef CONFIG_RTL_PROC_NEW
 	proc_create_data("rtl_op_layer",0,&proc_root,&rtl_asic_operation_layer_proc_fops,NULL);
+	proc_create_data("rtl_txfix",0644,&proc_root,&rtl_txfix_proc_fops,NULL);
 #else
 	rtl_op_layer_entry = create_proc_entry("rtl_op_layer", 0, NULL);
 	if (rtl_op_layer_entry)

@@ -147,6 +147,30 @@ __DRAM_FWD static uint32 New_txPktDoneDescIndex[NEW_NIC_MAX_TX_DESC_RING];
 __DRAM_FWD static uint32 New_txDescRing_base[RTL865X_SWNIC_TXRING_HW_PKTDESC];
 __DRAM_FWD static uint32 New_rxDescRing_base[RTL865X_SWNIC_RXRING_HW_PKTDESC];
 
+/* Transmit datapath corrections; see rtl819x_swNic.h. Zero is the vendor path, and
+   writing zero to /proc/rtl_txfix brings the defect back, which is how the fix is
+   checked on a board that is already running it. */
+unsigned int rtl_txfix_flags = RTL_TXFIX_LINEARIZE | RTL_TXFIX_CSUM_HONOUR;
+unsigned int rtl_txfix_stat[RTL_TXFIX_STAT_COUNT];
+
+/* How many descriptors RTL_TXFIX_TXDONE_MARGIN keeps between the switch core's current
+   descriptor pointer and the point where the skb behind a descriptor is released. */
+#define RTL_TXFIX_MARGIN	8
+
+/* Which checksum the switch core should compute for this frame. The vendor code sets
+   both bits on every descriptor of every frame, so a frame whose checksum the stack
+   already computed in software is overwritten by one computed over the bytes the switch
+   core read - which is why a damaged segment still arrives with a valid checksum. */
+static inline uint32 rtl_txfix_csum_bits(struct sk_buff *skb)
+{
+	if ((rtl_txfix_flags & RTL_TXFIX_CSUM_HONOUR) &&
+	    skb->ip_summed != CHECKSUM_PARTIAL) {
+		rtl_txfix_stat[RTL_TXFIX_STAT_CSUM_LEFT]++;
+		return 0;
+	}
+	return (TD_L3CS_MASK | TD_L4CS_MASK);
+}
+
 static uint32 TxCDP_reg[RTL865X_SWNIC_TXRING_HW_PKTDESC] =
 	{ CPUTPDCR0, CPUTPDCR1,	CPUTPDCR2, CPUTPDCR3};
 
@@ -1395,6 +1419,11 @@ int32 _New_swNic_send_tso_sg(struct	sk_buff	*skb, void * output, uint32	len,rtl_
 	uint8 proto_type=0, cur_frag;
 	bool cur_pi=0, cur_vi=0;
 	uint8 nr_frags=(skb_shinfo(skb)->nr_frags)+1;
+	uint32 cs_bits = rtl_txfix_csum_bits(skb);
+	uint32 frag_cs_bits = (rtl_txfix_flags & RTL_TXFIX_CSUM_FIRST_ONLY) ? 0 : cs_bits;
+
+	if (skb_shinfo(skb)->nr_frags)
+		rtl_txfix_stat[RTL_TXFIX_STAT_SG_FRAMES]++;
 
 	first_len =	skb->len - skb->data_len;
 	for	(cur_frag =	0; cur_frag	< skb_shinfo(skb)->nr_frags; cur_frag++)
@@ -1468,16 +1497,16 @@ int32 _New_swNic_send_tso_sg(struct	sk_buff	*skb, void * output, uint32	len,rtl_
 			txd->opts1 = (txd->opts1 & ~(TD_TYPE_MASK << TD_TYPE_OFFSET)) | (PKTHDR_TCP << TD_TYPE_OFFSET); // type=5
 
 			if (proto_type == PKTHDR_IPV6) { //IPv6
-					txd->opts3 |= TD_L4CS_MASK;
+					txd->opts3 |= (cs_bits & TD_L4CS_MASK);
 					txd->opts4 |= ((L3_ip6_hdr_len<<TD_IPV6_HDRLEN_OFFSET));
 					txd->opts5 |= ((skb_gso_size<<TD_MSS_OFFSET)| (L4_hdr_len));
 			} else { //IPv4
-					txd->opts3 |= (TD_L3CS_MASK | TD_L4CS_MASK);
+					txd->opts3 |= cs_bits;
 					txd->opts3 |= (TD_IPV4_MASK	| TD_IPV4_1ST_MASK);
 					txd->opts5 |= ((skb_gso_size<<TD_MSS_OFFSET)| (L3_hdr_len<<TD_IPV4_HLEN_OFFSET) | (L4_hdr_len));
 			}
 		} else { //fragment only
-				txd->opts3 |= (TD_L3CS_MASK	| TD_L4CS_MASK);
+				txd->opts3 |= cs_bits;
 		}
 
 		if (!(nicTx->flags & PKTHDR_HWLOOKUP)){
@@ -1570,17 +1599,17 @@ int32 _New_swNic_send_tso_sg(struct	sk_buff	*skb, void * output, uint32	len,rtl_
 			txd->opts1 = (txd->opts1 & ~(TD_TYPE_MASK << TD_TYPE_OFFSET)) | (PKTHDR_TCP << TD_TYPE_OFFSET); // type=5
 
 			if (proto_type == PKTHDR_IPV6) { //IPv6
-					txd->opts3 |= (TD_L4CS_MASK | TD_IPV6_MASK);
+					txd->opts3 |= ((frag_cs_bits & TD_L4CS_MASK) | TD_IPV6_MASK);
 					txd->opts4 |= ((L3_ip6_hdr_len<<TD_IPV6_HDRLEN_OFFSET));
 					txd->opts5 |= ((skb_gso_size<<TD_MSS_OFFSET)| (L4_hdr_len));
 			} else { //IPv4
-					txd->opts3 |= (TD_L3CS_MASK	| TD_L4CS_MASK);
+					txd->opts3 |= frag_cs_bits;
 					txd->opts3 |= (TD_IPV4_MASK	| TD_IPV4_1ST_MASK);
 					txd->opts5 |= ((skb_gso_size<<TD_MSS_OFFSET)| (L3_hdr_len<<TD_IPV4_HLEN_OFFSET) |	(L4_hdr_len));
 			}
 			
 		} else { //fragment only
-				txd->opts3 |= (TD_L3CS_MASK	| TD_L4CS_MASK);
+				txd->opts3 |= frag_cs_bits;
 		}
 
 		if (!(nicTx->flags & PKTHDR_HWLOOKUP)){
@@ -1699,7 +1728,29 @@ int32 New_swNic_txDone(int idx)
 	#ifdef USE_SWITCH_TX_CDP
 	hw_cdp_data	= REG32(TxCDP_reg[idx]);
 	hw_cdp_idx = (hw_cdp_data -	New_txDescRing_base[idx]) /	sizeof(struct dma_tx_desc);
-	
+
+	/* The vendor releases an skb as soon as the switch core's current descriptor pointer
+	   has moved past its last descriptor, which says the descriptor was fetched, not
+	   that the buffer behind it has been read. With RTL_TXFIX_TXDONE_MARGIN the release
+	   is held a few descriptors further back, so that a switch core still reading a
+	   fragment cannot be racing the page allocator. The margin is only applied while
+	   there is more than that in flight, otherwise the loop below would walk the whole
+	   ring and free descriptors that are still queued. */
+	if (rtl_txfix_flags & RTL_TXFIX_TXDONE_MARGIN) {
+		int ring = New_txDescRingCnt[idx];
+		int margin = RTL_TXFIX_MARGIN;
+		int pending = (hw_cdp_idx + ring - New_txPktDoneDescIndex[idx]) % ring;
+
+		if (margin > ring / 8)
+			margin = ring / 8;
+		if (pending > margin) {
+			hw_cdp_idx = (New_txPktDoneDescIndex[idx] + (pending - margin)) % ring;
+			rtl_txfix_stat[RTL_TXFIX_STAT_HELD]++;
+		} else {
+			hw_cdp_idx = New_txPktDoneDescIndex[idx];
+		}
+	}
+
 	while (New_txPktDoneDescIndex[idx] != hw_cdp_idx) {
 
 		skb	= (struct sk_buff *)tx_skb[idx][New_txPktDoneDescIndex[idx]].skb;
