@@ -12,7 +12,6 @@
     "Expand the matching signed package feed with CIFS, NFSv3/NFSv4, FUSE, GRE, IPIP, L2TP/L2TPv3, PPTP, MPPE, and their required protocol helpers.",
     "Preserve or remove modem-reported current-only LTE bands safely without fixed operator band lists.",
     "Stop the switch core corrupting a few bytes of anything this router sends: frames the driver handed it as more than one buffer were damaged on the wire, invisibly to TCP, and are now assembled into one.",
-    "Add an experimental Xray VPN page under Services: paste a vless/vmess/trojan/ss link or type the fields, connect with a report of what failed and why, and send the traffic of clients that use this router as their gateway through the tunnel.",
-    "LuCI UI fixes"
+    "Add the experimental Xray VPN page and apply LuCI UI fixes."
   ]
 }
