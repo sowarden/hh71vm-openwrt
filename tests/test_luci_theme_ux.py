@@ -27,7 +27,10 @@ class NotificationUxContractTests(unittest.TestCase):
         self.assertIn("#hh-notifications > .alert-message", STYLE)
 
     def test_pending_buttons_keep_their_label_and_show_busy_feedback(self):
-        self.assertIn(".cbi-dropdown.spinning > ul > li { color: inherit; }", STYLE)
+        self.assertIn(".cbi-dropdown.spinning { gap: 0; }", STYLE)
+        self.assertIn("margin-left: 10px; margin-right: 6px", STYLE)
+        self.assertIn("color: inherit; padding-left: 0", STYLE)
+        self.assertIn("gap: 6px", STYLE)
         self.assertIn(".btn.spinning, .cbi-button.spinning, button.spinning", STYLE)
         self.assertIn("cursor: wait", STYLE)
         self.assertIn("pointer-events: none", STYLE)
