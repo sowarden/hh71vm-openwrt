@@ -188,7 +188,9 @@ class PageUxContractTests(unittest.TestCase):
     def test_form_dialogs_are_wide_scrollable_and_easy_to_close(self):
         for contract in (
                 "max-width:1040px",
+                "height:calc(100vh - 96px)",
                 "grid-template-rows:auto minmax(0,1fr) auto",
+                "height:100%;max-height:100%;min-height:0",
                 "overflow-y:auto",
                 "xray-modal-close",
                 "ev.target === overlay",

@@ -425,6 +425,65 @@
 	   leaves a success or failure several screens away from the action that caused
 	   it. Move only LuCI's dynamic, inline-flex notifications into a fixed tray;
 	   ordinary alert cards in page content keep their document position. */
+	function armNotification(item) {
+		if (item.getAttribute('data-hh-timer')) return;
+		item.setAttribute('data-hh-timer', '1');
+
+		var remaining = 10000, started = 0, timer = null;
+		var hovered = false, focused = false, touched = false;
+
+		function stop() {
+			if (!timer) return;
+			window.clearTimeout(timer);
+			remaining -= Date.now() - started;
+			timer = null;
+		}
+		function cleanup() {
+			stop();
+			document.removeEventListener('pointerdown', resumeOutside, true);
+			document.removeEventListener('focusin', resumeOutside, true);
+		}
+		function dismiss() {
+			cleanup();
+			var button = item.querySelector('.btn');
+			if (button) button.click();
+			else if (item.parentNode) item.parentNode.removeChild(item);
+		}
+		function start() {
+			if (timer || hovered || focused || touched || remaining <= 0 ||
+			    !document.documentElement.contains(item)) return;
+			started = Date.now();
+			timer = window.setTimeout(dismiss, remaining);
+		}
+		function resumeOutside(ev) {
+			if (item.contains(ev.target)) return;
+			touched = false;
+			hovered = false;
+			document.removeEventListener('pointerdown', resumeOutside, true);
+			document.removeEventListener('focusin', resumeOutside, true);
+			start();
+		}
+
+		item.addEventListener('pointerenter', function () { hovered = true; stop(); });
+		item.addEventListener('pointerleave', function () { hovered = false; start(); });
+		item.addEventListener('focusin', function () { focused = true; stop(); });
+		item.addEventListener('focusout', function () {
+			focused = false;
+			window.setTimeout(start, 0);
+		});
+		item.addEventListener('touchstart', function () {
+			touched = true;
+			stop();
+			document.addEventListener('pointerdown', resumeOutside, true);
+			document.addEventListener('focusin', resumeOutside, true);
+		}, { passive: true });
+		item.addEventListener('click', function (ev) {
+			if (ev.target.closest && ev.target.closest('.btn'))
+				window.setTimeout(cleanup, 0);
+		});
+		start();
+	}
+
 	function collectNotifications() {
 		var list = document.querySelectorAll('#maincontent > .alert-message');
 		var tray = null;
@@ -439,6 +498,7 @@
 				}
 			}
 			tray.appendChild(list[i]);
+			armNotification(list[i]);
 		}
 	}
 

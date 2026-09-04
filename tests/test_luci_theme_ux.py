@@ -11,6 +11,11 @@ STYLE = (THEME / "htdocs/luci-static/hh71vm/cascade.css").read_text(encoding="ut
 class NotificationUxContractTests(unittest.TestCase):
     def test_dynamic_notifications_are_moved_to_a_viewport_tray(self):
         self.assertIn("function collectNotifications()", SCRIPT)
+        self.assertIn("function armNotification(item)", SCRIPT)
+        self.assertIn("remaining = 10000", SCRIPT)
+        self.assertIn("pointerenter", SCRIPT)
+        self.assertIn("touchstart", SCRIPT)
+        self.assertIn("resumeOutside", SCRIPT)
         self.assertIn("#maincontent > .alert-message", SCRIPT)
         self.assertIn("list[i].style.display !== 'flex'", SCRIPT)
         self.assertIn("hh-notifications", SCRIPT)
@@ -20,6 +25,12 @@ class NotificationUxContractTests(unittest.TestCase):
         self.assertIn("position: fixed", STYLE)
         self.assertIn("width: min(430px, calc(100vw - 40px))", STYLE)
         self.assertIn("#hh-notifications > .alert-message", STYLE)
+
+    def test_pending_buttons_keep_their_label_and_show_busy_feedback(self):
+        self.assertIn(".cbi-dropdown.spinning > ul > li { color: inherit; }", STYLE)
+        self.assertIn(".btn.spinning, .cbi-button.spinning, button.spinning", STYLE)
+        self.assertIn("cursor: wait", STYLE)
+        self.assertIn("pointer-events: none", STYLE)
 
 
 if __name__ == "__main__":

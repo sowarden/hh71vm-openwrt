@@ -1069,7 +1069,7 @@ label { font-size: 13.5px; }
 .cbi-dropdown.btn[open] > ul.dropdown > li { color: var(--text); }
 .cbi-dropdown.cbi-button[open] > ul.dropdown > li:hover,
 .cbi-dropdown.btn[open] > ul.dropdown > li:hover { color: var(--accent-ink); }
-.cbi-dropdown.spinning > ul > li { color: transparent; }
+.cbi-dropdown.spinning > ul > li { color: inherit; }
 
 /* ================================================================ buttons */
 
@@ -1566,6 +1566,12 @@ a.label:hover { text-decoration: none; filter: brightness(.97); }
 /* ------------------------------------------------------ spinners and fades */
 
 .spinning { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); }
+.btn.spinning, .cbi-button.spinning, button.spinning,
+.cbi-dropdown.spinning {
+	cursor: wait;
+	opacity: .72;
+	pointer-events: none;
+}
 .spinning::before {
 	content: "";
 	width: 14px; height: 14px;
