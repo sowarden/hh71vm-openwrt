@@ -1,0 +1,389 @@
+#!/usr/bin/lua
+--[[
+hh71vm-xrayctl -- the operations the Xray page needs, with a machine-readable answer.
+
+  status                 everything the page shows, as JSON
+  generate               write /etc/xray/config.json from the active profile
+  test                   validate the written configuration with `xray run -test`
+  connect [--job]        the whole sequence, reporting which step failed and why
+  disconnect             stop the service and take the rules down
+  reconnect              regenerate (the server address is resolved again) and restart
+  probe                  one connectivity check through the local HTTP inbound, as JSON
+  job                    print the state of a running connect job
+  profiles               dump the profile store
+
+`connect --job` forks and returns at once, writing its progress to /var/run/xray.job.json.
+Anything else would hit the 30-second ceiling that LuCI's /admin/ubus proxy imposes on
+every RPC: a start plus a probe is routinely slower than that on a bad connection, which
+is exactly the case where the answer matters most.
+]]
+
+package.path = "/usr/lib/lua/?.lua;" .. package.path
+
+local json = require "luci.jsonc"
+local nixio = require "nixio"
+local X = require "hh71vm.xray"
+
+local JOBFILE = "/var/run/xray.job.json"
+
+local function out(t)
+	io.write(json.stringify(t), "\n")
+end
+
+local function sleep(sec)
+	nixio.nanosleep(math.floor(sec), math.floor((sec % 1) * 1e9))
+end
+
+local function sh(cmd)
+	return X.popen(cmd)
+end
+
+-- ----------------------------------------------------------------------- status
+
+local function service_status()
+	local s = X.settings()
+	local st = X.state()
+	local store = X.load_profiles()
+	local prof = X.active_profile(store)
+	local pid = X.pid()
+	local bin = X.binary()
+
+	local r = {
+		mode = s.mode,
+		enabled = X.bool(s.enabled),
+		autostart = X.bool(s.autostart),
+		watchdog = X.bool(s.watchdog),
+		running = (pid ~= nil),
+		pid = pid,
+		binary = bin,
+		version = bin and X.trim(sh(X.shq(bin) .. " version | head -1")) or nil,
+		share = X.share_mounted(),
+		assets = nixio.fs.access(s.assets) and true or false,
+		config = s.config,
+		config_exists = nixio.fs.access(s.config) and true or false,
+		tproxy = X.tproxy_available(),
+		profile = prof and prof.id or nil,
+		profile_name = prof and prof.name or nil,
+		profile_count = #(store.profiles or {}),
+		generated = st.generated,
+		resolved = st.resolved,
+		ports = {
+			socks = tonumber(s.socks_port), http = tonumber(s.http_port),
+			redirect = tonumber(s.redirect_port), tproxy = tonumber(s.tproxy_port),
+			dns = tonumber(s.dns_port)
+		},
+		listening = {
+			socks = X.listening(tonumber(s.socks_port) or 0),
+			http = X.listening(tonumber(s.http_port) or 0),
+			redirect = X.listening(tonumber(s.redirect_port) or 0)
+		},
+		clock = os.date("!%Y-%m-%d %H:%M:%S UTC"),
+		uptime = nil
+	}
+
+	if pid then
+		local stat = X.readfile("/proc/uptime") or ""
+		local up = tonumber(stat:match("^([%d%.]+)")) or 0
+		local ps = X.readfile("/proc/" .. pid .. "/stat") or ""
+		local starttime = tonumber(ps:match("^%S+ %b() %S+" .. string.rep(" %S+", 18) .. " (%S+)"))
+		if starttime then r.uptime = math.floor(up - starttime / 100) end
+		local statm = X.readfile("/proc/" .. pid .. "/statm") or ""
+		local rss = tonumber(statm:match("^%S+ (%S+)"))
+		if rss then r.rss = rss * 4096 end
+	end
+
+	-- What the firewall really holds, not what we think we installed.
+	local fw = sh("/usr/sbin/hh71vm-xray-fw status 2>/dev/null")
+	r.rules = fw:find("XRAY_PRE") and true or false
+	r.firewall = fw
+
+	-- Which interfaces are captured *right now*.  The setting is normally empty,
+	-- meaning "work it out", so the page cannot show the setting and call it an
+	-- answer -- it has to show what the answer came out as.
+	local caps = sh("/usr/sbin/hh71vm-xray-fw ifaces 2>/dev/null")
+	r.capture = {
+		mode     = X.trim(caps:match("mode=([^\n]*)") or ""),
+		ifaces   = X.trim(caps:match("ifaces=([^\n]*)") or ""),
+		uplink   = X.trim(caps:match("uplink=([^\n]*)") or ""),
+		wireless = X.trim(caps:match("wireless=([^\n]*)") or "")
+	}
+	return r
+end
+
+-- ------------------------------------------------------------------------- job
+
+local function job_write(t)
+	X.writefile(JOBFILE, json.stringify(t) .. "\n")
+end
+
+local function job_read()
+	local raw = X.readfile(JOBFILE)
+	if not raw then return { state = "idle" } end
+	local t = json.parse(raw)
+	return (type(t) == "table") and t or { state = "idle" }
+end
+
+-- ------------------------------------------------------------------- the steps
+
+local function step(list, name, ok, text, err)
+	list[#list + 1] = { step = name, ok = ok and true or false,
+	                    text = text, error = err }
+	return list[#list]
+end
+
+--- Try to learn the time before starting, without the tunnel.  A router whose clock is
+--- a day out cannot use VMess at all and the failure blames the user id instead, which
+--- is the single most misleading error in this whole stack.
+local function pre_clock(s, steps)
+	if not X.bool(s.set_clock) then return end
+	local year = tonumber(os.date("!%Y")) or 1970
+	local resp = X.http_direct(s.probe_url, 6)
+	if not resp then
+		if year < 2026 then
+			step(steps, "clock", false, nil,
+			     "The clock reads " .. os.date("!%Y-%m-%d %H:%M:%S UTC") ..
+			     " and there is no way to check it without a working connection. " ..
+			     "VMess will refuse to connect until it is set by hand.")
+		end
+		return
+	end
+	local date = resp:match("[Dd]ate: ([^\r\n]+)")
+	local changed, drift = X.sync_clock(date)
+	if changed then
+		step(steps, "clock", true, ("The clock was %d s out and has been set from %s.")
+		     :format(drift, s.probe_url))
+	end
+end
+
+local function wait_for(fn, seconds)
+	local deadline = X.now_ms() + seconds * 1000
+	while X.now_ms() < deadline do
+		if fn() then return true end
+		sleep(0.4)
+	end
+	return false
+end
+
+local function do_connect(progress)
+	local steps = {}
+	local function report(stage)
+		if progress then progress(stage, steps) end
+	end
+
+	local s = X.settings()
+	report("checks")
+
+	-- 1. the binary and the share it lives on
+	local bin = X.binary()
+	if not bin then
+		step(steps, "binary", false, nil,
+		     X.share_mounted()
+		     and "The Xray binary is not installed. Install it with `hh71vm-extern-pkg install xray-core`."
+		     or  "The /mnt/extern share is not mounted, and the Xray binary lives on it. Run `hh71vm-extern-mount status` to see why.")
+		return { ok = false, stage = "binary", steps = steps,
+		         error = steps[#steps].error }
+	end
+	step(steps, "binary", true, bin)
+
+	-- 2. a profile that can be turned into a configuration
+	report("config")
+	local meta, err = X.generate({ tproxy = X.tproxy_available() })
+	if not meta then
+		local e = X.explain(err)
+		return { ok = false, stage = "config", steps = steps,
+		         error = err, explain = e }
+	end
+	step(steps, "config", true,
+	     meta.resolved and ("Server resolved to " .. meta.resolved) or "Configuration written")
+	for _, w in ipairs(meta.warnings or {}) do
+		step(steps, "warning", true, w)
+	end
+
+	-- 3. Xray's own opinion of the configuration, before anything is started
+	report("test")
+	local test = sh(X.shq(bin) .. " run -test -c " .. X.shq(s.config) .. " 2>&1")
+	if not test:find("Configuration OK") then
+		local e = X.explain(test)
+		step(steps, "test", false, nil, X.trim(test))
+		return { ok = false, stage = "test", steps = steps,
+		         error = X.trim(test), explain = e }
+	end
+	step(steps, "test", true, "Configuration OK")
+
+	-- 4. the clock, while traffic still goes out unproxied
+	pre_clock(s, steps)
+
+	-- 5. start
+	report("start")
+	X.set_settings({ enabled = "1" })
+	sh("/etc/init.d/xray restart")
+	local up = wait_for(function () return X.pid() ~= nil end, 20)
+	if not up then
+		local tail = X.log_tail(30)
+		local e = X.explain(tail)
+		step(steps, "start", false, nil, "The service did not come up.")
+		return { ok = false, stage = "start", steps = steps,
+		         error = "The service did not come up.", log = tail, explain = e }
+	end
+	local ready = wait_for(function ()
+		return X.listening(tonumber(s.http_port) or 1081)
+	end, 20)
+	if not ready then
+		local tail = X.log_tail(30)
+		local e = X.explain(tail)
+		step(steps, "start", false, nil,
+		     "Xray started but never opened its local ports.")
+		return { ok = false, stage = "start", steps = steps,
+		         error = "Xray started but never opened its local ports.",
+		         log = tail, explain = e }
+	end
+	step(steps, "start", true, "Running as pid " .. tostring(X.pid()))
+
+	-- 6. the firewall, so that "connected" means what the owner means by it
+	report("firewall")
+	if s.mode == "vpn" then
+		local fw = sh("/usr/sbin/hh71vm-xray-fw up")
+		if fw:find("installed") then
+			step(steps, "firewall", true, X.trim(fw))
+		else
+			step(steps, "firewall", false, nil,
+			     "The redirection rules could not be installed: " .. X.trim(fw))
+			return { ok = false, stage = "firewall", steps = steps,
+			         error = X.trim(fw) }
+		end
+	else
+		step(steps, "firewall", true,
+		     "Proxy mode: no rules. Clients point at this router's SOCKS or HTTP port.")
+	end
+
+	-- 7. does it actually carry traffic
+	report("probe")
+	local pr
+	for i = 1, 3 do
+		pr = X.probe(s)
+		if pr.ok then break end
+		sleep(1.5)
+	end
+	if not pr.ok then
+		local tail = X.log_tail(60)
+		local e = X.explain(tail ~= "" and tail or (pr.error or ""))
+		step(steps, "probe", false, nil, pr.error)
+		return { ok = false, stage = "probe", steps = steps,
+		         error = pr.error, log = X.significant_log(tail, 12), explain = e,
+		         hint = "The tunnel is up as a process but nothing came back through it." }
+	end
+	step(steps, "probe", true, ("%s answered HTTP %d in %d ms")
+	     :format(s.probe_url, pr.status, pr.ms))
+
+	-- 8. the clock again, now that there is a tunnel to ask through
+	if X.bool(s.set_clock) and pr.date then
+		local changed, drift = X.sync_clock(pr.date)
+		if changed then
+			step(steps, "clock", true,
+			     ("The clock was %d s out and has been set through the tunnel."):format(drift))
+		end
+	end
+
+	return { ok = true, stage = "done", steps = steps, ms = pr.ms,
+	         mode = s.mode, ports = meta.ports }
+end
+
+--- Stop a connect job that is still in flight.
+--- Activating a profile while connected starts one, and a disconnect issued a second
+--- later used to be overrun by it: the job finished, set enabled=1 and put the rules
+--- back, leaving the page saying disconnected and the router still tunnelling.
+local function stop_running_job()
+	local j = job_read()
+	if j.state ~= "running" or not j.pid then return end
+	if j.pid == nixio.getpid() then return end
+	pcall(nixio.kill, j.pid, 15)
+	job_write({ state = "done", ok = false, stage = "cancelled",
+	            error = "Cancelled by a disconnect.", steps = j.steps or {} })
+end
+
+local function do_disconnect()
+	local steps = {}
+	stop_running_job()
+	X.set_settings({ enabled = "0" })
+	sh("/usr/sbin/hh71vm-xray-fw down")
+	step(steps, "firewall", true, "Rules removed")
+	sh("/etc/init.d/xray stop")
+	local stopped = wait_for(function () return X.pid() == nil end, 10)
+	if stopped then
+		step(steps, "stop", true, "Service stopped")
+	else
+		step(steps, "stop", false, nil,
+		     "The service did not stop; procd may still be respawning it.")
+	end
+	return { ok = stopped, steps = steps }
+end
+
+-- ------------------------------------------------------------------------ main
+
+local cmd = arg[1] or "status"
+
+if cmd == "status" then
+	out(service_status())
+
+elseif cmd == "generate" then
+	local meta, err = X.generate({ tproxy = X.tproxy_available() })
+	if not meta then out({ ok = false, error = err }); os.exit(1) end
+	out({ ok = true, resolved = meta.resolved, warnings = meta.warnings, mode = meta.mode })
+
+elseif cmd == "test" then
+	local s = X.settings()
+	local bin = X.binary()
+	if not bin then out({ ok = false, error = "the Xray binary was not found" }); os.exit(1) end
+	local o = sh(X.shq(bin) .. " run -test -c " .. X.shq(s.config) .. " 2>&1")
+	local ok = o:find("Configuration OK") and true or false
+	out({ ok = ok, output = X.trim(o), explain = (not ok) and X.explain(o) or nil })
+
+elseif cmd == "probe" then
+	out(X.probe())
+
+elseif cmd == "connect" then
+	if arg[2] == "--job" then
+		-- fork: the caller is an RPC and must not wait
+		local pid = nixio.fork()
+		if pid ~= 0 then
+			out({ state = "running", started = os.time() })
+			os.exit(0)
+		end
+		nixio.setsid()
+		io.stdout:close()
+		local mypid = nixio.getpid()
+		job_write({ state = "running", started = os.time(), stage = "checks",
+		            pid = mypid, steps = {} })
+		local res = do_connect(function (stage, steps)
+			job_write({ state = "running", started = os.time(), stage = stage,
+			            pid = mypid, steps = steps })
+		end)
+		res.state = "done"
+		res.finished = os.time()
+		job_write(res)
+		os.exit(0)
+	else
+		local res = do_connect()
+		out(res)
+		os.exit(res.ok and 0 or 1)
+	end
+
+elseif cmd == "disconnect" then
+	out(do_disconnect())
+
+elseif cmd == "reconnect" then
+	local res = do_connect()
+	out(res)
+	os.exit(res.ok and 0 or 1)
+
+elseif cmd == "job" then
+	out(job_read())
+
+elseif cmd == "profiles" then
+	out(X.load_profiles())
+
+else
+	io.stderr:write("usage: hh71vm-xrayctl {status|generate|test|connect [--job]|" ..
+	                "disconnect|reconnect|probe|job|profiles}\n")
+	os.exit(2)
+end

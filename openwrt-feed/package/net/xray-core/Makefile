@@ -90,21 +90,26 @@ define Package/xray
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
-  TITLE:=Xray service, configuration and init script
+  TITLE:=Xray service, profiles, transparent proxying and control tools
   URL:=https://github.com/XTLS/Xray-core
-  DEPENDS:=@TARGET_rtkmipsel
+  DEPENDS:=@TARGET_rtkmipsel +lua +luci-lib-jsonc +luci-lib-nixio \
+	+iptables +ip6tables +iptables-mod-tproxy +kmod-ipt-tproxy
 endef
 
 define Package/xray/description
-  Init script, UCI settings and a launcher that finds the Xray binary wherever it was
-  installed - normally on the /mnt/extern share, which mounts after this service would
-  otherwise have started. Deliberately does NOT depend on xray-core: that dependency
+  Init script, UCI settings, the profile store and a launcher that finds the Xray
+  binary wherever it was installed - normally on the /mnt/extern share, which mounts
+  after this service would otherwise have started. Also the two halves that make
+  "connect" mean what it means on a phone: the netfilter rules that hand the LAN's
+  traffic and the router's own to Xray, and the probe that tells a running process
+  from a working tunnel. Deliberately does NOT depend on xray-core: that dependency
   would pull 34 MB into the overlay.
 endef
 
 define Package/xray/conffiles
 /etc/config/xray
 /etc/xray/config.json
+/etc/xray/profiles.json
 endef
 
 # Plain `tar`, not `$(TAR)`: OpenWrt 19.07's rules.mk defines no such variable, so
@@ -159,11 +164,53 @@ define Package/xray/install
 	$(INSTALL_CONF) ./files/xray.config $(1)/etc/config/xray
 	$(INSTALL_DIR) $(1)/etc/xray
 	$(INSTALL_CONF) ./files/config.json $(1)/etc/xray/config.json
+	$(INSTALL_CONF) ./files/profiles.json $(1)/etc/xray/profiles.json
 	$(INSTALL_DATA) ./files/config.example.json $(1)/etc/xray/config.example.json
+	$(INSTALL_BIN) ./files/firewall.include $(1)/etc/xray/firewall.include
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/xray.init $(1)/etc/init.d/xray
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/xray.defaults $(1)/etc/uci-defaults/50-xray
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
+	$(INSTALL_BIN) ./files/xray.hotplug $(1)/etc/hotplug.d/iface/95-xray
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/hh71vm-xray $(1)/usr/sbin/hh71vm-xray
+	$(INSTALL_BIN) ./files/hh71vm-xrayctl $(1)/usr/sbin/hh71vm-xrayctl
+	$(INSTALL_BIN) ./files/hh71vm-xray-fw $(1)/usr/sbin/hh71vm-xray-fw
+	$(INSTALL_BIN) ./files/hh71vm-xray-watchdog $(1)/usr/sbin/hh71vm-xray-watchdog
+	$(INSTALL_DIR) $(1)/usr/lib/lua/hh71vm
+	$(INSTALL_DATA) ./files/xray-lib.lua $(1)/usr/lib/lua/hh71vm/xray.lua
+	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
+	$(INSTALL_BIN) ./files/rpcd-hh71vm-xray $(1)/usr/libexec/rpcd/hh71vm-xray
+	$(INSTALL_DIR) $(1)/www/cgi-bin
+	$(INSTALL_BIN) ./files/xray-api.cgi $(1)/www/cgi-bin/xray-api
+	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
+	$(INSTALL_DATA) ./files/keep $(1)/lib/upgrade/keep.d/xray
+endef
+
+# The profile store and the settings have to survive a sysupgrade: the overlay is
+# erased, this package goes with it, and the servers the owner typed in must not.
+# conffiles cover the ordinary opkg case; keep.d covers the sysupgrade one.
+define Package/xray/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+}
+exit 0
+endef
+
+define Package/xray/prerm
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	[ "$${PKG_UPGRADE}" = 1 ] && exit 0
+	/usr/sbin/hh71vm-xray-fw down >/dev/null 2>&1 || true
+	/etc/init.d/xray stop >/dev/null 2>&1 || true
+	/etc/init.d/xray disable >/dev/null 2>&1 || true
+	uci -q delete firewall.xray
+	uci -q commit firewall
+	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+}
+exit 0
 endef
 
 $(eval $(call BuildPackage,xray-core))

@@ -1,0 +1,6 @@
+#!/bin/sh
+# fw3 deletes every chain it does not own when it reloads, so the redirection rules
+# have to be put back afterwards.  `restore` is a no-op unless the connection is
+# supposed to be up and the mode is vpn.
+/usr/sbin/hh71vm-xray-fw restore
+exit 0

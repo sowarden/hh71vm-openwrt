@@ -1,0 +1,105 @@
+#!/usr/bin/lua
+--[[
+The "reconnect automatically if the connection drops" half of the page.
+
+procd already restarts Xray if the process dies.  This covers the case procd cannot
+see: the process is alive, the port is open, and nothing gets through -- the server
+went away, the address moved, the modem reconnected with a new session, or the tunnel
+is simply wedged.
+
+It probes through the router's own HTTP inbound on a timer.  After `watchdog_fails`
+failures in a row it regenerates the configuration (which resolves the server name
+again -- a moved address is the common case), re-applies the firewall rules and kills
+the Xray process.  It does not call `/etc/init.d/xray restart`: this runs as a second
+instance of that same service, and restarting the service would kill this process in
+the middle of doing it.  procd respawns the one that was killed.
+]]
+
+package.path = "/usr/lib/lua/?.lua;" .. package.path
+
+local nixio = require "nixio"
+local X = require "hh71vm.xray"
+
+local function log(msg)
+	os.execute("/usr/bin/logger -t xray-watchdog " .. X.shq(msg))
+end
+
+local function sleep(sec)
+	nixio.nanosleep(math.floor(sec), 0)
+end
+
+local fails = 0
+local recoveries = 0
+local last_pid = nil
+local down = false
+
+-- Xray needs about ten seconds to come up on this CPU, and procd starts this instance
+-- at the same moment as that one.  Without a settling period the first probe lands
+-- before the tunnel exists, the watchdog decides the connection is broken and kills a
+-- process that was still starting -- which is exactly what it did the first time it
+-- ran.  One period is waited after every start, including a restart it caused itself.
+local function settle(period)
+	sleep(math.max(period, 30))
+end
+
+log("started")
+
+while true do
+	local s = X.settings()
+	local period = X.isnum(s.watchdog_period, 10, 3600) or 60
+	local limit  = X.isnum(s.watchdog_fails, 1, 20) or 2
+
+	if not X.bool(s.watchdog) or not X.bool(s.enabled) then
+		fails = 0
+		sleep(period)
+	else
+		local pid = X.pid()
+		if not pid then
+			-- procd's own business; wait for it rather than fighting over the pid
+			last_pid = nil
+			sleep(math.min(period, 15))
+		elseif pid ~= last_pid then
+			last_pid = pid
+			fails = 0
+			settle(period)
+		else
+			local pr = X.probe(s)
+			if pr.ok then
+				-- `fails` is reset by a reconnect, so it cannot be what decides
+				-- whether to say the connection came back: without a separate flag
+				-- the recovery is silent and the log ends on the last failure.
+				if down then
+					log("connection restored after " .. recoveries .. " reconnect(s)")
+					down = false
+				end
+				fails = 0
+				if X.bool(s.set_clock) and pr.date then X.sync_clock(pr.date) end
+			else
+				fails = fails + 1
+				down = true
+				log(("probe failed (%d/%d): %s"):format(fails, limit,
+				    tostring(pr.error or "no answer")))
+				if fails >= limit then
+					recoveries = recoveries + 1
+					log("reconnecting")
+					local meta, err = X.generate({ tproxy = X.tproxy_available() })
+					if not meta then
+						log("cannot regenerate the configuration: " .. tostring(err))
+					else
+						if s.mode == "vpn" then
+							os.execute("/usr/sbin/hh71vm-xray-fw up >/dev/null 2>&1")
+						end
+						nixio.kill(pid, 15)
+					end
+					fails = 0
+					X.writefile("/var/run/xray.watchdog.json",
+						require("luci.jsonc").stringify({
+							last_reconnect = os.time(), reconnects = recoveries
+						}) .. "\n")
+					sleep(15)
+				end
+			end
+			sleep(period)
+		end
+	end
+end
