@@ -362,6 +362,16 @@ class BackendContractTests(unittest.TestCase):
         rules = "\n".join(l for l in FW.splitlines() if not l.lstrip().startswith("#"))
         self.assertNotIn("$(resolve_ifaces", rules)
 
+    def test_teardown_does_not_depend_on_current_interface_settings(self):
+        # A mode change can replace the automatically resolved interface list with an
+        # empty value before teardown. Find installed jumps by target so old VPN rules
+        # cannot survive after the user switches to Proxy mode.
+        rules = "\n".join(l for l in FW.splitlines() if not l.lstrip().startswith("#"))
+        block = rules.split("unlink_all() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("delete_jumps nat PREROUTING $PRE_NAT", block)
+        self.assertIn("delete_jumps filter FORWARD $FWD_FILT", block)
+        self.assertNotIn("for ifn in $LAN_IFACES", block)
+
     def test_udp_capture_is_off_by_default(self):
         # Measured: Xray captures the packet, tunnels it, and never writes the answer
         # back. Traffic that disappears is worse than traffic that goes out unproxied.

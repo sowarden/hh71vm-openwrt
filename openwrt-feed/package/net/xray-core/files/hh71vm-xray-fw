@@ -205,21 +205,28 @@ new_chain() {     # new_chain <table> <chain> [ip6]
 	$cmd -t "$t" -F "$c" 2>/dev/null
 }
 
-unlink_all() {
-	# Remove every jump into our chains first, then the chains themselves.  Repeat
-	# the delete: an interrupted `up` can leave the same jump twice.
-	local i
-	for i in 1 2 3 4; do
-		for ifn in $LAN_IFACES; do
-			$IPT -t nat -D PREROUTING -i "$ifn" -j $PRE_NAT 2>/dev/null
-			$IPT -t mangle -D PREROUTING -i "$ifn" -j $TP_MANGLE 2>/dev/null
-			$IPT -D FORWARD -i "$ifn" -j $FWD_FILT 2>/dev/null
-		done
-		$IPT -t nat -D OUTPUT -j $OUT_NAT 2>/dev/null
-		$IPT -D OUTPUT -j $OUTF_FILT 2>/dev/null
-		$IP6T -D FORWARD -j $FWD_FILT 2>/dev/null
-		$IP6T -D OUTPUT -j $OUTF_FILT 2>/dev/null
+delete_jumps() {  # delete_jumps <table> <chain> <target> [ip6]
+	local t="$1" c="$2" target="$3" cmd="$IPT" number
+	[ "$4" = "ip6" ] && cmd="$IP6T"
+	while :; do
+		number=$($cmd -t "$t" -L "$c" --line-numbers -n 2>/dev/null |
+			awk -v target="$target" '$2 == target { print $1; exit }')
+		[ -n "$number" ] || break
+		$cmd -t "$t" -D "$c" "$number" 2>/dev/null || break
 	done
+}
+
+unlink_all() {
+	# Remove every jump into our chains first, then the chains themselves. Find
+	# jumps by their target rather than reconstructing them from the current
+	# settings: automatic interface selection can change between `up` and `down`.
+	delete_jumps nat PREROUTING $PRE_NAT
+	delete_jumps mangle PREROUTING $TP_MANGLE
+	delete_jumps filter FORWARD $FWD_FILT
+	delete_jumps nat OUTPUT $OUT_NAT
+	delete_jumps filter OUTPUT $OUTF_FILT
+	delete_jumps filter FORWARD $FWD_FILT ip6
+	delete_jumps filter OUTPUT $OUTF_FILT ip6
 	flush_chain nat $PRE_NAT
 	flush_chain nat $OUT_NAT
 	flush_chain mangle $TP_MANGLE
