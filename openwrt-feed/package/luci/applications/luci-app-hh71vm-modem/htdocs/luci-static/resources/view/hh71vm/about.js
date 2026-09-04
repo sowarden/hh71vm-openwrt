@@ -3,15 +3,9 @@
 'require rpc';
 'require hh71vm.modem as m';
 
-/* About / legal.  Linked from the footer of every page.
- *
- * The written offer below is not decoration: this firmware ships binaries built from
- * GPL-2.0 sources, and the licence requires that the corresponding source be available
- * to whoever received the binary.
- */
+/* About / legal.  Linked from the footer of every page. */
 
 var SOURCE_URL = 'https://github.com/sowarden/hh71vm-openwrt';
-var CONTACT = 'sowarden@proton.me';
 
 var COMPONENTS = [
 	['Linux kernel', 'GPL-2.0-only', 'https://kernel.org'],
@@ -99,10 +93,6 @@ code for those parts, including the scripts used to configure and build them.'))
 to the upstream projects, are published at %s.')
 					.format('<a href="' + SOURCE_URL + '" target="_blank" rel="noopener">' +
 					        SOURCE_URL + '</a>')),
-				E('p', {}, _('Written offer: for three years from the date you received \
-this firmware, the author will send you the complete corresponding source code on a \
-physical medium, for no more than the cost of performing the distribution. Write to %s.')
-					.format('<a href="mailto:' + CONTACT + '">' + CONTACT + '</a>')),
 				E('p', {}, _('The upstream projects hold the copyright in their own code; \
 nothing here changes their licences.'))
 			]),

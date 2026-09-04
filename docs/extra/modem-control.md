@@ -29,8 +29,7 @@ Open **Modem** in the LuCI menu.
 | Phonebook | Read, add and delete SIM phonebook entries |
 | AT console | Send raw AT commands and read the replies |
 
-**System > About this port** carries the licence information, the source link, and the GPL
-written offer.
+**System > About this port** carries the licence information and the source link.
 
 Some operations are slower than a single web request is allowed to be. USSD is the clearest
 case: `AT+CUSD` returns `OK` immediately and the network's answer arrives later as an
