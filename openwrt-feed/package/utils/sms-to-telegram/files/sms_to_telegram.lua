@@ -20,6 +20,46 @@ function M.valid_chat_id(value)
 		value:match('^[1-9][0-9]+$') ~= nil
 end
 
+function M.valid_proxy_type(value)
+	return value == 'none' or value == 'http' or value == 'socks5'
+end
+
+function M.valid_proxy_host(value)
+	return type(value) == 'string' and #value >= 1 and #value <= 253 and
+		value:match('^[A-Za-z0-9_.:%%%-]+$') ~= nil
+end
+
+function M.valid_proxy_port(value)
+	local number = tonumber(value)
+	return number and number == math.floor(number) and number >= 1 and number <= 65535
+end
+
+function M.valid_proxy_credential(value)
+	return type(value) == 'string' and #value <= 256 and value:find('[%c]') == nil
+end
+
+function M.proxy_config(config)
+	config = config or {}
+	local proxy = {
+		type = config.proxy_type or config.type or 'none',
+		host = config.proxy_host or config.host or '',
+		port = tostring(config.proxy_port or config.port or ''),
+		username = config.proxy_username or config.username or '',
+		password = config.proxy_password or config.password or '',
+	}
+	if not M.valid_proxy_type(proxy.type) then return nil, 'invalid_proxy_type' end
+	if proxy.host ~= '' and not M.valid_proxy_host(proxy.host) then return nil, 'invalid_proxy_host' end
+	if proxy.port ~= '' and not M.valid_proxy_port(proxy.port) then return nil, 'invalid_proxy_port' end
+	if not M.valid_proxy_credential(proxy.username) or not M.valid_proxy_credential(proxy.password) then
+		return nil, 'invalid_proxy_credentials'
+	end
+	if proxy.type ~= 'none' then
+		if proxy.host == '' then return nil, 'invalid_proxy_host' end
+		if proxy.port == '' then return nil, 'invalid_proxy_port' end
+	end
+	return proxy
+end
+
 function M.valid_indexes(value)
 	if type(value) ~= 'table' or #value < 1 or #value > 16 then return nil end
 	local result, seen = {}, {}
@@ -67,9 +107,24 @@ function M.merge_config(current, update)
 	local chat_id = update.chat_id ~= nil and tostring(update.chat_id) or tostring(current.chat_id or '')
 	local remove = update.remove_after_send
 	if remove == nil then remove = current.remove_after_send == true or current.remove_after_send == '1' end
+	local proxy_password = current.proxy_password or ''
+	if update.clear_proxy_password == true then proxy_password = ''
+	elseif update.proxy_password ~= nil and update.proxy_password ~= '' then proxy_password = update.proxy_password end
+	local merged = {
+		token = token,
+		chat_id = chat_id,
+		remove_after_send = remove == true,
+		proxy_type = update.proxy_type ~= nil and update.proxy_type or current.proxy_type or 'none',
+		proxy_host = update.proxy_host ~= nil and update.proxy_host or current.proxy_host or '',
+		proxy_port = tostring(update.proxy_port ~= nil and update.proxy_port or current.proxy_port or '8080'),
+		proxy_username = update.proxy_username ~= nil and update.proxy_username or current.proxy_username or '',
+		proxy_password = proxy_password,
+	}
 	if token ~= '' and not M.valid_token(token) then return nil, 'invalid_token' end
 	if chat_id ~= '' and not M.valid_chat_id(chat_id) then return nil, 'invalid_chat_id' end
-	return { token = token, chat_id = chat_id, remove_after_send = remove == true }
+	local proxy, err = M.proxy_config(merged)
+	if not proxy then return nil, err end
+	return merged
 end
 
 function M.safe_status(state, configured, running)
@@ -234,7 +289,8 @@ function Engine:step(config)
 	for _, item in ipairs(messages) do
 		local record = item.record
 		if record.state == 'pending' and self.env.now() >= (tonumber(record.next_attempt) or 0) then
-			local result = self.env.send(config.token, config.chat_id, M.compose(item.message))
+			local result = self.env.send(config.token, config.chat_id, M.compose(item.message),
+				M.proxy_config(config))
 			if not result or result.ok ~= true then
 				record.attempts = (tonumber(record.attempts) or 0) + 1
 				record.next_attempt = self.env.now() + retry_delay(record.attempts, result and result.retry_after)

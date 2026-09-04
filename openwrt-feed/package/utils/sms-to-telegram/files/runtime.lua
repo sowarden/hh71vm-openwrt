@@ -62,6 +62,11 @@ function R.read_config()
 		chat_id = cursor:get('sms-to-telegram', 'main', 'chat_id') or '',
 		remove_after_send = cursor:get('sms-to-telegram', 'main', 'remove_after_send') == '1',
 		poll_interval = tonumber(cursor:get('sms-to-telegram', 'main', 'poll_interval')) or 15,
+		proxy_type = cursor:get('sms-to-telegram', 'main', 'proxy_type') or 'none',
+		proxy_host = cursor:get('sms-to-telegram', 'main', 'proxy_host') or '',
+		proxy_port = cursor:get('sms-to-telegram', 'main', 'proxy_port') or '8080',
+		proxy_username = cursor:get('sms-to-telegram', 'main', 'proxy_username') or '',
+		proxy_password = cursor:get('sms-to-telegram', 'main', 'proxy_password') or '',
 	}
 	fs.chmod('/etc/config/sms-to-telegram', 600)
 	return result
@@ -76,6 +81,11 @@ function R.write_config(update)
 	cursor:set('sms-to-telegram', 'main', 'token', merged.token)
 	cursor:set('sms-to-telegram', 'main', 'chat_id', merged.chat_id)
 	cursor:set('sms-to-telegram', 'main', 'remove_after_send', merged.remove_after_send and '1' or '0')
+	cursor:set('sms-to-telegram', 'main', 'proxy_type', merged.proxy_type)
+	cursor:set('sms-to-telegram', 'main', 'proxy_host', merged.proxy_host)
+	cursor:set('sms-to-telegram', 'main', 'proxy_port', merged.proxy_port)
+	cursor:set('sms-to-telegram', 'main', 'proxy_username', merged.proxy_username)
+	cursor:set('sms-to-telegram', 'main', 'proxy_password', merged.proxy_password)
 	if not cursor:commit('sms-to-telegram') then return { ok = false, error = 'config_write_failed' } end
 	fs.chmod('/etc/config/sms-to-telegram', 600)
 	return { ok = true, configured = merged.token ~= '' and merged.chat_id ~= '' }
@@ -90,9 +100,12 @@ local function modem_call(method, params)
 	return result
 end
 
-local function http_request(token, method, payload)
+local function http_request(token, method, payload, proxy_config)
 	if not core.valid_token(token) then return { ok = false, error = 'invalid_token' } end
-	local input = temporary_file(token .. '\n' .. method .. '\n' .. json.stringify(payload) .. '\n')
+	local proxy, err = core.proxy_config(proxy_config)
+	if not proxy then return { ok = false, error = err } end
+	local input = temporary_file(table.concat({ token, method, proxy.type, proxy.host, proxy.port,
+		proxy.username, proxy.password }, '\n') .. '\n' .. json.stringify(payload) .. '\n')
 	local pipe = io.popen(HTTP_HELPER .. ' ' .. quote(input) .. ' 2>/dev/null', 'r')
 	if not pipe then fs.unlink(input); return { ok = false, error = 'telegram_transport_failed' } end
 	local output = pipe:read('*a') or ''
@@ -127,8 +140,8 @@ local function environment()
 			local result = modem_call('sms_list')
 			return { ok = result.ok == true, messages = result.messages or {} }
 		end,
-		send = function(token, chat_id, text)
-			return http_request(token, 'sendMessage', { chat_id = chat_id, text = text })
+		send = function(token, chat_id, text, proxy)
+			return http_request(token, 'sendMessage', { chat_id = chat_id, text = text }, proxy)
 		end,
 	}
 end
@@ -146,14 +159,17 @@ end
 function R.config_get()
 	local config = R.read_config()
 	return { ok = true, token_set = core.valid_token(config.token), chat_id = config.chat_id,
-		remove_after_send = config.remove_after_send }
+		remove_after_send = config.remove_after_send, proxy_type = config.proxy_type,
+		proxy_host = config.proxy_host, proxy_port = config.proxy_port,
+		proxy_username = config.proxy_username, proxy_password_set = config.proxy_password ~= '' }
 end
 
-function R.discover_chat(token)
-	local config = R.read_config()
-	token = token ~= '' and token or config.token
-	if not core.valid_token(token) then return { ok = false, error = 'invalid_token' } end
-	local response = http_request(token, 'getUpdates', { limit = 50, timeout = 0, allowed_updates = { 'message' } })
+function R.discover_chat(update)
+	local config, err = core.merge_config(R.read_config(), update or {})
+	if not config then return { ok = false, error = err } end
+	if not core.valid_token(config.token) then return { ok = false, error = 'invalid_token' } end
+	local response = http_request(config.token, 'getUpdates',
+		{ limit = 50, timeout = 0, allowed_updates = { 'message' } }, config)
 	return core.discovery_result(response)
 end
 

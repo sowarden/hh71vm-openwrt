@@ -4,7 +4,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=sms-to-telegram
-PKG_VERSION:=1.1.0
+PKG_VERSION:=1.2.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0 AND ISC
 PKG_MAINTAINER:=sowarden <sowarden@proton.me>
@@ -16,7 +16,7 @@ define Package/sms-to-telegram
   CATEGORY:=Utilities
   TITLE:=Forward HH71VM SMS messages to Telegram
   DEPENDS:=+lua +libuci-lua +libubus-lua +luci-lib-jsonc +luci-lib-nixio \
-	+libuclient +libustream-mbedtls +ca-bundle
+	+libcurl +ca-bundle
 endef
 
 define Package/sms-to-telegram/description
@@ -35,7 +35,7 @@ endef
 define Build/Compile
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_CPPFLAGS) \
 		-o $(PKG_BUILD_DIR)/sms-to-telegram-http $(PKG_BUILD_DIR)/http_transport.c \
-		$(TARGET_LDFLAGS) -luclient -lubox -ldl
+		$(TARGET_LDFLAGS) -lcurl
 endef
 
 define Package/sms-to-telegram/conffiles

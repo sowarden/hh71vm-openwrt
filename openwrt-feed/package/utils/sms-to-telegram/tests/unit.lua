@@ -31,11 +31,13 @@ local function harness(options)
 		fingerprint = function(material) return material end,
 		save_state = function(state) saved = core.copy(state) end,
 		snapshot = function() return { ok = true, messages = current_messages } end,
-		send = function(token, chat, text)
+		send = function(token, chat, text, proxy)
 			sends = sends + 1
 			equal(token, TOKEN, 'mock token')
 			equal(chat, CHAT, 'mock chat')
 			truth(text:find(MESSAGE.text, 1, true), 'Unicode body preserved')
+			equal(proxy.type, options.proxy_type or 'none', 'mock proxy type')
+			equal(proxy.host, options.proxy_host or '', 'mock proxy host')
 			return send_result
 		end,
 		delete_sms = function(indexes)
@@ -48,7 +50,9 @@ local function harness(options)
 	return {
 		env = env,
 		engine = core.new_engine(env, options.state),
-		config = { token = TOKEN, chat_id = CHAT, remove_after_send = options.remove == true },
+		config = { token = TOKEN, chat_id = CHAT, remove_after_send = options.remove == true,
+			proxy_type = options.proxy_type or 'none', proxy_host = options.proxy_host or '',
+			proxy_port = options.proxy_port or '8080', proxy_username = '', proxy_password = '' },
 		sends = function() return sends end,
 		deletes = function() return deletes end,
 		saved = function() return saved end,
@@ -56,6 +60,29 @@ local function harness(options)
 		set_readback = function(value) readback = value end,
 		advance = function(seconds) clock = clock + seconds end,
 	}
+end
+
+-- Proxy settings accept HTTP and SOCKS5, preserve a blank password update, and
+-- allow an explicit password clear without weakening host or port validation.
+do
+	local current = { token = TOKEN, chat_id = CHAT, remove_after_send = false,
+		proxy_type = 'http', proxy_host = 'proxy.example', proxy_port = '8443',
+		proxy_username = 'router', proxy_password = 'secret' }
+	local merged = assert(core.merge_config(current, { proxy_password = '' }))
+	equal(merged.proxy_password, 'secret', 'blank proxy password preserves secret')
+	merged = assert(core.merge_config(current, { clear_proxy_password = true }))
+	equal(merged.proxy_password, '', 'proxy password explicitly cleared')
+	truth(core.proxy_config(current), 'HTTP proxy accepted')
+	truth(core.proxy_config({ proxy_type = 'socks5', proxy_host = '127.0.0.1',
+		proxy_port = '1080', proxy_username = '', proxy_password = '' }), 'SOCKS5 proxy accepted')
+	local value, err = core.proxy_config({ proxy_type = 'http', proxy_host = 'https://bad',
+		proxy_port = '8080' })
+	equal(value, nil, 'proxy URL rejected as host')
+	equal(err, 'invalid_proxy_host', 'invalid proxy host classified')
+	value, err = core.proxy_config({ proxy_type = 'socks5', proxy_host = 'localhost',
+		proxy_port = '70000' })
+	equal(value, nil, 'out of range proxy port rejected')
+	equal(err, 'invalid_proxy_port', 'invalid proxy port classified')
 end
 
 -- 1-3: one delivery, no repeat, and persistent deduplication after restart.

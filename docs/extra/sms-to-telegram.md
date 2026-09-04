@@ -13,18 +13,33 @@ Log out of LuCI and sign in again, then open **Modem > SMS to Telegram**.
 
 ## Telegram setup
 
-The LuCI page presents the initial setup as six short steps:
+The LuCI page presents the initial setup as seven short steps:
 
 1. Create a bot with [BotFather](https://t.me/BotFather), copy its token, and paste it into
    **Telegram Bot Token**.
-2. Open a private chat with the new bot and send it a fresh message. Telegram bots cannot
+2. If Telegram is blocked on the router's connection, select an optional HTTP or SOCKS5
+   proxy and enter its address. Authentication is optional.
+3. Open a private chat with the new bot and send it a fresh message. Telegram bots cannot
    start a private conversation.
-3. Select **Detect Chat IDs**. Detection may use the token currently entered in the form
+4. Select **Detect Chat IDs**. Detection may use the token currently entered in the form
    without saving it first. If the field is blank, it uses the saved token.
-4. Select one detected private recipient, or enter its positive numeric ID in
+5. Select one detected private recipient, or enter its positive numeric ID in
    **Destination Chat ID**. A normal `@username`, link, zero or negative ID is not accepted.
-5. Choose whether confirmed messages should be removed from the SIM.
-6. Select the standard **Save & Apply** action.
+6. Choose whether confirmed messages should be removed from the SIM.
+7. Select the standard **Save & Apply** action.
+
+## Optional Telegram proxy
+
+The proxy setting is deliberately local to this package. It is used only by the private
+transport helper when it opens `api.telegram.org` for chat detection or SMS delivery. It
+does not set system proxy variables, add firewall rules, change routes, or proxy LuCI,
+clients, modem traffic, updates, or any other service.
+
+HTTP proxies use an HTTPS `CONNECT` tunnel. SOCKS5 uses remote hostname resolution so a
+local DNS block of Telegram does not prevent the request. Both modes continue to verify
+Telegram's TLS certificate normally after the tunnel is established. Proxy username and
+password fields are optional. The saved password is never returned to LuCI; leaving its
+field blank preserves it, while the separate clear option removes it.
 
 Detection reads a bounded set of currently available Bot API updates without acknowledging
 them. It is not a permanent address book: old updates may already have been consumed. The
@@ -72,9 +87,10 @@ read back before deletion is marked complete.
 ## Privacy and diagnostics
 
 The UCI configuration file and persistent state directory use restricted permissions. The
-HTTPS helper reads the token and request body from a temporary mode-0600 file, unlinks it
-immediately after opening, and does not place either value in process arguments. Temporary
-request and fingerprint files are removed on both normal and failed paths.
+HTTPS helper reads the token, request body and optional proxy credentials from a temporary
+mode-0600 file, unlinks it immediately after opening, and does not place those values in
+process arguments. Temporary request and fingerprint files are removed on both normal and
+failed paths.
 
 LuCI status may show configured/running state, pending counts, and safe last-success/error
 times. It never shows the token, recipient, sender, or SMS body. Service logs use fixed error

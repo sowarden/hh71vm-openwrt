@@ -1,113 +1,45 @@
 /*
  * SPDX-License-Identifier: ISC
  *
- * Minimal HTTPS POST transport built against the uclient API shipped by the
- * pinned OpenWrt 19.07 tree. Secret request data is read from a mode-0600 file,
- * which is unlinked immediately after opening; neither the bot token nor the SMS
- * body appears in process arguments.
+ * Minimal Telegram HTTPS POST transport. Request data and optional proxy
+ * credentials are read from a mode-0600 file which is unlinked immediately
+ * after opening, so none of them appear in process arguments.
  */
 
 #define _GNU_SOURCE
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <curl/curl.h>
 #include <fcntl.h>
-#include <glob.h>
-#include <dlfcn.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include <libubox/uloop.h>
-#include <libubox/ustream-ssl.h>
-#include <libubox/uclient.h>
-
 #define INPUT_LIMIT (16 * 1024)
 #define RESPONSE_LIMIT (256 * 1024)
+#define TELEGRAM_CA_BUNDLE "/etc/ssl/certs/ca-certificates.crt"
 
-static struct ustream_ssl_ctx *ssl_ctx;
-static const struct ustream_ssl_ops *ssl_ops;
 static char response[RESPONSE_LIMIT + 1];
 static size_t response_len;
-static int failed;
+static int response_overflow;
 
-static void finish(struct uclient *client)
+static size_t response_write(char *data, size_t size, size_t count, void *unused)
 {
-	uclient_disconnect(client);
-	uloop_end();
-}
+	size_t length;
 
-static void header_done(struct uclient *client)
-{
-	if (client->status_code < 100 || client->status_code > 599) {
-		failed = 1;
-		finish(client);
+	(void)unused;
+	if (size != 0 && count > (size_t)-1 / size)
+		return 0;
+	length = size * count;
+	if (response_len + length > RESPONSE_LIMIT) {
+		response_overflow = 1;
+		return 0;
 	}
-}
-
-static void data_read(struct uclient *client)
-{
-	char buffer[2048];
-	int length;
-
-	while ((length = uclient_read(client, buffer, sizeof(buffer))) > 0) {
-		if (response_len + (size_t)length > RESPONSE_LIMIT) {
-			failed = 1;
-			finish(client);
-			return;
-		}
-		memcpy(response + response_len, buffer, (size_t)length);
-		response_len += (size_t)length;
-	}
-}
-
-static void data_eof(struct uclient *client)
-{
-	if (!client->data_eof)
-		failed = 1;
-	finish(client);
-}
-
-static void request_error(struct uclient *client, int code)
-{
-	(void)code;
-	failed = 1;
-	finish(client);
-}
-
-static const struct uclient_cb callbacks = {
-	.header_done = header_done,
-	.data_read = data_read,
-	.data_eof = data_eof,
-	.error = request_error,
-};
-
-static int init_tls(void)
-{
-	glob_t certificates;
-	void *library;
-	size_t index;
-
-	library = dlopen("libustream-ssl.so", RTLD_LAZY | RTLD_LOCAL);
-	if (!library)
-		return -1;
-	ssl_ops = dlsym(library, "ustream_ssl_ops");
-	if (!ssl_ops)
-		return -1;
-	ssl_ctx = ssl_ops->context_new(false);
-	if (!ssl_ctx)
-		return -1;
-	if (glob("/etc/ssl/certs/*.crt", 0, NULL, &certificates) != 0)
-		return -1;
-	if (certificates.gl_pathc == 0) {
-		globfree(&certificates);
-		return -1;
-	}
-	for (index = 0; index < certificates.gl_pathc; index++)
-		ssl_ops->context_add_ca_crt_file(ssl_ctx, certificates.gl_pathv[index]);
-	globfree(&certificates);
-	return 0;
+	memcpy(response + response_len, data, length);
+	response_len += length;
+	return length;
 }
 
 static int valid_token(const char *token)
@@ -127,6 +59,53 @@ static int valid_token(const char *token)
 		if (!((*cursor >= 'A' && *cursor <= 'Z') || (*cursor >= 'a' && *cursor <= 'z') ||
 		      (*cursor >= '0' && *cursor <= '9') || *cursor == '_' || *cursor == '-'))
 			return 0;
+	return 1;
+}
+
+static int valid_proxy_type(const char *value)
+{
+	return strcmp(value, "none") == 0 || strcmp(value, "http") == 0 ||
+	       strcmp(value, "socks5") == 0;
+}
+
+static int valid_proxy_host(const char *value)
+{
+	const unsigned char *cursor = (const unsigned char *)value;
+	size_t length = strlen(value);
+
+	if (length < 1 || length > 253)
+		return 0;
+	for (; *cursor; cursor++)
+		if (!((*cursor >= 'A' && *cursor <= 'Z') || (*cursor >= 'a' && *cursor <= 'z') ||
+		      (*cursor >= '0' && *cursor <= '9') || *cursor == '.' || *cursor == '-' ||
+		      *cursor == '_' || *cursor == ':' || *cursor == '%'))
+			return 0;
+	return 1;
+}
+
+static int valid_credential(const char *value)
+{
+	const unsigned char *cursor = (const unsigned char *)value;
+
+	if (strlen(value) > 256)
+		return 0;
+	for (; *cursor; cursor++)
+		if (*cursor < 32 || *cursor == 127)
+			return 0;
+	return 1;
+}
+
+static int parse_port(const char *value, long *port)
+{
+	char *end = NULL;
+	long result;
+
+	if (!value[0])
+		return 0;
+	result = strtol(value, &end, 10);
+	if (!end || *end != '\0' || result < 1 || result > 65535)
+		return 0;
+	*port = result;
 	return 1;
 }
 
@@ -167,12 +146,47 @@ static char *read_secret_file(const char *path, size_t *size)
 	return buffer;
 }
 
+static char *take_line(char **cursor)
+{
+	char *line = *cursor;
+	char *newline = strchr(line, '\n');
+
+	if (!newline)
+		return NULL;
+	*newline = '\0';
+	*cursor = newline + 1;
+	return line;
+}
+
+static int set_common_options(CURL *curl, const char *url, const char *body,
+			      struct curl_slist *headers)
+{
+	return curl_easy_setopt(curl, CURLOPT_URL, url) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_CAINFO, TELEGRAM_CA_BUNDLE) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_USERAGENT, "sms-to-telegram/1.2") == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_POST, 1L) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(body)) == CURLE_OK &&
+	       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, response_write) == CURLE_OK;
+}
+
 int main(int argc, char **argv)
 {
-	char *input = NULL, *token, *method, *body, *first, *second, *url = NULL;
-	struct uclient *client = NULL;
+	char *input = NULL, *cursor, *token, *method, *proxy_type, *proxy_host;
+	char *proxy_port_text, *proxy_username, *proxy_password, *body, *url = NULL;
+	struct curl_slist *headers = NULL;
+	CURL *curl = NULL;
+	CURLcode curl_result;
 	size_t input_size = 0;
-	int result = 1, status = 0;
+	long proxy_port = 0, status = 0;
+	int result = 1;
 
 	if (argc != 2)
 		return 1;
@@ -180,52 +194,63 @@ int main(int argc, char **argv)
 	input = read_secret_file(argv[1], &input_size);
 	if (!input)
 		goto cleanup;
-	first = strchr(input, '\n');
-	if (!first)
+	cursor = input;
+	token = take_line(&cursor);
+	method = take_line(&cursor);
+	proxy_type = take_line(&cursor);
+	proxy_host = take_line(&cursor);
+	proxy_port_text = take_line(&cursor);
+	proxy_username = take_line(&cursor);
+	proxy_password = take_line(&cursor);
+	body = cursor;
+	if (!token || !method || !proxy_type || !proxy_host || !proxy_port_text ||
+	    !proxy_username || !proxy_password || !valid_token(token) ||
+	    (strcmp(method, "sendMessage") != 0 && strcmp(method, "getUpdates") != 0) ||
+	    !valid_proxy_type(proxy_type) || !valid_credential(proxy_username) ||
+	    !valid_credential(proxy_password) || body[0] != '{')
 		goto cleanup;
-	*first = '\0';
-	second = strchr(first + 1, '\n');
-	if (!second)
-		goto cleanup;
-	*second = '\0';
-	token = input;
-	method = first + 1;
-	body = second + 1;
-	if (!valid_token(token) || (strcmp(method, "sendMessage") != 0 && strcmp(method, "getUpdates") != 0) ||
-	    body[0] != '{')
+	if (strcmp(proxy_type, "none") != 0 &&
+	    (!valid_proxy_host(proxy_host) || !parse_port(proxy_port_text, &proxy_port)))
 		goto cleanup;
 	if (asprintf(&url, "https://api.telegram.org/bot%s/%s", token, method) < 0)
 		goto cleanup;
-	if (init_tls() != 0 || uloop_init() != 0)
+	if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
 		goto cleanup;
-	client = uclient_new(url, NULL, &callbacks);
-	if (!client)
-		goto cleanup_uloop;
-	uclient_set_timeout(client, 25000);
-	uclient_http_set_ssl_ctx(client, ssl_ops, ssl_ctx, true);
-	if (uclient_connect(client) != 0 || uclient_http_set_request_type(client, "POST") != 0 ||
-	    uclient_http_reset_headers(client) != 0 ||
-	    uclient_http_set_header(client, "User-Agent", "sms-to-telegram/1.0") != 0 ||
-	    uclient_http_set_header(client, "Content-Type", "application/json") != 0 ||
-	    uclient_write(client, body, strlen(body)) < 0 || uclient_request(client) != 0)
-		goto cleanup_client;
-	uloop_run();
-	status = client->status_code;
-	if (!failed) {
-		response[response_len] = '\0';
-		printf("%d\n", status);
-		if (response_len)
-			fwrite(response, 1, response_len, stdout);
-		result = 0;
+	curl = curl_easy_init();
+	if (!curl)
+		goto cleanup_curl;
+	headers = curl_slist_append(headers, "Content-Type: application/json");
+	if (!headers || !set_common_options(curl, url, body, headers))
+		goto cleanup_easy;
+	if (strcmp(proxy_type, "none") != 0) {
+		long type = strcmp(proxy_type, "http") == 0 ? CURLPROXY_HTTP : CURLPROXY_SOCKS5_HOSTNAME;
+		if (curl_easy_setopt(curl, CURLOPT_PROXY, proxy_host) != CURLE_OK ||
+		    curl_easy_setopt(curl, CURLOPT_PROXYPORT, proxy_port) != CURLE_OK ||
+		    curl_easy_setopt(curl, CURLOPT_PROXYTYPE, type) != CURLE_OK ||
+		    (type == CURLPROXY_HTTP &&
+		     curl_easy_setopt(curl, CURLOPT_HTTPPROXYTUNNEL, 1L) != CURLE_OK) ||
+		    (proxy_username[0] &&
+		     curl_easy_setopt(curl, CURLOPT_PROXYUSERNAME, proxy_username) != CURLE_OK) ||
+		    (proxy_password[0] &&
+		     curl_easy_setopt(curl, CURLOPT_PROXYPASSWORD, proxy_password) != CURLE_OK))
+			goto cleanup_easy;
 	}
+	curl_result = curl_easy_perform(curl);
+	if (curl_result != CURLE_OK || response_overflow ||
+	    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status) != CURLE_OK)
+		goto cleanup_easy;
+	response[response_len] = '\0';
+	printf("%ld\n", status);
+	if (response_len)
+		fwrite(response, 1, response_len, stdout);
+	result = 0;
 
-cleanup_client:
-	uclient_free(client);
-cleanup_uloop:
-	uloop_done();
+cleanup_easy:
+	curl_slist_free_all(headers);
+	curl_easy_cleanup(curl);
+cleanup_curl:
+	curl_global_cleanup();
 cleanup:
-	if (ssl_ctx)
-		ssl_ops->context_free(ssl_ctx);
 	if (url) {
 		explicit_bzero(url, strlen(url));
 		free(url);

@@ -6,8 +6,12 @@ local json, runtime = require 'luci.jsonc', require 'runtime'
 local methods = {
 	status = {},
 	config_get = {},
-	config_set = { token = 'str', chat_id = 'str', remove_after_send = true },
-	discover_chat = { token = 'str' },
+	config_set = { token = 'str', chat_id = 'str', remove_after_send = true,
+		proxy_type = 'str', proxy_host = 'str', proxy_port = 'str', proxy_username = 'str',
+		proxy_password = 'str', clear_proxy_password = true },
+	discover_chat = { token = 'str', proxy_type = 'str', proxy_host = 'str',
+		proxy_port = 'str', proxy_username = 'str', proxy_password = 'str',
+		clear_proxy_password = true },
 }
 
 if arg[1] == 'list' then
@@ -25,7 +29,7 @@ else
 		if arg[2] == 'status' then return runtime.status() end
 		if arg[2] == 'config_get' then return runtime.config_get() end
 		if arg[2] == 'config_set' then return runtime.write_config(params) end
-		if arg[2] == 'discover_chat' then return runtime.discover_chat(params.token or '') end
+		if arg[2] == 'discover_chat' then return runtime.discover_chat(params) end
 	end)
 	print(json.stringify(ok and result or { ok = false, error = 'internal_error' }))
 end

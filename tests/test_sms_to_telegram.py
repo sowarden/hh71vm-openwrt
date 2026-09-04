@@ -16,7 +16,7 @@ LUCI = ROOT / "openwrt-feed/package/luci/applications/luci-app-sms-to-telegram"
 
 class SmsToTelegramIntegrationTests(unittest.TestCase):
     def read_view(self):
-        return (LUCI / "htdocs/luci-static/resources/view/sms-to-telegram/main-1-1-0.js").read_text(
+        return (LUCI / "htdocs/luci-static/resources/view/sms-to-telegram/main-1-2-0.js").read_text(
             encoding="utf-8"
         )
 
@@ -37,8 +37,9 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
 
     def test_https_transport_hides_request_and_requires_ca_validation(self):
         source = (BACKEND / "src/http_transport.c").read_text(encoding="utf-8")
-        self.assertIn("uclient_http_set_ssl_ctx(client, ssl_ops, ssl_ctx, true)", source)
-        self.assertIn('glob("/etc/ssl/certs/*.crt"', source)
+        self.assertIn("CURLOPT_SSL_VERIFYPEER, 1L", source)
+        self.assertIn("CURLOPT_SSL_VERIFYHOST, 2L", source)
+        self.assertIn('TELEGRAM_CA_BUNDLE "/etc/ssl/certs/ca-certificates.crt"', source)
         self.assertIn("unlink(path)", source)
         self.assertIn("(metadata.st_mode & 077) != 0", source)
         self.assertNotIn("no-check-certificate", source)
@@ -63,6 +64,8 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
             runtime.index("function R.config_get") : runtime.index("function R.discover_chat")
         ]
         self.assertNotRegex(config_get, r"\btoken\s*=")
+        self.assertNotRegex(config_get, r"proxy_password\s*=")
+        self.assertIn("proxy_password_set", config_get)
         status = (BACKEND / "files/sms_to_telegram.lua").read_text(encoding="utf-8")
         safe = status[status.index("function M.safe_status") : status.index("function M.telegram_response")]
         self.assertNotIn("token", safe)
@@ -85,11 +88,12 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
         discovery = runtime[runtime.index("function R.discover_chat") : runtime.index("function R.run")]
         self.assertNotRegex(discovery, r"sender|message\.text|description|chat_id\s*=")
 
-    def test_page_is_a_six_step_setup_flow_with_standard_actions(self):
+    def test_page_is_a_seven_step_setup_flow_with_standard_actions(self):
         view = self.read_view()
         for number, title in enumerate(
             (
                 "Create a Telegram bot",
+                "Optional Telegram proxy",
                 "Message the bot",
                 "Select a detected recipient",
                 "Confirm or edit the recipient",
@@ -152,17 +156,27 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
         core = (BACKEND / "files/sms_to_telegram.lua").read_text(encoding="utf-8")
         self.assertIn("timeout = 0", runtime)
         self.assertIn("limit = 50", runtime)
-        self.assertIn("uclient_set_timeout(client, 25000)", source)
+        self.assertIn("CURLOPT_TIMEOUT, 25L", source)
         self.assertIn("math.min(3600", core)
 
     def test_package_dependencies_and_offline_documentation(self):
         makefile = (BACKEND / "Makefile").read_text(encoding="utf-8")
-        for dependency in ("+libuclient", "+libustream-mbedtls", "+ca-bundle", "+libubus-lua", "+libuci-lua"):
+        for dependency in ("+libcurl", "+ca-bundle", "+libubus-lua", "+libuci-lua"):
             self.assertIn(dependency, makefile)
         docs = (ROOT / "docs/package-feed.md").read_text(encoding="utf-8")
         self.assertIn("opkg install luci-app-sms-to-telegram", docs)
         self.assertIn("sms-to-telegram_*.ipk", docs)
         self.assertIn("luci-app-sms-to-telegram_*.ipk", docs)
+
+    def test_proxy_is_scoped_to_the_private_telegram_transport(self):
+        source = (BACKEND / "src/http_transport.c").read_text(encoding="utf-8")
+        runtime = (BACKEND / "files/runtime.lua").read_text(encoding="utf-8")
+        view = self.read_view()
+        self.assertIn('"https://api.telegram.org/bot%s/%s"', source)
+        self.assertIn("CURLOPT_HTTPPROXYTUNNEL, 1L", source)
+        self.assertIn("CURLPROXY_SOCKS5_HOSTNAME", source)
+        self.assertNotRegex(runtime, r"http_proxy|https_proxy|all_proxy|iptables|ip rule")
+        self.assertIn("applies exclusively to Telegram API requests made by this package", view)
 
     def test_new_delta_contains_only_synthetic_identifiers(self):
         paths = [*BACKEND.rglob("*"), *LUCI.rglob("*"), ROOT / "docs/extra/sms-to-telegram.md"]
