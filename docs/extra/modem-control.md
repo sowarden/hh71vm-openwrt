@@ -34,7 +34,7 @@ Open **Modem** in the LuCI menu.
 Some operations are slower than a single web request is allowed to be. USSD is the clearest
 case: `AT+CUSD` returns `OK` immediately and the network's answer arrives later as an
 unsolicited message. Those run as a job the page polls, and the page shows how long the
-network has been thinking rather than failing at the request ceiling.
+network has been processing the request rather than failing at the request ceiling.
 
 ## Command line
 

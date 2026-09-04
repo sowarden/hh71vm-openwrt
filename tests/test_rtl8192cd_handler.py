@@ -195,10 +195,9 @@ class Rtl8192cdHandlerModeTests(unittest.TestCase):
         # This is not cosmetic. netifd runs `<handler> <driver> dump` to learn the option
         # schema, and registers no radio at all when that fails with EACCES: the radios
         # simply do not exist, `wifi up` is silent and `ubus call network.wireless status`
-        # returns an empty object. The file shipped as 0644 for a long time and the defect
-        # stayed hidden because every local build had it uncommitted, and the build manifest
-        # infers 0755 from the shebang for dirty files while taking the recorded mode for
-        # clean ones. The first build made from a committed tree shipped both radios dead.
+        # returns an empty object. Git mode 100755 is therefore part of the driver contract;
+        # a shebang alone does not make a tracked file executable. Assert both the content
+        # and recorded mode so a packaged image cannot silently ship both radios disabled.
         git = shutil.which("git")
         if git is None:
             self.skipTest("git is not available")

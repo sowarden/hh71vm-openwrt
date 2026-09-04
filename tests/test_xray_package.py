@@ -58,8 +58,8 @@ class PackageSplitTests(unittest.TestCase):
 
 class GoToolchainTests(unittest.TestCase):
     def test_both_host_architectures_are_pinned(self):
-        # The release build host is ARM; a local build is x86_64. A missing hash would
-        # make the download unverified rather than fail loudly.
+        # Both supported build-host architectures need pinned hashes. A missing hash
+        # would make the download unverified rather than fail loudly.
         self.assertIn("GO_HASH_amd64:=", MAKEFILE)
         self.assertIn("GO_HASH_arm64:=", MAKEFILE)
 
