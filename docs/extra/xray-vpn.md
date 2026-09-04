@@ -23,7 +23,9 @@ anything on the devices themselves.
   gateway goes through the tunnel — LAN and both Wi-Fi bands — with nothing set on the
   client. Which interfaces are captured is worked out on the router and shown on the page.
 - **Proxy mode**, if you prefer: a SOCKS inbound on 1080 and an HTTP inbound on 1081, and
-  clients point at them themselves.
+  clients point at them themselves. This mode needs no captured LAN interface and installs
+  no traffic-redirection rules. Switching from VPN mode removes the old capture rules
+  before the proxy listeners start.
 - **Connect automatically on power on**, and **reconnect automatically if the connection
   drops** — the second is a real request through the tunnel on a timer, not just a check
   that the process is alive.

@@ -12,6 +12,6 @@
     "Expand the matching signed package feed with CIFS, NFSv3/NFSv4, FUSE, GRE, IPIP, L2TP/L2TPv3, PPTP, MPPE, and their required protocol helpers.",
     "Preserve or remove modem-reported current-only LTE bands safely without fixed operator band lists.",
     "Stop the switch core corrupting a few bytes of anything this router sends: frames the driver handed it as more than one buffer were damaged on the wire, invisibly to TCP, and are now assembled into one.",
-    "Add the experimental Xray VPN page and apply LuCI UI fixes."
+    "Add Telegram-only HTTP/SOCKS proxy support, fix Xray Proxy mode switching, and apply LuCI UI fixes."
   ]
 }
