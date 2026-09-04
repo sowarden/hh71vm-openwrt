@@ -2228,6 +2228,17 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	.cbi-value-title { grid-column: 1; padding-top: 0; }
 	.cbi-value-field { grid-column: 1; }
 	.facts { grid-template-columns: minmax(0, 1fr); }
+	/* A 210px sidebar leaves too little room for the stock process, firewall and
+	   route tables before the drawer breakpoint.  The wrapper keeps that overflow
+	   local to the table throughout the tablet range instead of widening the page. */
+	.hh-tablewrap {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+	.hh-tablewrap > .table, .hh-tablewrap > table {
+		width: max-content;
+		min-width: 100%;
+	}
 }
 
 /* ======================================================== phones: drawer */
@@ -2279,6 +2290,13 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 		padding: 0 8px;
 		gap: 6px;
 	}
+	/* At 360px the polling badge used the last few pixels and clipped the operator
+	   halfway through its name.  Keep every control, but take the spare padding out
+	   of the two compact status groups. */
+	.tb-tools { gap: 4px; }
+	#indicators .label,
+	#indicators > span,
+	#topbar [data-indicator] { padding-left: 6px; padding-right: 6px; }
 	#maincontent {
 		margin-left: 0;
 		padding-left: 12px;
@@ -2305,6 +2323,7 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 		scrollbar-width: none;
 	}
 	.mstrip::-webkit-scrollbar { display: none; }
+	.mstrip .mi { gap: 4px; padding-left: 5px; padding-right: 5px; }
 	.mstrip .mi-k { display: none; }   /* uppercase key labels are the first to go */
 	.mstrip > .mi:not(.mi-sig):not(.mi-net):not(.warnpill),
 	.mstrip > .sep { display: none; }
@@ -2380,17 +2399,10 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 
 	/* ------------------------------------------------------- wide content */
 
-	/* A table never gets narrower than its widest cell, so on a phone it has to be
-	   allowed to scroll rather than push the page sideways.  The scroll box is the
-	   `.hh-tablewrap` the theme runtime puts around every table (see wrapTables in
-	   hh71vm.js); these two keep the cards themselves from being pushed open by
-	   anything else wide, and catch a table on a page the runtime has not reached
-	   yet. */
+	/* The table itself is handled by `.hh-tablewrap` at the tablet breakpoint.
+	   These keep phone cards from being pushed open by any other wide child, and
+	   catch a table on a page the runtime has not reached yet. */
 	.cbi-section, .cbi-map, .panel {
-		overflow-x: auto;
-		-webkit-overflow-scrolling: touch;
-	}
-	.hh-tablewrap {
 		overflow-x: auto;
 		-webkit-overflow-scrolling: touch;
 	}
@@ -2427,11 +2439,6 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	   `min-width: 100%` keeps the other half of the deal: a table narrower than the
 	   box still fills it, instead of being shrink-to-fit and ending its header
 	   background mid-row, which is what Routes looked like before. */
-	.hh-tablewrap > .table, .hh-tablewrap > table {
-		width: max-content;
-		min-width: 100%;
-	}
-
 	/* Room is scarce: a table gives up some of its padding and a little of its type
 	   size before it gives up a column.  Six columns save 72px between them this way,
 	   which is the difference between a scroll bar and none on Static Routes and on
@@ -2457,6 +2464,36 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	.td input[type="number"], .td input:not([type]), .td select,
 	td input[type="text"], td input[type="password"], td input[type="search"],
 	td input[type="number"], td input:not([type]), td select { width: 100%; }
+
+	/* Network Diagnostics is three independent input/action pairs.  Keeping them as
+	   one table row made a phone show the first pair plus a horizontal scrollbar,
+	   hiding traceroute and lookup.  Stack the pairs, but keep each input and its
+	   action on one useful row. */
+	body[data-page="admin-network-diagnostics"] #view > .hh-tablewrap { overflow: visible; }
+	body[data-page="admin-network-diagnostics"] #view > .hh-tablewrap > .table,
+	body[data-page="admin-network-diagnostics"] #view > .hh-tablewrap > .table > .tr {
+		display: block;
+		width: 100%;
+		min-width: 0;
+	}
+	body[data-page="admin-network-diagnostics"] #view > .hh-tablewrap > .table > .tr > .td {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 8px 0;
+		border-bottom: 1px solid var(--border);
+	}
+	body[data-page="admin-network-diagnostics"] #view > .hh-tablewrap > .table > .tr > .td:last-child {
+		border-bottom: 0;
+	}
+	body[data-page="admin-network-diagnostics"] #view .td > input {
+		flex: 1 1 auto;
+		width: auto;
+		min-width: 0;
+		margin: 0 !important;
+	}
+	body[data-page="admin-network-diagnostics"] #view .diag-action { flex: none; }
 
 	/* LuCI marks the status lines it does not want broken ("MAC: 00:E0:…", "RX: 18.81
 	   MB (220035 Pkts.)") with its own `nowrap`, and each of those set a 140px floor
@@ -2505,6 +2542,29 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	}
 
 	.toast { right: 12px; left: 12px; bottom: 12px; text-align: center; }
+}
+
+@media (max-width: 480px) {
+	/* Two even columns are easier to scan than a flex row that leaves one action
+	   stranded at the edge.  Odd final actions span the row, and a lone action gets
+	   the full card width.  Table-cell actions keep their compact table treatment. */
+	#view .cbi-page-actions,
+	body[data-page^="admin-modem"] #view .cbi-section > .mactions {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		align-items: stretch;
+	}
+	#view .cbi-page-actions > *,
+	body[data-page^="admin-modem"] #view .cbi-section > .mactions > * {
+		width: 100%;
+		min-width: 0;
+		max-width: none;
+		margin: 0 !important;
+	}
+	#view .cbi-page-actions > :last-child:nth-child(odd),
+	body[data-page^="admin-modem"] #view .cbi-section > .mactions > :last-child:nth-child(odd) {
+		grid-column: 1 / -1;
+	}
 }
 
 /* Everything above animates position, which is exactly what motion sensitivity is
