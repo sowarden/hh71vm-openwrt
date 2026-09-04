@@ -9,9 +9,9 @@
     "Apply the TTL setting to outgoing traffic again: the packaged IP option extensions now contain the target it needs.",
     "Follow the radios with the front panel Wi-Fi indicator, using the event channel the stock firmware uses instead of a write that is painted over a second later.",
     "Mount the storage shared by the modem half at /mnt/extern and install packages there that do not fit the 6 MiB overlay; the share survives firmware updates.",
-    "Return the verified latest signed firmware release promptly, load optional history separately, and reject accidental same-release upgrades unless explicitly forced.",
-    "Avoid parallel legacy IPK output races during clean builds.",
     "Expand the matching signed package feed with CIFS, NFSv3/NFSv4, FUSE, GRE, IPIP, L2TP/L2TPv3, PPTP, MPPE, and their required protocol helpers.",
-    "Preserve or remove modem-reported current-only LTE bands safely without fixed operator band lists."
+    "Preserve or remove modem-reported current-only LTE bands safely without fixed operator band lists.",
+    "Stop the switch core corrupting a few bytes of anything this router sends: frames the driver handed it as more than one buffer were damaged on the wire, invisibly to TCP, and are now assembled into one.",
+    "Add an experimental Xray VPN page under Services: paste a vless/vmess/trojan/ss link or type the fields, connect with a report of what failed and why, and send the traffic of clients that use this router as their gateway through the tunnel."
   ]
 }

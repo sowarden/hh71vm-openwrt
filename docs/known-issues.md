@@ -141,6 +141,35 @@ The image has no SFTP server. Use legacy SCP mode, with the same host-key option
 scp -O -o HostKeyAlgorithms=+ssh-rsa local-file root@192.168.1.1:/tmp/
 ```
 
+## Xray VPN (experimental)
+
+Shipped early on purpose. Read [Xray VPN](extra/xray-vpn.md) before installing it.
+
+- **Only clients that route through this router are captured.** If the router is wired as a
+  dumb access point, with its LAN bridged to another router that hands out the addresses,
+  its clients belong to that other router: their traffic never passes through here and
+  nothing can redirect it. The page will say connected, and devices will still show their
+  own address. A router serving its own DHCP - on the SIM or behind a WAN cable - captures
+  its clients normally.
+- **UDP other than DNS is not carried through the tunnel**, and capturing it is off by
+  default. Xray reads the captured packet, tunnels it, the far end answers, and the reply is
+  never written back on this hardware, so the traffic would vanish rather than go out
+  unproxied. QUIC is rejected instead so browsers fall back to TCP, and DNS is tunnelled
+  through `dnsmasq`. There is a switch to try it anyway; expect it not to work.
+- **IPv6 is not tunnelled** and forwarded IPv6 to global addresses is rejected while VPN
+  mode is on, so that it cannot leak around the tunnel.
+- **`geoip.dat` and `geosite.dat` are not installed**, so any routing rule naming `geoip:`
+  or `geosite:` fails at start. They are about 20 MB against about 21 MB free on the shared
+  storage. Split routing is therefore unavailable.
+- **The tunnel is CPU-bound at about 12 Mbit/s** with REALITY, about 27 for VMess over
+  plain TCP. That is the processor, not the connection.
+- **VMess needs the clock.** The board has no working NTP. Connecting sets the clock from
+  the connection, but a router that has never connected and has a clock hours out will fail
+  VMess with `invalid user`, which names the wrong thing.
+- **The tunnel over the mobile connection is untested.** Everything was measured with the
+  router's uplink on a cable. Nothing in the design depends on which interface the default
+  route uses, but that is not the same as having run it.
+
 ## Not yet independently reproduced
 
 The included source state, build configuration, base revision, and feed revisions were

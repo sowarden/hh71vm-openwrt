@@ -10,6 +10,10 @@ opkg install luci-app-sms-to-telegram
 opkg install luci-proto-wireguard
 ```
 
+The experimental Xray VPN needs one extra step first, because its binary is larger than
+the overlay: `hh71vm-extern-pkg install xray-core`, then
+`opkg install luci-app-hh71vm-xray`. See [Xray VPN](extra/xray-vpn.md).
+
 Dependencies, including the matching WireGuard kernel module, are resolved by
 opkg. HTTPS requires a working Internet connection and a correct system clock.
 

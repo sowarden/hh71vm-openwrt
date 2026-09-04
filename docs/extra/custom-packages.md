@@ -30,9 +30,16 @@ Install these with `opkg` from the feed that belongs to your exact firmware buil
 | `modem-extra-tools`, `luci-app-modem-extra-tools` | Persistent TTL / Hop Limit rewriting and transactional LTE band selection | [Extra modem tools](modem-extra-tools.md) |
 | `sms-to-telegram`, `luci-app-sms-to-telegram` | Forward incoming SMS to a Telegram chat | [SMS to Telegram](sms-to-telegram.md) |
 | `kmod-hh71vm-ipt-ipopt` | The IP option netfilter targets, built against the unchanged release kernel | [IP option modules](ipt-ipopt.md) |
+| `xray-core`, `xray`, `luci-app-hh71vm-xray` | **Experimental.** An Xray VPN client with a page to drive it, and the firewall rules that send your devices through the tunnel | [Xray VPN](xray-vpn.md) |
 
 `kmod-hh71vm-ipt-ipopt` is pulled in automatically as a dependency of `modem-extra-tools`;
 you do not normally install it by hand.
+
+The Xray packages are an **early experiment** and are not ready for a router you depend on.
+`xray-core` is 34 MB and installs onto the storage shared with the modem half rather than
+into the overlay, with `hh71vm-extern-pkg install xray-core`; the other two are ordinary
+`opkg` packages. Read [Xray VPN](xray-vpn.md) before installing them - in particular what
+is not carried through the tunnel, and which clients can be captured at all.
 
 ## Kernel modules
 
