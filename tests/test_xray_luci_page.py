@@ -332,6 +332,26 @@ class BackendContractTests(unittest.TestCase):
         self.assertIn("unexpected EOF", LIB)
         self.assertIn("significant_log", LIB)
 
+    def test_the_connect_job_detaches_its_standard_descriptors(self):
+        # io.popen waits for every writer to close the pipe, so a forked child that
+        # keeps stdout open makes the RPC last as long as the whole job. The browser
+        # allows an RPC 20 seconds and reported "XHR request timed out" while the
+        # connect was working fine underneath. Measured before the fix: 54 s. After: 0.
+        ctl = (XRAY / "files/hh71vm-xrayctl").read_text(encoding="utf-8")
+        fork = ctl.split("nixio.fork()", 1)[1].split("do_connect", 1)[0]
+        # the comment explaining the fix names the call it replaced
+        fork = "\n".join(l for l in fork.splitlines() if not l.lstrip().startswith("--"))
+        self.assertIn("nixio.dup", fork)
+        self.assertIn("/dev/null", fork)
+        self.assertNotIn("io.stdout:close()", fork)
+
+    def test_an_empty_log_explains_nothing_rather_than_something_wrong(self):
+        # At `warning` level a dial that never answers writes no line at all, so the
+        # last "significant" line was `core: Xray started` and the page presented that
+        # as the reason the connection failed.
+        self.assertIn('if #picked == 0 then return "" end', LIB)
+        self.assertIn("returned nothing", LIB)
+
     def test_the_api_is_off_until_it_is_switched_on(self):
         api = (XRAY / "files/xray-api.cgi").read_text(encoding="utf-8")
         self.assertIn("option api_enabled '0'", SETTINGS)

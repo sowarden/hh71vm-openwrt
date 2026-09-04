@@ -12,6 +12,12 @@ apart within a week.
 
 Lua 5.1 (OpenWrt 19.07). luci.jsonc and nixio are in the image; the uci Lua binding is
 not, so settings are read through the `uci` command line tool.
+
+One rule the error table earns the hard way: an explanation must come from something
+that is actually about the failure. At `warning` level a dial that never answers writes
+no line at all, so the newest line in the log is `core: Xray started` - and presenting
+that as the reason a connection failed is worse than saying nothing. When the log has
+nothing to say, the probe's own words are the answer.
 ]]
 
 local json  = require "luci.jsonc"
@@ -684,6 +690,14 @@ M.ERRORS = {
 	  "Something the configuration names is missing",
 	  "Usually the binary or the asset directory.",
 	  "Check that xray-core is installed on the share and that the share is mounted." },
+	{ "returned nothing",
+	  "The server never answered through the tunnel",
+	  "Xray is running and accepted the request, dialled the server, and nothing came back. The tunnel exists locally; the far end does not answer.",
+	  "Check that this router can reach the internet at all - on the modem that means the SIM has data, because the operator answers everything with a redirect otherwise. Then check the address and port. If the router has internet and the server is up, the id or the REALITY fields are the next suspects." },
+	{ "did not accept a connection",
+	  "Xray is not listening",
+	  "The probe could not even reach the local proxy port, so the process is not running or it failed to open its inbounds.",
+	  "Look at the log below: a port already in use and a configuration Xray refused are the two usual causes." },
 	{ "closed pipe",
 	  "The server closed the connection",
 	  "The tunnel was established and the server then dropped it without saying why. From the client side that is what a rejected user looks like: a flow that does not match, a wrong id, or REALITY fields the server does not recognise all end this way.",
@@ -712,7 +726,12 @@ function M.significant_log(text, keep)
 			picked[#picked + 1] = line
 		end
 	end
-	if #picked == 0 then return trim(text) end
+	-- Nothing significant means nothing significant.  Returning the whole log instead
+	-- let the caller present "core: Xray started" as the reason a connection failed,
+	-- which is worse than saying nothing: at `warning` level a dial that never answers
+	-- produces no line at all, so the log genuinely has nothing to say and the probe's
+	-- own error is the better answer.
+	if #picked == 0 then return "" end
 	local first = math.max(1, #picked - keep + 1)
 	return table.concat(picked, "\n", first, #picked)
 end

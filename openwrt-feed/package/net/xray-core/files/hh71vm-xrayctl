@@ -16,6 +16,12 @@ hh71vm-xrayctl -- the operations the Xray page needs, with a machine-readable an
 Anything else would hit the 30-second ceiling that LuCI's /admin/ubus proxy imposes on
 every RPC: a start plus a probe is routinely slower than that on a bad connection, which
 is exactly the case where the answer matters most.
+
+"Returns at once" is load-bearing and was wrong once: the child must detach its standard
+descriptors, not merely close the Lua handle. io.popen waits for every writer to close
+the pipe, so a child that keeps stdout open makes the caller wait for the whole job -
+measured at 54 seconds, against the 20 the browser allows an RPC, which the page then
+reported as "XHR request timed out" while the connect was working perfectly well.
 ]]
 
 package.path = "/usr/lib/lua/?.lua;" .. package.path
@@ -265,8 +271,16 @@ local function do_connect(progress)
 		sleep(1.5)
 	end
 	if not pr.ok then
+		-- The log is the better explanation when it has one. When it does not - and at
+		-- `warning` level a dial that never answers writes no line at all - the probe's
+		-- own words are what the person needs, so a recognised explanation from either
+		-- source beats the generic "Xray reported an error" from the other.
 		local tail = X.log_tail(60)
-		local e = X.explain(tail ~= "" and tail or (pr.error or ""))
+		local e = X.explain(tail)
+		if not e or not e.hint or e.hint == "" then
+			local pe = X.explain(pr.error or "")
+			if pe and pe.hint and pe.hint ~= "" then e = pe else e = e or pe end
+		end
 		step(steps, "probe", false, nil, pr.error)
 		return { ok = false, stage = "probe", steps = steps,
 		         error = pr.error, log = X.significant_log(tail, 12), explain = e,
@@ -350,7 +364,19 @@ elseif cmd == "connect" then
 			os.exit(0)
 		end
 		nixio.setsid()
-		io.stdout:close()
+		-- Detach the standard descriptors properly.  `io.stdout:close()` is not enough
+		-- and was the whole bug: the caller reads this through io.popen, which waits
+		-- for *every* writer to close the pipe, so the child kept it open for the
+		-- length of the connect and the RPC took as long as the job. The browser gives
+		-- an RPC 20 seconds, so the page reported "XHR request timed out" while the
+		-- connect was still working perfectly well underneath it.
+		local null = nixio.open("/dev/null", "r+")
+		if null then
+			nixio.dup(null, nixio.stdin)
+			nixio.dup(null, nixio.stdout)
+			nixio.dup(null, nixio.stderr)
+			if null:fileno() > 2 then null:close() end
+		end
 		local mypid = nixio.getpid()
 		job_write({ state = "running", started = os.time(), stage = "checks",
 		            pid = mypid, steps = {} })
