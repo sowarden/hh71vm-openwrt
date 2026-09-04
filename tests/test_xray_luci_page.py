@@ -311,6 +311,19 @@ class BackendContractTests(unittest.TestCase):
         self.assertNotIn("ip route show default", rules)
         self.assertIn('$1 == "default"', rules)
 
+    def test_a_bridge_with_wifi_is_captured_even_when_it_is_the_uplink(self):
+        # "everything except the way out" is not quite the rule. On a bench where the
+        # internet arrives over the same bridge the clients are on, excluding the uplink
+        # excluded the Wi-Fi clients too and captured the modem side instead. A bridge
+        # carrying a wireless port is client-facing by definition; a plain interface
+        # never is.
+        rules = "\n".join(l for l in FW.splitlines() if not l.lstrip().startswith("#"))
+        self.assertIn("has_wireless_port", rules)
+        self.assertIn("is_bridge", rules)
+        block = rules.split("auto_ifaces() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('is_bridge "$ifn" || continue', block)
+        self.assertIn('has_wireless_port "$ifn"', block)
+
     def test_capture_mode_is_not_set_inside_a_subshell(self):
         # `LAN_IFACES=$(resolve_ifaces ...)` ran the function in a subshell and the mode
         # never came back. It sets both variables in place instead.

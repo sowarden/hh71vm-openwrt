@@ -75,6 +75,27 @@ uplink_ifaces() {
 	}' | sort -u
 }
 
+# A bridge is where clients live on this board: br-lan carries the LAN ports and both
+# Wi-Fi radios. A plain interface is not client-facing - eth2 is the modem side - so it
+# is never captured, whether or not it happens to be the way out at the moment.
+is_bridge() {
+	[ -d "/sys/class/net/$1/brif" ]
+}
+
+has_wireless_port() {
+	local port
+	for port in $(ls "/sys/class/net/$1/brif" 2>/dev/null); do
+		case "$port" in wlan*|ra*|wl*) return 0 ;; esac
+	done
+	return 1
+}
+
+# "Everything except the way out" is not quite the rule, and the difference matters on a
+# bench where the internet arrives over the same bridge the clients are on: excluding the
+# uplink then excludes the clients too, and captures the modem side instead. A bridge
+# carrying Wi-Fi is client-facing by definition and is captured even when it is also the
+# way out - the router's own traffic to the gateway is a private destination and bypasses
+# the rules anyway, and Xray's own connection carries the socket mark.
 auto_ifaces() {
 	local up ifn skip
 	up=$(uplink_ifaces)
@@ -82,6 +103,11 @@ auto_ifaces() {
 	sort -u | while read -r ifn; do
 		[ -n "$ifn" ] || continue
 		[ "$ifn" = "lo" ] && continue
+		is_bridge "$ifn" || continue
+		if has_wireless_port "$ifn"; then
+			echo "$ifn"
+			continue
+		fi
 		skip=0
 		for u in $up; do [ "$ifn" = "$u" ] && skip=1; done
 		[ "$skip" = 1 ] || echo "$ifn"
