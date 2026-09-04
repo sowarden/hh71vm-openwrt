@@ -243,6 +243,15 @@ class RpcWiringTests(unittest.TestCase):
         offered = set(re.findall(r"^\t+(\w+):", block, re.M))
         self.assertTrue(offered <= writable, "not writable: %s" % (offered - writable))
 
+    def test_settings_validation_uses_lua_patterns_and_explicit_enums(self):
+        # Lua patterns do not implement regular-expression alternation. Keep the
+        # character filter separate from the exact allowlist for enum settings.
+        self.assertIn('mode = "^[a-z]+$"', RPCD)
+        self.assertIn('loglevel = "^[a-z]+$"', RPCD)
+        self.assertIn('lan_ifaces = "^[%w%.%-_ ]*$"', RPCD)
+        self.assertIn("local ENUMS = {", RPCD)
+        self.assertIn("(allowed and not allowed[sv])", RPCD)
+
 
 class BackendContractTests(unittest.TestCase):
     def test_both_new_packages_are_selected_in_both_files(self):
