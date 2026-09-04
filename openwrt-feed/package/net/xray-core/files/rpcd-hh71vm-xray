@@ -152,7 +152,7 @@ end
 -- trusted from the browser: these end up in a shell command line and in iptables
 -- arguments.
 local WRITABLE = {
-	mode = "^(vpn|proxy)$",
+	mode = "^[a-z]+$",
 	autostart = "^[01]$",
 	watchdog = "^[01]$",
 	watchdog_period = "^%d+$",
@@ -163,17 +163,22 @@ local WRITABLE = {
 	tproxy_port = "^%d+$",
 	dns_port = "^%d+$",
 	dns_server = "^[%d%.:%x]+$",
-	lan_ifaces = "^[%w%.%-_ ]+$",
+	lan_ifaces = "^[%w%.%-_ ]*$",
 	router_traffic = "^[01]$",
 	block_quic = "^[01]$",
 	capture_udp = "^[01]$",
 	block_ipv6 = "^[01]$",
 	sniffing = "^[01]$",
 	set_clock = "^[01]$",
-	loglevel = "^(debug|info|warning|error|none)$",
+	loglevel = "^[a-z]+$",
 	probe_url = "^https?://[%w%.%-_:/%?&=~%%]+$",
 	probe_timeout = "^%d+$",
 	api_enabled = "^[01]$"
+}
+
+local ENUMS = {
+	mode = { vpn = true, proxy = true },
+	loglevel = { debug = true, info = true, warning = true, error = true, none = true }
 }
 
 function handlers.settings_set(p)
@@ -186,7 +191,8 @@ function handlers.settings_set(p)
 			bad[#bad + 1] = k
 		else
 			local sv = tostring(v)
-			if not sv:match(pat) then
+			local allowed = ENUMS[k]
+			if not sv:match(pat) or (allowed and not allowed[sv]) then
 				bad[#bad + 1] = k .. " (" .. sv .. ")"
 			else
 				kv[k] = sv

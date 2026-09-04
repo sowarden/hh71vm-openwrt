@@ -243,6 +243,15 @@ class RpcWiringTests(unittest.TestCase):
         offered = set(re.findall(r"^\t+(\w+):", block, re.M))
         self.assertTrue(offered <= writable, "not writable: %s" % (offered - writable))
 
+    def test_settings_validation_uses_lua_patterns_and_explicit_enums(self):
+        # Lua patterns do not implement regular-expression alternation. Keep the
+        # character filter separate from the exact allowlist for enum settings.
+        self.assertIn('mode = "^[a-z]+$"', RPCD)
+        self.assertIn('loglevel = "^[a-z]+$"', RPCD)
+        self.assertIn('lan_ifaces = "^[%w%.%-_ ]*$"', RPCD)
+        self.assertIn("local ENUMS = {", RPCD)
+        self.assertIn("(allowed and not allowed[sv])", RPCD)
+
 
 class BackendContractTests(unittest.TestCase):
     def test_both_new_packages_are_selected_in_both_files(self):
@@ -352,6 +361,16 @@ class BackendContractTests(unittest.TestCase):
         # never came back. It sets both variables in place instead.
         rules = "\n".join(l for l in FW.splitlines() if not l.lstrip().startswith("#"))
         self.assertNotIn("$(resolve_ifaces", rules)
+
+    def test_teardown_does_not_depend_on_current_interface_settings(self):
+        # A mode change can replace the automatically resolved interface list with an
+        # empty value before teardown. Find installed jumps by target so old VPN rules
+        # cannot survive after the user switches to Proxy mode.
+        rules = "\n".join(l for l in FW.splitlines() if not l.lstrip().startswith("#"))
+        block = rules.split("unlink_all() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("delete_jumps nat PREROUTING $PRE_NAT", block)
+        self.assertIn("delete_jumps filter FORWARD $FWD_FILT", block)
+        self.assertNotIn("for ifn in $LAN_IFACES", block)
 
     def test_udp_capture_is_off_by_default(self):
         # Measured: Xray captures the packet, tunnels it, and never writes the answer
