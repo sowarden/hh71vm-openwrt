@@ -258,6 +258,10 @@ local function do_connect(progress)
 			         error = X.trim(fw) }
 		end
 	else
+		-- A user can switch modes while VPN rules from the previous connection are
+		-- still installed. Proxy mode must actively remove them before claiming
+		-- that clients opt in through the local ports.
+		sh("/usr/sbin/hh71vm-xray-fw down")
 		step(steps, "firewall", true,
 		     "Proxy mode: no rules. Clients point at this router's SOCKS or HTTP port.")
 	end

@@ -372,6 +372,11 @@ class BackendContractTests(unittest.TestCase):
         self.assertIn("delete_jumps filter FORWARD $FWD_FILT", block)
         self.assertNotIn("for ifn in $LAN_IFACES", block)
 
+        controller = (XRAY / "files/hh71vm-xrayctl").read_text(encoding="utf-8")
+        proxy_branch = controller.split('if s.mode == "vpn" then', 1)[1].split(
+            '-- 7. does it actually carry traffic', 1)[0]
+        self.assertIn('sh("/usr/sbin/hh71vm-xray-fw down")', proxy_branch)
+
     def test_udp_capture_is_off_by_default(self):
         # Measured: Xray captures the packet, tunnels it, and never writes the answer
         # back. Traffic that disappears is worse than traffic that goes out unproxied.
