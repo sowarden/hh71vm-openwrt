@@ -1,0 +1,16 @@
+#!/bin/sh
+# Register the firewall include once, so the VPN-mode rules survive a firewall reload.
+if ! uci -q get firewall.xray >/dev/null 2>&1; then
+	uci -q batch <<-UCI
+		set firewall.xray=include
+		set firewall.xray.type='script'
+		set firewall.xray.path='/etc/xray/firewall.include'
+		set firewall.xray.family='any'
+		set firewall.xray.reload='1'
+		commit firewall
+	UCI
+fi
+# The service has to be enabled for procd to run boot() at all; boot() then decides
+# whether to actually connect, from the autostart setting.
+/etc/init.d/xray enable >/dev/null 2>&1
+exit 0

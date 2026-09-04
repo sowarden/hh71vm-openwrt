@@ -1,0 +1,8 @@
+{
+  // Placeholder. Replace this with a real configuration, or start from
+  // /etc/xray/config.example.json. `hh71vm-xray test` validates a config without
+  // starting the service.
+  "log": { "loglevel": "warning" },
+  "inbounds": [],
+  "outbounds": [ { "protocol": "freedom", "tag": "direct" } ]
+}

@@ -1,0 +1,264 @@
+#!/usr/bin/lua
+--[[
+rpcd plugin: exposes the Xray connection as the ubus object "hh71vm-xray".
+
+rpcd calls us as `hh71vm-xray list` to learn the method signatures and as
+`hh71vm-xray call <method>` with the JSON arguments on stdin.
+
+Two rules this file exists to obey:
+
+  * an empty signature `[]` is silently dropped by rpcd, so every method takes at
+    least one argument even when it needs none;
+  * no method may take longer than the 30 seconds LuCI's /admin/ubus proxy allows.
+    Connecting takes longer than that whenever it matters, so `connect` starts a job
+    and `job` reports on it.
+
+Structured values go in and out as JSON strings rather than as nested objects: rpcd
+type-checks arguments against the signature and a nested object is where that gets
+interesting for no benefit.
+]]
+
+package.path = "/usr/lib/lua/?.lua;" .. package.path
+
+local json = require "luci.jsonc"
+local X = require "hh71vm.xray"
+
+local CTL = "/usr/sbin/hh71vm-xrayctl"
+
+local METHODS = {
+	status      = { refresh = true },
+	settings    = { all = true },
+	profiles    = { all = true },
+	job         = { all = true },
+	probe       = { now = true },
+	log         = { lines = 0 },
+	fw_status   = { all = true },
+
+	profile_save     = { json = "str" },
+	profile_delete   = { id = "str" },
+	profile_activate = { id = "str" },
+	settings_set     = { json = "str" },
+	connect          = { start = true },
+	disconnect       = { now = true },
+	generate         = { now = true },
+	test             = { now = true },
+	api_token_new    = { now = true }
+}
+
+local function emit(t)
+	io.write(json.stringify(t), "\n")
+	os.exit(0)
+end
+
+local function fail(msg)
+	emit({ error = tostring(msg) })
+end
+
+local function ctl(args)
+	local out = X.popen(CTL .. " " .. args)
+	local t = json.parse(out)
+	if type(t) ~= "table" then
+		return { error = "the control tool answered nothing usable",
+		         raw = X.trim(out) }
+	end
+	return t
+end
+
+local handlers = {}
+
+function handlers.status()
+	return ctl("status")
+end
+
+function handlers.settings()
+	local s = X.settings()
+	s.api_token = (X.trim(s.api_token) ~= "") and s.api_token or ""
+	s.tproxy_available = X.tproxy_available()
+	return s
+end
+
+function handlers.profiles()
+	return X.load_profiles()
+end
+
+function handlers.job()
+	return ctl("job")
+end
+
+function handlers.probe()
+	return ctl("probe")
+end
+
+function handlers.log(p)
+	local n = X.isnum((p or {}).lines, 1, 500) or 60
+	return { log = X.log_tail(n) }
+end
+
+function handlers.fw_status()
+	return { output = X.popen("/usr/sbin/hh71vm-xray-fw status") }
+end
+
+function handlers.profile_save(p)
+	local incoming = json.parse((p or {}).json or "")
+	if type(incoming) ~= "table" then return { error = "the profile was not readable" } end
+
+	local store = X.load_profiles()
+	local prof = X.clean_profile(incoming)
+	local errs = X.validate_profile(prof)
+	if #errs > 0 then return { error = table.concat(errs, " "), errors = errs } end
+
+	local existing, idx = X.find_profile(store, prof.id or "")
+	if existing then
+		store.profiles[idx] = prof
+	else
+		prof.id = X.new_id(store)
+		store.profiles[#store.profiles + 1] = prof
+		if X.trim(store.active) == "" then store.active = prof.id end
+	end
+	local ok, err = X.save_profiles(store)
+	if not ok then return { error = "cannot write the profile store: " .. tostring(err) } end
+	return { ok = true, id = prof.id, active = store.active }
+end
+
+function handlers.profile_delete(p)
+	local store = X.load_profiles()
+	local prof, idx = X.find_profile(store, (p or {}).id or "")
+	if not prof then return { error = "no such profile" } end
+	table.remove(store.profiles, idx)
+	if store.active == prof.id then
+		store.active = (store.profiles[1] and store.profiles[1].id) or ""
+	end
+	X.save_profiles(store)
+	return { ok = true, active = store.active }
+end
+
+function handlers.profile_activate(p)
+	local store = X.load_profiles()
+	local prof = X.find_profile(store, (p or {}).id or "")
+	if not prof then return { error = "no such profile" } end
+	store.active = prof.id
+	X.save_profiles(store)
+	-- Switching the active profile while connected has to move the connection, or
+	-- the page and the tunnel disagree about which server is in use.
+	local s = X.settings()
+	if X.bool(s.enabled) and X.pid() then
+		X.popen(CTL .. " connect --job")
+		return { ok = true, active = prof.id, reconnecting = true }
+	end
+	return { ok = true, active = prof.id, reconnecting = false }
+end
+
+-- Only the keys the page is allowed to set, and each one checked here rather than
+-- trusted from the browser: these end up in a shell command line and in iptables
+-- arguments.
+local WRITABLE = {
+	mode = "^(vpn|proxy)$",
+	autostart = "^[01]$",
+	watchdog = "^[01]$",
+	watchdog_period = "^%d+$",
+	watchdog_fails = "^%d+$",
+	socks_port = "^%d+$",
+	http_port = "^%d+$",
+	redirect_port = "^%d+$",
+	tproxy_port = "^%d+$",
+	dns_port = "^%d+$",
+	dns_server = "^[%d%.:%x]+$",
+	lan_ifaces = "^[%w%.%-_ ]+$",
+	router_traffic = "^[01]$",
+	block_quic = "^[01]$",
+	capture_udp = "^[01]$",
+	block_ipv6 = "^[01]$",
+	sniffing = "^[01]$",
+	set_clock = "^[01]$",
+	loglevel = "^(debug|info|warning|error|none)$",
+	probe_url = "^https?://[%w%.%-_:/%?&=~%%]+$",
+	probe_timeout = "^%d+$",
+	api_enabled = "^[01]$"
+}
+
+function handlers.settings_set(p)
+	local incoming = json.parse((p or {}).json or "")
+	if type(incoming) ~= "table" then return { error = "the settings were not readable" } end
+	local kv, bad = {}, {}
+	for k, v in pairs(incoming) do
+		local pat = WRITABLE[k]
+		if not pat then
+			bad[#bad + 1] = k
+		else
+			local sv = tostring(v)
+			if not sv:match(pat) then
+				bad[#bad + 1] = k .. " (" .. sv .. ")"
+			else
+				kv[k] = sv
+			end
+		end
+	end
+	if #bad > 0 then
+		return { error = "rejected: " .. table.concat(bad, ", ") }
+	end
+	local ports = { "socks_port", "http_port", "redirect_port", "tproxy_port", "dns_port" }
+	for _, k in ipairs(ports) do
+		if kv[k] and not X.isnum(kv[k], 1, 65535) then
+			return { error = k .. " must be a port number" }
+		end
+	end
+	local ok, err = X.set_settings(kv)
+	if not ok then return { error = err } end
+	return { ok = true }
+end
+
+function handlers.connect()
+	return ctl("connect --job")
+end
+
+function handlers.disconnect()
+	return ctl("disconnect")
+end
+
+function handlers.generate()
+	return ctl("generate")
+end
+
+function handlers.test()
+	return ctl("test")
+end
+
+function handlers.api_token_new()
+	local f = io.open("/dev/urandom", "rb")
+	local raw = f and f:read(16) or nil
+	if f then f:close() end
+	local token
+	if raw then
+		token = raw:gsub(".", function (c) return string.format("%02x", c:byte()) end)
+	else
+		token = tostring(os.time()) .. tostring(math.random(1e9))
+	end
+	local ok, err = X.set_settings({ api_token = token })
+	if not ok then return { error = err } end
+	return { ok = true, token = token }
+end
+
+-- --------------------------------------------------------------------------- main
+
+local action, method = arg[1], arg[2]
+
+if action == "list" then
+	local parts = {}
+	for name, sig in pairs(METHODS) do
+		local body = json.stringify(sig)
+		if body == "[]" then body = "{}" end
+		parts[#parts + 1] = ('"%s":%s'):format(name, body)
+	end
+	print("{" .. table.concat(parts, ",") .. "}")
+
+elseif action == "call" then
+	if not METHODS[method] or not handlers[method] then fail("unknown method") end
+	local input = io.read("*a") or ""
+	local params = (input ~= "" and json.parse(input)) or {}
+	local ok, res = pcall(handlers[method], params)
+	if not ok then fail(tostring(res)) end
+	emit(res or {})
+
+else
+	fail("usage: hh71vm-xray list|call <method>")
+end

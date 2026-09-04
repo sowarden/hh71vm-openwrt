@@ -1,0 +1,33 @@
+{
+	"luci-app-hh71vm-xray": {
+		"description": "Read and control the Xray connection of the HH71VM",
+		"read": {
+			"ubus": {
+				"hh71vm-xray": [
+					"status",
+					"settings",
+					"profiles",
+					"job",
+					"probe",
+					"log",
+					"fw_status"
+				]
+			}
+		},
+		"write": {
+			"ubus": {
+				"hh71vm-xray": [
+					"profile_save",
+					"profile_delete",
+					"profile_activate",
+					"settings_set",
+					"connect",
+					"disconnect",
+					"generate",
+					"test",
+					"api_token_new"
+				]
+			}
+		}
+	}
+}

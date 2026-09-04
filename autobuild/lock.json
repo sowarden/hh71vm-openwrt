@@ -20,6 +20,9 @@
     "CONFIG_PACKAGE_kmod-hh71vm-ipt-ipopt": "m",
     "CONFIG_PACKAGE_kmod-ipt-ipopt": "n",
     "CONFIG_PACKAGE_iptables-mod-ipopt": "m",
+    "CONFIG_PACKAGE_iptables-mod-tproxy": "m",
+    "CONFIG_PACKAGE_kmod-ipt-tproxy": "m",
+    "CONFIG_PACKAGE_kmod-tun": "m",
     "CONFIG_PACKAGE_libuci-lua": "m",
     "CONFIG_PACKAGE_kmod-wireguard": "m",
     "CONFIG_PACKAGE_wireguard-tools": "m",
@@ -57,7 +60,10 @@
     "CONFIG_PACKAGE_kmod-crypto-null": "y",
     "CONFIG_PACKAGE_kmod-crypto-pcompress": "y",
     "CONFIG_PACKAGE_kmod-crypto-sha256": "y",
-    "CONFIG_PACKAGE_kmod-nls-base": "y"
+    "CONFIG_PACKAGE_kmod-nls-base": "y",
+    "CONFIG_PACKAGE_xray": "m",
+    "CONFIG_PACKAGE_xray-core": "m",
+    "CONFIG_PACKAGE_luci-app-hh71vm-xray": "m"
   },
   "prefetch": [
     {"filename": "bc-1.06.95.tar.bz2", "url": "https://alpha.gnu.org/gnu/bc/bc-1.06.95.tar.bz2", "sha256": "7ee4abbcfac03d8a6e1a8a3440558a3d239d6b858585063e745c760957725ecc"}
