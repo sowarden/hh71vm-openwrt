@@ -2018,6 +2018,37 @@ img[src$="/icons/signal-none.png"] { content: url("data:image/svg+xml,<svg%20xml
 	animation: hh-rise .18s ease-out;
 }
 
+/* Action results must be visible where the user is, not at the document top. LuCI's
+   runtime notifications are moved here by hh71vm.js; static page alerts are untouched. */
+#hh-notifications {
+	position: fixed;
+	top: 72px;
+	right: 20px;
+	z-index: 1200;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	width: min(430px, calc(100vw - 40px));
+	max-height: calc(100vh - 92px);
+	overflow-y: auto;
+	pointer-events: none;
+}
+#hh-notifications > .alert-message {
+	margin: 0;
+	box-shadow: var(--shadow-lg);
+	pointer-events: auto;
+	animation: hh-notification-in .16s ease-out;
+}
+#hh-notifications .alert-message > div:first-child { min-width: 0; }
+#hh-notifications .alert-message > div:last-child .btn {
+	min-height: 32px;
+	padding: 5px 9px;
+}
+@keyframes hh-notification-in {
+	from { opacity: 0; transform: translateX(12px); }
+	to { opacity: 1; transform: none; }
+}
+
 /* ==================================================== modem app widgets */
 
 /* Column widths for the modem tables.  These used to be inline `width:` attributes,
@@ -2542,6 +2573,12 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	}
 
 	.toast { right: 12px; left: 12px; bottom: 12px; text-align: center; }
+	#hh-notifications {
+		top: 64px;
+		right: 12px;
+		width: calc(100vw - 24px);
+		max-height: calc(100vh - 76px);
+	}
 }
 
 @media (max-width: 480px) {
@@ -2570,5 +2607,6 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 /* Everything above animates position, which is exactly what motion sensitivity is
    about; the drawer still opens and closes, just without the slide. */
 @media (prefers-reduced-motion: reduce) {
+	#hh-notifications > .alert-message { animation: none; }
 	#sidebar, #nav-scrim { transition: none; }
 }

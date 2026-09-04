@@ -175,6 +175,27 @@ class PageRenderTests(unittest.TestCase):
         self.assertTrue(self.out["api_examples"])
 
 
+class PageUxContractTests(unittest.TestCase):
+    """Keep the responsive dialog and status affordances from silently regressing."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.view = VIEW.read_text(encoding="utf-8")
+
+    def test_status_badge_does_not_stretch_with_its_column(self):
+        self.assertIn(".xray-hero-state>.label{align-self:flex-start}", self.view)
+
+    def test_form_dialogs_are_wide_scrollable_and_easy_to_close(self):
+        for contract in (
+                "max-width:1040px",
+                "grid-template-rows:auto minmax(0,1fr) auto",
+                "overflow-y:auto",
+                "xray-modal-close",
+                "ev.target === overlay",
+                "ev.key === 'Escape'"):
+            self.assertIn(contract, self.view)
+
+
 class RpcWiringTests(unittest.TestCase):
     """Every method the page calls must exist in the plugin and in the ACL."""
 

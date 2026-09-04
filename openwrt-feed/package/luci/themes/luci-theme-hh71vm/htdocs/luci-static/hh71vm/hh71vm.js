@@ -421,6 +421,27 @@
 		}
 	}
 
+	/* LuCI inserts action results at the top of #maincontent. On a long form that
+	   leaves a success or failure several screens away from the action that caused
+	   it. Move only LuCI's dynamic, inline-flex notifications into a fixed tray;
+	   ordinary alert cards in page content keep their document position. */
+	function collectNotifications() {
+		var list = document.querySelectorAll('#maincontent > .alert-message');
+		var tray = null;
+		for (var i = 0; i < list.length; i++) {
+			if (list[i].style.display !== 'flex') continue;
+			if (!tray) {
+				tray = document.getElementById('hh-notifications');
+				if (!tray) {
+					tray = el('div', { 'id': 'hh-notifications', 'role': 'region',
+					                       'aria-label': 'Notifications' });
+					document.body.appendChild(tray);
+				}
+			}
+			tray.appendChild(list[i]);
+		}
+	}
+
 	// Any element carrying data-copy gets a discreet button; the value copied is the
 	// attribute when it has content, otherwise the element's own text.
 	HH.decorate = function (scope) {
@@ -437,6 +458,7 @@
 		zoneDots(scope);
 		wrapTables(scope);
 		revealActiveTab(scope);
+		collectNotifications();
 	};
 
 	/* Most views redraw themselves on a timer, and every redraw hands back plain

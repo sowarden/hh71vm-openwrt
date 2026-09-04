@@ -47,6 +47,7 @@ var CSS = [
 	'.xray-hero{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;',
 	'  justify-content:space-between;padding:.6rem 0}',
 	'.xray-hero-state{display:flex;flex-direction:column;gap:.35rem}',
+	'.xray-hero-state>.label{align-self:flex-start}',
 	'.xray-hero-profile{font-size:1.15rem;font-weight:600}',
 	'.xray-hero-actions{display:flex;flex-wrap:wrap;gap:.4rem}',
 	'.xray-switches{display:flex;flex-direction:column;gap:.5rem;margin-top:.8rem}',
@@ -63,9 +64,31 @@ var CSS = [
 	'  font-size:.85em;padding:.5rem;border-radius:.3rem;background:rgba(127,127,127,.10);',
 	'  margin-top:14px}',
 	'.xray-form .cbi-value-title{min-width:14em}',
+	'.xray-dialog .xray-form .cbi-value-title{grid-column:1;min-width:0;width:auto}',
+	'.xray-dialog .xray-form .cbi-value-field{grid-column:2;min-width:0;width:auto}',
 	/* the section headings sat directly on the separator above them */
 	'.xray-form h4{margin:1.4rem 0 .6rem;padding-top:.2rem}',
 	'.xray-form h4:first-child{margin-top:.2rem}',
+	'#modal_overlay>.modal.xray-dialog{position:relative;display:grid;',
+	'  grid-template-columns:minmax(0,1fr);',
+	'  width:calc(100% - 32px);max-width:720px;max-height:calc(100vh - 48px);',
+	'  overflow:auto;box-sizing:border-box}',
+	'#modal_overlay>.modal.xray-settings-modal,',
+	'#modal_overlay>.modal.xray-profile-modal{max-width:1040px;overflow:hidden;',
+	'  grid-template-rows:auto minmax(0,1fr) auto}',
+	'.xray-settings-modal>.xray-form,.xray-profile-modal>.xray-form{',
+	'  min-height:0;overflow-y:auto;padding-right:.7rem;overscroll-behavior:contain}',
+	'.xray-dialog>.xray-modal-title{display:flex;align-items:center;gap:1rem;',
+	'  margin:0 0 .5rem}',
+	'.xray-modal-close{display:inline-flex;align-items:center;justify-content:center;',
+	'  flex:none;width:2rem;height:2rem;min-height:0;margin-left:auto;padding:0;',
+	'  border:1px solid var(--border);border-radius:50%;background:transparent;',
+	'  color:var(--muted);font:600 1.35rem/1 sans-serif;cursor:pointer}',
+	'.xray-modal-close:hover,.xray-modal-close:focus-visible{background:var(--surface-2);',
+	'  border-color:var(--border-strong);color:var(--text)}',
+	'.xray-settings-modal>.cbi-page-actions,.xray-profile-modal>.cbi-page-actions{',
+	'  position:relative;z-index:1;margin:0;padding-top:.75rem;',
+	'  border-top:1px solid var(--border);background:var(--surface)}',
 	'.xray-token{word-break:break-all}',
 	'.xray-capture code{word-break:break-all}',
 	'.xray-examples{display:flex;flex-direction:column;gap:.5rem}',
@@ -84,16 +107,23 @@ var CSS = [
 	'  .xray-hero-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
 	'    gap:.4rem}',
 	'  .xray-hero-actions>.cbi-button{width:100%;margin:0}',
+	'}',
+	'@media (max-width:700px){',
 	'  .xray-form .cbi-value{display:block}',
-	'  .xray-form .cbi-value-title{min-width:0;width:auto;display:block;',
+	'  .xray-dialog .xray-form .cbi-value-title{grid-column:1;min-width:0;',
+	'    width:auto;display:block;',
 	'    padding:0 0 .3rem;font-weight:600}',
-	'  .xray-form .cbi-value-field{width:100%;display:block}',
+	'  .xray-dialog .xray-form .cbi-value-field{grid-column:1;width:100%;display:block}',
 	'  .xray-form input[type=text],.xray-form input[type=number],',
 	'  .xray-form input[type=password],.xray-form select,.xray-form textarea{',
 	'    width:100%;box-sizing:border-box;max-width:none}',
 	'  .xray-form input[type=checkbox]{width:auto}',
 	'  .mactions{flex-wrap:wrap;gap:.4rem}',
 	'  .mactions>.cbi-button{flex:1 1 12em;margin:0}',
+	'  #modal_overlay>.modal.xray-dialog{width:100%;',
+	'    max-height:calc(100vh - 16px);',
+	'    padding:16px}',
+	'  .xray-settings-modal>.xray-form,.xray-profile-modal>.xray-form{padding-right:.35rem}',
 	'}',
 	'@media (max-width:560px){',
 	'  .xray-hero-actions{grid-template-columns:1fr}',
@@ -190,6 +220,49 @@ return view.extend({
 		}
 
 		function reload() { return fetch().then(draw); }
+
+		/* Form dialogs stay inside the viewport. The title and actions remain visible
+		   while the form itself scrolls, and every non-destructive dialog has the two
+		   conventional escape routes missing from LuCI 19.07: a close button and the
+		   backdrop. The connecting progress dialog is deliberately excluded. */
+		var modalCleanup = null;
+
+		function hideFormModal() {
+			if (modalCleanup) {
+				modalCleanup();
+				modalCleanup = null;
+			}
+			ui.hideModal();
+		}
+
+		function showFormModal(title, children, kind) {
+			if (modalCleanup) modalCleanup();
+			var dlg = ui.showModal(title, children);
+			if (!dlg || !dlg.classList) return dlg;
+
+			dlg.classList.add('xray-dialog');
+			if (kind) dlg.classList.add(kind);
+			var heading = dlg.firstElementChild;
+			if (heading) {
+				heading.classList.add('xray-modal-title');
+				heading.appendChild(E('button', {
+					'type': 'button', 'class': 'xray-modal-close',
+					'aria-label': _('Close'), 'title': _('Close'),
+					'click': hideFormModal
+				}, '\u00d7'));
+			}
+
+			var overlay = dlg.parentNode;
+			function backdrop(ev) { if (ev.target === overlay) hideFormModal(); }
+			function escape(ev) { if (ev.key === 'Escape') hideFormModal(); }
+			if (overlay) overlay.addEventListener('click', backdrop);
+			document.addEventListener('keydown', escape);
+			modalCleanup = function () {
+				if (overlay) overlay.removeEventListener('click', backdrop);
+				document.removeEventListener('keydown', escape);
+			};
+			return dlg;
+		}
 
 		/* ----------------------------------------------------------- connecting */
 
@@ -401,7 +474,7 @@ your server.')),
 				};
 			}
 
-			ui.showModal(titleText || (p.id ? _('Edit profile') : _('New profile')), [
+			showFormModal(titleText || (p.id ? _('Edit profile') : _('New profile')), [
 				E('div', { 'class': 'xray-form' }, [
 					row(_('Name'), f.name, _('Yours, not the server\'s. It is what the list shows.')),
 					row(_('Protocol'), f.protocol),
@@ -422,14 +495,14 @@ than it saves.')),
 					row(_('Note'), f.note)
 				]),
 				E('div', { 'class': 'cbi-page-actions' }, [
-					E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')),
+					E('button', { 'class': 'cbi-button', 'click': hideFormModal }, _('Cancel')),
 					E('button', {
 						'class': 'cbi-button cbi-button-action',
 						'click': ui.createHandlerFn(this, function () {
 							var prof = collect();
 							return x.checked(x.api.profileSave(JSON.stringify(prof)),
 							                 _('Profile saved.'))
-								.then(function () { ui.hideModal(); return reload(); })
+								.then(function () { hideFormModal(); return reload(); })
 								.catch(function (e) {
 									ui.addNotification(null,
 										E('p', {}, String(e.message || e)), 'error');
@@ -437,7 +510,7 @@ than it saves.')),
 						})
 					}, _('Save'))
 				])
-			]);
+			], 'xray-profile-modal');
 			refresh();
 			f.name.focus();
 		}
@@ -449,12 +522,12 @@ than it saves.')),
 			});
 			var err = E('div', { 'style': 'display:none' });
 
-			ui.showModal(_('Add from a link'), [
+			showFormModal(_('Add from a link'), [
 				E('p', {}, _('Paste the link your server gave you. The fields are filled in \
 from it and you can correct anything before saving.')),
 				ta, err,
 				E('div', { 'class': 'cbi-page-actions' }, [
-					E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')),
+					E('button', { 'class': 'cbi-button', 'click': hideFormModal }, _('Cancel')),
 					E('button', {
 						'class': 'cbi-button cbi-button-action',
 						'click': function () {
@@ -466,7 +539,7 @@ from it and you can correct anything before saving.')),
 								                   String(e.message || e)));
 								return;
 							}
-							ui.hideModal();
+							hideFormModal();
 							profileDialog(p, _('Check the imported profile'));
 						}
 					}, _('Read the link'))
@@ -481,13 +554,13 @@ from it and you can correct anything before saving.')),
 			catch (e) { uri = String(e.message || e); }
 			var ta = E('textarea', { 'class': 'cbi-input-textarea', 'rows': 4,
 			                         'style': 'width:100%' }, uri);
-			ui.showModal(_('Link for "%s"').format(p.name), [
+			showFormModal(_('Link for "%s"').format(p.name), [
 				E('p', {}, _('This is the same profile written back out as a link, so it can \
 be moved to a phone or another router.')),
 				ta,
 				E('div', { 'class': 'cbi-page-actions' }, [
 					E('button', { 'class': 'cbi-button cbi-button-action',
-					              'click': ui.hideModal }, _('Close'))
+					              'click': hideFormModal }, _('Close'))
 				])
 			]);
 			ta.select();
@@ -618,7 +691,7 @@ Only what you list is captured; everything else leaves the router unproxied.'));
 				};
 			}
 
-			ui.showModal(_('Settings'), [
+			showFormModal(_('Settings'), [
 				E('div', { 'class': 'xray-form' }, [
 					E('h4', {}, _('What "connected" means')),
 					row(_('Mode'), f.mode,
@@ -697,14 +770,14 @@ as private as the LAN it crosses.')),
 					row(_('How to use it'), examples)
 				]),
 				E('div', { 'class': 'cbi-page-actions' }, [
-					E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')),
+					E('button', { 'class': 'cbi-button', 'click': hideFormModal }, _('Cancel')),
 					E('button', {
 						'class': 'cbi-button cbi-button-action',
 						'click': ui.createHandlerFn(this, function () {
 							return x.checked(x.api.settingsSet(JSON.stringify(collect())),
 							                 _('Settings saved.'))
 								.then(function () {
-									ui.hideModal();
+									hideFormModal();
 									return reload();
 								})
 								.catch(function (e) {
@@ -714,7 +787,7 @@ as private as the LAN it crosses.')),
 						})
 					}, _('Save'))
 				])
-			]);
+			], 'xray-settings-modal');
 			refreshCapture();
 		}
 
