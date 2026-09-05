@@ -32,6 +32,11 @@ candidates() {
 
 find_binary() {
 	candidates | while read -r path; do
+		case "$path" in
+			/mnt/extern/*)
+				[ ! -e /etc/hh71vm-extern-reset-pending ] || continue
+				;;
+		esac
 		[ -x "$path" ] && { echo "$path"; return 0; }
 	done
 	return 1

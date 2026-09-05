@@ -1,0 +1,15 @@
+#!/bin/sh
+# Every sysupgrade recreates the overlay and runs uci-defaults again. Record that
+# the package area on the separately mounted modem share belongs to the old image.
+set -eu
+
+pending=/etc/hh71vm-extern-reset-pending
+temporary="$pending.$$"
+umask 077
+trap 'rm -f "$temporary"' EXIT HUP INT TERM
+
+: > "$temporary"
+mv -f "$temporary" "$pending"
+rm -f /etc/opkg/extern.conf
+
+exit 0

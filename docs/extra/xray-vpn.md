@@ -74,9 +74,10 @@ opkg install luci-app-hh71vm-xray       # the page, and the service it needs
 The second command pulls in `xray`, `kmod-ipt-tproxy` and `iptables-mod-tproxy` by itself.
 Log out of LuCI and back in afterwards, or the new menu entry may not appear.
 
-`xray-core` on the shared storage **survives a firmware upgrade**; the small packages do
-not and are reinstalled with the two commands above. Your profiles and settings survive
-both.
+Firmware upgrades clean `xray-core` from the shared storage together with the external
+package database. Reinstall it with the two commands above after each upgrade. With the
+normal configuration-preserving upgrade, profiles and settings under `/etc` survive;
+`sysupgrade -n` discards them too.
 
 ## If it does not connect
 

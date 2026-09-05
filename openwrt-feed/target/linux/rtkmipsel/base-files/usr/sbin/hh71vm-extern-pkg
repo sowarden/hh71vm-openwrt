@@ -32,6 +32,8 @@ CONF=hh71vm-extern
 DEST=extern
 MOUNT_HELPER=/usr/sbin/hh71vm-extern-mount
 WORK=/tmp/hh71vm-extern-pkg.$$
+PKG_LOCK=/var/lock/hh71vm-extern-pkg.lock
+RESET_PENDING=/etc/hh71vm-extern-reset-pending
 
 config_load "$CONF" 2>/dev/null
 target=; config_get target extern target /mnt/extern
@@ -61,14 +63,22 @@ free_kb() {
 }
 
 ensure_share() {
-	is_mounted || {
-		echo "hh71vm-extern-pkg: share not mounted, mounting it now"
+	if ! is_mounted || [ -e "$RESET_PENDING" ] || [ ! -f /etc/opkg/extern.conf ]; then
+		echo "hh71vm-extern-pkg: preparing the external package destination"
 		"$MOUNT_HELPER" mount >/dev/null 2>&1
-	}
+	fi
 	is_mounted || fail "the share is not mounted; run '$MOUNT_HELPER status' to see why" 3
-	[ -f /etc/opkg/extern.conf ] || "$MOUNT_HELPER" mount >/dev/null 2>&1
+	[ ! -e "$RESET_PENDING" ] || fail "external package cleanup is pending; run '$MOUNT_HELPER mount'" 3
 	[ -f /etc/opkg/extern.conf ] || \
 		fail "opkg destination '$DEST' is not published; check option opkg_dest in /etc/config/$CONF" 3
+}
+
+begin_package_operation() {
+	ensure_share
+	exec 8>"$PKG_LOCK"
+	flock 8
+	[ ! -e "$RESET_PENDING" ] || fail "external package cleanup became pending" 3
+	is_mounted || fail "the share was unmounted while waiting" 3
 }
 
 # The real installed size of an .ipk: the uncompressed length of its data payload.
@@ -119,7 +129,7 @@ resolve() {
 
 do_install() {
 	[ "$#" -gt 0 ] || fail "install needs at least one package name or .ipk file" 2
-	ensure_share
+	begin_package_operation
 	resolve "$@"
 	available=$(free_kb)
 	if [ "$measured_kb" -gt 0 ]; then
@@ -140,19 +150,25 @@ do_install() {
 
 do_remove() {
 	[ "$#" -gt 0 ] || fail "remove needs at least one package name" 2
-	ensure_share
+	begin_package_operation
 	opkg remove "$@" || fail "opkg remove failed" 5
 }
 
 # opkg keeps a separate status file per destination, so this lists what lives on the
 # share alone - which is what a person wants to know before a sysupgrade.
 do_list() {
+	[ ! -e "$RESET_PENDING" ] || { echo "cleanup pending; no external packages are available"; return 0; }
 	status="$prefix/usr/lib/opkg/status"
 	[ -f "$status" ] || { echo "nothing installed on $target"; return 0; }
 	awk '/^Package:/ {name=$2} /^Version:/ {printf "%-28s %s\n", name, $2}' "$status"
 }
 
 do_status() {
+	if [ -e "$RESET_PENDING" ]; then
+		echo "cleanup:   pending; external packages are unavailable"
+	else
+		echo "cleanup:   complete"
+	fi
 	if is_mounted; then
 		echo "share:     mounted on $target, $(free_kb) KiB free"
 	else
@@ -174,7 +190,7 @@ case "$command" in
 	install) do_install "$@" ;;
 	remove)  do_remove "$@" ;;
 	list)    do_list ;;
-	space)   ensure_share; free_kb ;;
+	space)   begin_package_operation; free_kb ;;
 	status)  do_status ;;
 	*) echo "usage: $0 [status|list|install <pkg|file.ipk>...|remove <pkg>...|space]" >&2; exit 2 ;;
 esac

@@ -37,6 +37,7 @@ for_each_service() {
 }
 
 start() {
+	[ ! -e /etc/hh71vm-extern-reset-pending ] || return 0
 	for_each_service start
 }
 

@@ -39,6 +39,8 @@ DEFAULT_SHARE=//192.168.225.1/shared_rom
 DEFAULT_OPTIONS=guest,sec=none,vers=1.0,nodev,nosuid,noatime
 OPKG_CONF=/etc/opkg/extern.conf
 LOCK=/var/lock/hh71vm-extern.lock
+RESET_HELPER=/usr/sbin/hh71vm-extern-reset
+RESET_PENDING=/etc/hh71vm-extern-reset-pending
 
 config_load "$CONF" 2>/dev/null
 
@@ -60,6 +62,12 @@ is_mounted() {
 # would quietly fill the 6 MiB overlay instead.
 opkg_dest_sync() {
 	if [ "$opkg_dest" = 1 ] && is_mounted; then
+		if [ -L "$target" ] || [ -L "$target/opkg" ] || \
+			{ [ -e "$target/opkg" ] && [ ! -d "$target/opkg" ]; }; then
+			rm -f "$OPKG_CONF"
+			echo "hh71vm-extern: refusing an unsafe opkg destination" >&2
+			return 1
+		fi
 		mkdir -p "$target/opkg"
 		printf 'dest extern %s\n' "$target/opkg" > "$OPKG_CONF"
 	else
@@ -67,9 +75,17 @@ opkg_dest_sync() {
 	fi
 }
 
+prepare_share() {
+	if [ -e "$RESET_PENDING" ]; then
+		rm -f "$OPKG_CONF"
+		"$RESET_HELPER" run || return 1
+	fi
+	opkg_dest_sync
+}
+
 do_mount() {
 	[ "$enabled" = 1 ] || { echo "hh71vm-extern: disabled in /etc/config/$CONF"; return 0; }
-	is_mounted && { opkg_dest_sync; return 0; }
+	is_mounted && { prepare_share; return $?; }
 
 	# cifs.ko ships in the image and kmod-fs-cifs autoloads it at boot, so this is a
 	# safety net rather than the normal path.  If it is still missing after modprobe,
@@ -89,8 +105,8 @@ do_mount() {
 		# is regularly not listening yet when we get here.
 		mount -t cifs "$share" "$target" -o "$options" 2>/dev/null
 		if is_mounted; then
-			opkg_dest_sync
-			return 0
+			prepare_share
+			return $?
 		fi
 		i=$((i + 1))
 		sleep "$delay"

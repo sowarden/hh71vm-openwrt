@@ -1,0 +1,100 @@
+#!/bin/sh
+# Remove only fixed OpenWrt-owned areas after the new image's first boot.
+set -eu
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+TARGET=/mnt/extern
+SHARE=//192.168.225.1/shared_rom
+PENDING=/etc/hh71vm-extern-reset-pending
+OPKG_CONF=/etc/opkg/extern.conf
+LOCK=/var/lock/hh71vm-extern-pkg.lock
+
+fail() {
+	echo "hh71vm-extern-reset: $1" >&2
+	exit "${2:-1}"
+}
+
+mount_is_safe() {
+	awk -v share="$SHARE" -v target="$TARGET" '
+		$2 == target { mounts++ }
+		$1 == share && $2 == target && $3 == "cifs" && $4 ~ /(^|,)rw(,|$)/ { valid++ }
+		index($2, target "/") == 1 { nested=1 }
+		END { exit !(mounts == 1 && valid == 1 && !nested) }
+	' /proc/mounts || return 1
+	[ -d /mnt ] && [ ! -L /mnt ] || return 1
+	[ -d "$TARGET" ] && [ ! -L "$TARGET" ] || return 1
+	[ "$(readlink -f "$TARGET")" = "$TARGET" ] || return 1
+}
+
+entry_is_safe() {
+	local checked="$1"
+	[ ! -e "$checked" ] && return 0
+	[ -d "$checked" ] && [ ! -L "$checked" ]
+}
+
+remove_owned_entry() {
+	local name="$1"
+	local path="$TARGET/$name"
+	local retired="$TARGET/.hh71vm-reset-$name"
+
+	entry_is_safe "$path" || fail "refusing unexpected $path; cleanup remains pending"
+	entry_is_safe "$retired" || fail "refusing unexpected $retired; cleanup remains pending"
+	mount_is_safe || fail "mount changed; cleanup remains pending"
+
+	# A retired directory can remain after power loss. Its fixed name cannot
+	# select another path; rm removes links inside it rather than following them.
+	if [ -d "$retired" ]; then
+		rm -rf "$retired" || fail "cannot finish removing $retired"
+	fi
+	if [ -d "$path" ]; then
+		mv "$path" "$retired" || fail "cannot retire $path"
+		mount_is_safe || fail "mount changed after retiring $path"
+		rm -rf "$retired" || fail "cannot remove retired $path"
+	fi
+	[ ! -e "$path" ] && [ ! -e "$retired" ] || fail "cleanup did not remove $path"
+}
+
+status() {
+	if [ -e "$PENDING" ]; then
+		echo "pending: yes"
+	else
+		echo "pending: no"
+	fi
+	if mount_is_safe; then
+		echo "share: safe OpenWrt mount"
+	else
+		echo "share: absent or unexpected"
+	fi
+}
+
+run() {
+	[ -e "$PENDING" ] || return 0
+	[ -f "$PENDING" ] && [ ! -L "$PENDING" ] || fail "invalid pending marker"
+	rm -f "$OPKG_CONF"
+	mount_is_safe || fail "expected writable CIFS share is not safely mounted; cleanup remains pending" 3
+
+	exec 8>"$LOCK"
+	flock 8
+	mount_is_safe || fail "mount changed while waiting for package operations"
+
+	# This is the complete public contract. Names are literals, never read from
+	# configuration, package metadata, marker contents or the environment.
+	for name in opkg bin control xray-loopback-test xray; do
+		remove_owned_entry "$name"
+	done
+
+	mkdir "$TARGET/opkg" || fail "cannot initialize a clean package destination"
+	chmod 0755 "$TARGET/opkg"
+	sync
+	mount_is_safe || fail "mount changed before cleanup completion"
+	rm -f "$PENDING"
+	echo "hh71vm-extern-reset: external OpenWrt package area initialized"
+}
+
+case "${1:-status}" in
+	run) run ;;
+	status) status ;;
+	*) echo "usage: $0 [run|status]" >&2; exit 2 ;;
+esac

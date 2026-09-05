@@ -14,6 +14,7 @@ Nothing has to be installed. The mount is part of the base image.
 
 ```sh
 hh71vm-extern-mount status          # is it mounted, and how much space is left
+hh71vm-extern-reset status          # is first-boot cleanup still pending
 hh71vm-extern-pkg   status
 hh71vm-extern-pkg   space
 hh71vm-extern-pkg   list            # what is installed over there
@@ -30,11 +31,43 @@ between a clean refusal and a share that fills up half way through.
 It also puts the share's `bin` directories on `PATH`: `/etc/profile.d/hh71vm-extern.sh` does
 that for login shells, and `/etc/init.d/hh71vm-extern-services` does it for services.
 
-## What it is good for
+## Firmware upgrades
 
-Anything too large for the overlay, and anything you would rather not lose on a firmware
-update — the share belongs to the other half of the device, so `sysupgrade` does not touch
-it.
+External packages are installation state, just like packages installed in the normal
+OpenWrt overlay. A successful `sysupgrade` starts with an empty package area even though
+the underlying Qualcomm storage survives the upgrade.
+
+On the first boot of every new image, cleanup is marked as pending. Once the expected
+Qualcomm CIFS share is mounted, the firmware removes these fixed OpenWrt-owned directories:
+
+- `opkg` - external package files and their package database;
+- `bin` - the legacy location used before external opkg support;
+- `control` and `xray-loopback-test` - old Xray development artifacts;
+- `xray` - optional Xray data files.
+
+It then creates an empty `opkg` directory and publishes the external destination again.
+Files and directories elsewhere under `/mnt/extern`, including Qualcomm data, are not
+scanned or removed. Cleanup refuses unexpected mounts, nested mounts, symbolic links or
+unexpected file types, and remains pending for the next mount attempt. An interrupted
+cleanup is safe to repeat.
+
+If the share is late or unavailable, package installation remains disabled until cleanup
+finishes. Check it with `hh71vm-extern-reset status` and retry the mount with
+`hh71vm-extern-mount mount`. Afterward, reinstall any wanted external package normally:
+
+```sh
+opkg update
+hh71vm-extern-pkg install xray-core
+```
+
+A normal reboot does not clean external packages. Reinstalling the same firmware with
+`sysupgrade` does, because the overlay and its package state are new again. Configuration
+preserved by sysupgrade remains under the normal `/etc` paths. Files placed inside the
+external `opkg` destination, including destination-local configuration files, are package
+payload and are removed. `sysupgrade -n` also discards the normal saved configuration.
+
+This cleanup is why the external area is suitable for large installable programs, rather
+than files that must survive a firmware replacement.
 
 ## Configuration
 

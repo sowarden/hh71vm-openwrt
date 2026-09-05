@@ -22,6 +22,8 @@ HELPER = BASE / "usr/sbin/hh71vm-extern-pkg"
 SERVICES = BASE / "etc/init.d/hh71vm-extern-services"
 PROFILE = BASE / "etc/profile.d/hh71vm-extern.sh"
 MOUNT = BASE / "usr/sbin/hh71vm-extern-mount"
+RESET = BASE / "usr/sbin/hh71vm-extern-reset"
+RESET_DEFAULT = BASE / "etc/uci-defaults/95-hh71vm-extern-reset"
 
 HELPER_SOURCE = HELPER.read_text(encoding="utf-8")
 # The comments explain the very mistakes the tests forbid, so match against code only.
@@ -81,7 +83,7 @@ class PathTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "requires a POSIX shell")
 class ShellTests(unittest.TestCase):
     def test_every_script_parses(self):
-        for path in (HELPER, SERVICES, PROFILE):
+        for path in (HELPER, SERVICES, PROFILE, MOUNT, RESET, RESET_DEFAULT):
             result = subprocess.run(["sh", "-n", str(path)],
                                     text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             self.assertEqual(result.returncode, 0, path.name + ": " + result.stdout)
