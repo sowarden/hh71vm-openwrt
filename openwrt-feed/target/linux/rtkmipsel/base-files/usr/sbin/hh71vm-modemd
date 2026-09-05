@@ -288,10 +288,15 @@ local function pdu_udh(s, pos, udhl)
 		if not iei or not iedl then break end
 		local d = i + 2
 		if iei == 0x00 and iedl >= 3 then
-			info = { ref = s:byte(d), total = s:byte(d + 1), seq = s:byte(d + 2) }
+			local ref, total, seq = s:byte(d, d + 2)
+			if ref and total and seq then
+				info = { ref = ref, total = total, seq = seq }
+			end
 		elseif iei == 0x08 and iedl >= 4 then
-			info = { ref = s:byte(d) * 256 + s:byte(d + 1),
-			         total = s:byte(d + 2), seq = s:byte(d + 3) }
+			local hi, lo, total, seq = s:byte(d, d + 3)
+			if hi and lo and total and seq then
+				info = { ref = hi * 256 + lo, total = total, seq = seq }
+			end
 		end
 		i = d + iedl
 	end
@@ -359,9 +364,12 @@ local function pdu_decode(hex)
 	local udh, udhl = nil, 0
 	if udhi then
 		udhl = s:byte(p) or 0
+		if p + udhl > #s then return nil, "truncated user-data header" end
 		udh = pdu_udh(s, p + 1, udhl)
 		udhl = udhl + 1                                     -- the length byte counts
 	end
+	local encoded_octets = (alpha == 0) and math.ceil(udl * 7 / 8) or udl
+	if p + encoded_octets - 1 > #s then return nil, "truncated user data" end
 
 	local text
 	if alpha == 2 then                                      -- UCS2
@@ -392,6 +400,12 @@ local function pdu_decode(hex)
 
 	return { sender = addr, ts = ts, text = text, udh = udh, smsc = smsc,
 	         dcs = dcs, outgoing = (mti == 1) }
+end
+
+local function pdu_decode_safe(hex)
+	local ok, message, why = pcall(pdu_decode, hex)
+	if not ok then return nil, "malformed pdu" end
+	return message, why
 end
 
 --=========================================================== SMS PDU: outgoing assembly (23.040)
@@ -608,6 +622,69 @@ end
 --- The web UI keys the "draft" badge on the text form, so keep handing it that.
 local PDU_STATUS = { [0] = "REC UNREAD", [1] = "REC READ",
                      [2] = "STO UNSENT", [3] = "STO SENT" }
+
+local PDU_STATUS_CODE = {}
+for code, name in pairs(PDU_STATUS) do PDU_STATUS_CODE[name] = code end
+
+--- Status is numeric in the reference modem's PDU mode, but other 27.005
+--- implementations return the quoted text-mode spelling even after CMGF=0.
+local function parse_sms_status(value)
+	value = trim(tostring(value or ""))
+	local quoted = value:match('^"(.*)"$')
+	if quoted then value = quoted end
+	local numeric = tonumber(value)
+	if numeric then return numeric, PDU_STATUS[numeric] or tostring(numeric) end
+	local normalized = value:upper():gsub("_", " "):gsub("%s+", " ")
+	local code = PDU_STATUS_CODE[normalized]
+	return code, code and PDU_STATUS[code] or (normalized ~= "" and normalized or "UNKNOWN")
+end
+
+--- Read only the two fields we own.  The optional alpha field after status varies
+--- between absent, empty and quoted, and may itself contain punctuation.
+local function parse_sms_header(line, kind)
+	local rest, index
+	if kind == "CMGL" then
+		local raw
+		raw, rest = line:match("^%+CMGL:%s*(%d+)%s*,%s*(.+)$")
+		if not raw then return nil end
+		index = tonumber(raw)
+	else
+		rest = line:match("^%+CMGR:%s*(.+)$")
+		if not rest then return nil end
+	end
+	local status = rest:match('^%s*("[^"]*")%s*,') or rest:match("^%s*([^,]+)")
+	if not status then return nil end
+	local code, name = parse_sms_status(status)
+	return index, code, name
+end
+
+--- Parse a complete CMGL response without letting one malformed entry consume the
+--- next header or hide every valid message.  Undecodable slots remain visible and
+--- deletable as placeholders carrying only a bounded diagnostic reason.
+local function parse_cmgl(lines)
+	local messages, report, i = {}, { headers = 0, decode_errors = 0 }, 1
+	while i <= #lines do
+		local index, code, status = parse_sms_header(lines[i], "CMGL")
+		if index then
+			report.headers = report.headers + 1
+			local body = lines[i + 1] or ""
+			local next_is_header = body:match("^%+CMGL:") ~= nil
+			local message, why = pdu_decode_safe(next_is_header and "" or body)
+			if not message then
+				report.decode_errors = report.decode_errors + 1
+				message = { text = "", decode_error = tostring(why or "undecodable") }
+			end
+			message.index = index
+			message.status = status
+			message.unread = (code == 0)
+			messages[#messages + 1] = message
+			i = i + (next_is_header and 1 or 2)
+		else
+			i = i + 1
+		end
+	end
+	return messages, report
+end
 
 --- Put multi-part messages back together from their headers.  Segments come in
 --- storage-slot order, which is not sequence order, so each one is filed by its `seq`
@@ -1048,19 +1125,95 @@ function M.on_line(line)
 	end
 end
 
+local function sms_storage_name(value)
+	value = trim(tostring(value or "")):upper()
+	return value:match("^[A-Z][A-Z]$") and value or nil
+end
+
+local function sms_pending_count()
+	local count = 0
+	for _ in pairs(M.sms_pending_entries or {}) do count = count + 1 end
+	M.sms_pending = count
+	return count
+end
+
+local function sms_pending_add(storage, index)
+	storage = sms_storage_name(storage)
+	index = tonumber(index)
+	if not index then return end
+	M.sms_pending_entries = M.sms_pending_entries or {}
+	M.sms_pending_entries[(storage or "") .. "|" .. index] = {
+		storage = storage, index = index,
+	}
+	M.sms_sync_storage = storage or M.sms_sync_storage
+	M.sms_sync_attempts = 0
+	M.sms_last_error = nil
+	sms_pending_count()
+end
+
+local function sms_pending_forget(index)
+	index = tonumber(index)
+	for key, entry in pairs(M.sms_pending_entries or {}) do
+		if entry.index == index then M.sms_pending_entries[key] = nil end
+	end
+	sms_pending_count()
+end
+
+local function sms_next_pending_storage()
+	for _, entry in pairs(M.sms_pending_entries or {}) do
+		if entry.storage then return entry.storage end
+	end
+end
+
+--- Remove notifications whose raw storage slots were observed.  Return the count
+--- still waiting; a delayed SIM write is retried by the caller instead of being
+--- mistaken for a successful empty inbox.
+local function sms_pending_reconcile(messages, storage)
+	local present = {}
+	for _, message in ipairs(messages or {}) do
+		local index = tonumber(message.index)
+		if index then present[index] = true end
+	end
+	for key, entry in pairs(M.sms_pending_entries or {}) do
+		if (not storage or not entry.storage or entry.storage == storage)
+		   and present[entry.index] then
+			M.sms_pending_entries[key] = nil
+		end
+	end
+	local left = sms_pending_count()
+	M.sms_sync_storage = sms_next_pending_storage()
+	if left == 0 then M.sms_sync_attempts = 0 end
+	return left
+end
+
+local SMS_SYNC_RETRY = { 2, 5, 10, 20 }
+
+local function sms_schedule_retry(reason)
+	if sms_pending_count() == 0 then return false end
+	M.sms_sync_attempts = (M.sms_sync_attempts or 0) + 1
+	local delay = SMS_SYNC_RETRY[M.sms_sync_attempts]
+	if not delay then
+		M.sms_last_error = reason or "announced SMS did not become available in storage"
+		return false
+	end
+	M.sms_sync_due = os.time() + delay
+	return true
+end
+
 function M.on_urc(line)
 	M.urc[#M.urc + 1] = { t = os.time(), line = line }
 	while #M.urc > 32 do table.remove(M.urc, 1) end
 
-	local idx = line:match("^%+CMTI:%s*\"?[^,]*\"?,%s*(%d+)")
+	local storage, idx = line:match('^%+CMTI:%s*"?([^",]+)"?%s*,%s*(%d+)')
 	if idx then
 		-- provisional: the message is not in our read-state store until the list is
 		-- next fetched, so count it separately rather than guessing a key for it.
 		-- A long text arrives as one +CMTI per segment, hence the delay before the
 		-- real read: four notifications must produce one +CMGL, not four.
-		M.sms_pending = (M.sms_pending or 0) + 1
+		sms_pending_add(storage, idx)
 		M.sms_sync_due = os.time() + 4
 		M.state.sms = M.state.sms or {}
+		M.state.sms.last_storage = sms_storage_name(storage)
 		M.state.sms.last_index = tonumber(idx)
 		M.state.sms.last_arrival = os.time()
 		log("new SMS at index %s", idx)
@@ -1742,10 +1895,18 @@ end
 
 function M.parsers.cpms(lines)
 	for _, l in ipairs(lines) do
-		local m1, u1, t1 = l:match('^%+CPMS:%s*"([^"]*)",(%d+),(%d+)')
-		if m1 then
+		local body = l:match("^%+CPMS:%s*(.+)$")
+		local m1, u1, t1
+		if body then
+			m1, u1, t1 = body:match('^%s*"([^"]+)"%s*,%s*(%d+)%s*,%s*(%d+)')
+			if not m1 then
+				m1, u1, t1 = body:match("^%s*([^,%s]+)%s*,%s*(%d+)%s*,%s*(%d+)")
+			end
+			if not u1 then u1, t1 = body:match("^%s*(%d+)%s*,%s*(%d+)") end
+		end
+		if u1 then
 			S.sms = S.sms or {}
-			S.sms.storage = m1
+			if m1 then S.sms.storage = m1 end
 			S.sms.used = tonumber(u1)
 			S.sms.total = tonumber(t1)
 		end
@@ -2086,8 +2247,18 @@ local SMS_SEEN_FILE = "/etc/hh71vm-modem/sms-seen.json"
 
 local SMS = { seen = {}, loaded = false }
 
-local function sms_key(index, ts)
-	return tostring(index) .. "|" .. tostring(ts or "")
+local function sms_fingerprint(message)
+	local material = table.concat({ tostring((message or {}).sender or ""),
+		tostring((message or {}).text or ""), tostring((message or {}).dcs or "") }, "\0")
+	local hash = 0
+	for i = 1, #material do hash = (hash * 131 + material:byte(i)) % 4294967296 end
+	return ("%08x"):format(hash)
+end
+
+local function sms_key(index, ts, message)
+	ts = tostring(ts or "")
+	if ts == "" then ts = "~" .. sms_fingerprint(message) end
+	return tostring(index) .. "|" .. ts
 end
 
 function SMS.load()
@@ -2134,7 +2305,7 @@ function SMS.merge(msgs)
 	SMS.load()
 	local keep, unread = {}, 0
 	for _, m in ipairs(msgs) do
-		local k = sms_key(m.index, m.ts)
+		local k = sms_key(m.index, m.ts, m)
 		local st = SMS.seen[k]
 		if st == nil then st = m.unread and "unread" or "read" end
 		keep[k] = st
@@ -2321,56 +2492,76 @@ end
 --- this is never a poll.  It is safe at exactly two moments -- when the channel comes
 --- up and just after a +CMTI -- because those are the moments the modem's flag is
 --- still the truth, and from then on the read state is ours (SMS.seen).
-local function sms_list_job(done)
-	local msgs = {}
+local function sms_list_job(done, requested_storage)
+	local msgs, report = {}, { headers = 0, decode_errors = 0 }
+	local storage = sms_storage_name(requested_storage)
 	--- In PDU mode the header line is `+CMGL: <index>,<stat>,[<alpha>],<length>` and
-	--- the PDU itself is on the line after it.  <stat> is a number here, where text
-	--- mode spelled it out.
+	--- the PDU itself is on the line after it.  Status may be numeric or quoted text.
 	local function parse(lines)
-		local i = 1
-		while i <= #lines do
-			local idx, stat = lines[i]:match("^%+CMGL:%s*(%d+),%s*(%d+)")
-			if idx then
-				local m, why = pdu_decode(lines[i + 1] or "")
-				if m then
-					stat = tonumber(stat)
-					m.index = tonumber(idx)
-					m.status = PDU_STATUS[stat] or tostring(stat)
-					m.unread = (stat == 0)
-					msgs[#msgs + 1] = m
-				else
-					log("sms %s: %s", idx, why or "undecodable")
-				end
-				i = i + 2
-			else
-				i = i + 1
+		msgs, report = parse_cmgl(lines)
+		for _, message in ipairs(msgs) do
+			message.storage = storage or (S.sms or {}).storage
+			if message.decode_error then
+				log("sms %s: %s", tostring(message.index), message.decode_error)
 			end
 		end
 	end
-	return request("sms_list", {
-		{ cmd = "AT+CMGF=0", tolerate = true },
-		{ cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true },
-		{ cmd = "AT+CMGL=4", parse = parse, tolerate = true, timeout = 40 },
-	}, function(ok, _, err)
+	local steps = {
+		{ cmd = "AT+CMGF=0" },
+	}
+	if storage then
+		steps[#steps + 1] = { cmd = ('AT+CPMS="%s"'):format(storage) }
+	end
+	steps[#steps + 1] =
+		{ cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true }
+	steps[#steps + 1] =
+		{ cmd = "AT+CMGL=4", parse = parse, timeout = 24 }
+	return request("sms_list", steps, function(ok, _, err)
 		S.sms = S.sms or {}
 		local list = assemble(msgs)
-		if ok then
-			M.sms_pending = 0
-			S.sms.unread = SMS.merge(list)
-			M.sms_messages = list
-			M.sms_generation = (M.sms_generation or 0) + 1
+		local effective_ok, effective_err = ok, err
+		if ok and report.headers == 0 and (S.sms.used or 0) > 0 then
+			effective_ok = false
+			effective_err = ("message store reports %d occupied slot(s), but CMGL returned no parseable entries")
+				:format(S.sms.used)
 		end
+		if effective_ok then
+			local pending = sms_pending_reconcile(msgs, storage)
+			M.sms_last_error = nil
+			if pending > 0 then
+				local retrying = sms_schedule_retry(
+					"an announced SMS is not yet available in storage")
+				if #msgs == 0 or not retrying then
+					effective_ok = false
+					effective_err = M.sms_last_error or
+						"an announced SMS is not yet available in storage"
+				end
+			end
+			if effective_ok then
+				S.sms.unread = SMS.merge(list)
+				M.sms_messages = list
+				M.sms_generation = (M.sms_generation or 0) + 1
+			end
+		elseif sms_pending_count() > 0 then
+			sms_schedule_retry(effective_err or "message-store refresh failed")
+		end
+		if not effective_ok then
+			M.sms_last_error = effective_err or "message-store refresh failed"
+		end
+		S.sms.error = M.sms_last_error
 		M.publish()
-		done(ok, list, err, #msgs)
+		done(effective_ok, list, effective_err, #msgs, report)
 	end)
 end
 
 function API.sms_list(cli, args)
 	if not need_link(cli) then return end
-	M.enqueue(sms_list_job(function(ok, list, err, segments)
+	M.enqueue(sms_list_job(function(ok, list, err, segments, report)
 		reply(cli, { ok = ok, error = err, count = #list,
-		             segments = segments, messages = list })
-	end))
+		             segments = segments, messages = list,
+		             decode_errors = report.decode_errors,
+		             pending = M.sms_pending or 0 })
+	end, M.sms_sync_storage))
 	M.start_next()
 end
 
@@ -2378,8 +2569,10 @@ end
 --- handling and the boot-time sync keep this cache current; consumers may poll this
 --- method without issuing repeated AT+CMGL reads or opening another modem channel.
 function API.sms_snapshot(cli, args)
-	reply(cli, { ok = true, generation = M.sms_generation or 0,
-	             messages = M.sms_messages or {} })
+	reply(cli, { ok = M.sms_last_error == nil, error = M.sms_last_error,
+	             stale = M.sms_last_error ~= nil,
+	             generation = M.sms_generation or 0,
+	             messages = M.sms_messages or {}, pending = M.sms_pending or 0 })
 end
 
 --- The same read, with nobody asking.  Without it the message counter is whatever the
@@ -2389,7 +2582,7 @@ function M.sms_sync(why)
 	if M.link.state ~= "ready" or M.sms_syncing then return end
 	M.sms_syncing = true
 	log("syncing message store (%s)", why)
-	M.enqueue(sms_list_job(function() M.sms_syncing = false end))
+	M.enqueue(sms_list_job(function() M.sms_syncing = false end, M.sms_sync_storage))
 	M.start_next()
 end
 
@@ -2398,31 +2591,34 @@ function API.sms_read(cli, args)
 	if not idx then return reply(cli, { error = "index required" }) end
 	local msg = {}
 	run_for(cli, "sms_read", {
-		{ cmd = "AT+CMGF=0", tolerate = true },
-		{ cmd = "AT+CMGR=" .. idx, tolerate = true, parse = function(lines)
+		{ cmd = "AT+CMGF=0" },
+		{ cmd = "AT+CMGR=" .. idx, parse = function(lines)
 			-- +CMGR: <stat>,[<alpha>],<length> and the PDU on the next line
 			for i, l in ipairs(lines) do
-				local stat = l:match("^%+CMGR:%s*(%d+)")
-				if stat then
-					local m = pdu_decode(lines[i + 1] or "")
-					if m then
-						stat = tonumber(stat)
-						m.index = idx
-						m.status = PDU_STATUS[stat] or tostring(stat)
-						m.unread = (stat == 0)
-						m.parts, m.indexes = 1, { idx }
-						m.udh = nil
-						msg = m
-					end
+				local _, code, status = parse_sms_header(l, "CMGR")
+				if status then
+					local m, why = pdu_decode_safe(lines[i + 1] or "")
+					if not m then m = { text = "", decode_error = tostring(why or "undecodable") } end
+					m.index = idx
+					m.status = status
+					m.unread = (code == 0)
+					m.parts, m.indexes = 1, { idx }
+					m.udh = nil
+					msg = m
 				end
 			end
 		end },
 	}, function(ok, _, err)
 		if ok and msg.index then
 			SMS.mark(msg.index, msg.ts, "read")
-			if (M.sms_pending or 0) > 0 then M.sms_pending = M.sms_pending - 1 end
+			sms_pending_forget(msg.index)
+			for _, cached in ipairs(M.sms_messages or {}) do
+				if cached.index == msg.index then cached.unread = false end
+			end
+			M.sms_generation = (M.sms_generation or 0) + 1
 			M.publish()
 		end
+		if ok and not msg.index then ok, err = false, "CMGR returned no parseable message" end
 		return { ok = ok, error = err, message = msg }
 	end)
 end
@@ -2433,9 +2629,11 @@ function API.sms_mark(cli, args)
 	if not idx then return reply(cli, { error = "index required" }) end
 	local state = (args.read == false) and "unread" or "read"
 	SMS.mark(idx, args.ts, state)
-	if state == "read" and (M.sms_pending or 0) > 0 then
-		M.sms_pending = M.sms_pending - 1
+	if state == "read" then sms_pending_forget(idx) end
+	for _, cached in ipairs(M.sms_messages or {}) do
+		if cached.index == idx then cached.unread = (state == "unread") end
 	end
+	M.sms_generation = (M.sms_generation or 0) + 1
 	M.publish()
 	reply(cli, { ok = true, index = idx, state = state, unread = (S.sms or {}).unread })
 end
@@ -2462,7 +2660,7 @@ function API.sms_delete(cli, args)
 	steps[#steps + 1] = { cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true }
 	run_for(cli, "sms_delete", steps, function(ok, _, err)
 		if ok then
-			for _, n in ipairs(wanted) do SMS.forget(n) end
+			for _, n in ipairs(wanted) do SMS.forget(n); sms_pending_forget(n) end
 			local deleted = {}
 			for _, n in ipairs(wanted) do deleted[n] = true end
 			local remaining = {}
@@ -2492,6 +2690,10 @@ function API.sms_delete_all(cli, args)
 			SMS.loaded = true
 			SMS.save()
 			M.sms_pending = 0
+			M.sms_pending_entries = {}
+			M.sms_messages = {}
+			M.sms_generation = (M.sms_generation or 0) + 1
+			M.sms_last_error = nil
 			M.publish()
 		end
 		return { ok = ok, error = err }

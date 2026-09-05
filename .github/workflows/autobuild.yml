@@ -32,6 +32,8 @@ jobs:
           PYTHONPATH=autobuild python3 -c 'import os; from common import public_key; public_key(os.environ["HH71VM_FEED_PUBLIC_KEY"].encode())'
           sh openwrt-feed/package/utils/modem-extra-tools/build-helper.sh
           python3 -m unittest discover -s tests -v
+          lua5.1 tests/test_modem_sms.lua openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/hh71vm-modemd
+          node tests/test_sms_luci.js openwrt-feed/package/luci/applications/luci-app-hh71vm-modem/htdocs/luci-static/resources/view/hh71vm/sms.js
           lua5.1 openwrt-feed/package/utils/modem-extra-tools/tests/unit.lua openwrt-feed/package/utils/modem-extra-tools/files
 
   build:

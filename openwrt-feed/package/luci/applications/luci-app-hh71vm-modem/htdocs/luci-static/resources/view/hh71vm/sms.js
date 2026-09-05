@@ -19,13 +19,46 @@ function segments(text) {
 	return { ucs2: ucs2, count: n, limit: lim, used: text.length };
 }
 
+/* A failed modem read must never be rendered as a successful empty inbox.  Keep the
+ * last cache visible when possible, but label it stale and preserve the real error. */
+function loadMessages() {
+	function fallback(error) {
+		var detail = String((error && (error.error || error.message)) ||
+		                    _('The message store could not be read.'));
+		return L.resolveDefault(m.api.smsSnapshot(), {}).then(function (snapshot) {
+			snapshot = snapshot || {};
+			return {
+				ok: false,
+				error: detail,
+				stale: true,
+				messages: Array.isArray(snapshot.messages) ? snapshot.messages : [],
+				generation: snapshot.generation,
+				pending: snapshot.pending
+			};
+		});
+	}
+
+	return m.api.smsList().then(function (list) {
+		list = list || {};
+		return (list.ok === true && !list.error) ? list : fallback(list);
+	}, fallback);
+}
+
+function loadPage() {
+	/* Read status after the list operation so the page count and the global indicator
+	 * describe the same cache generation rather than two sides of a CMGL refresh. */
+	return loadMessages().then(function (list) {
+		return m.api.status().then(function (status) { return [status || {}, list]; });
+	});
+}
+
 return view.extend({
 	handleSave: null,
 	handleSaveApply: null,
 	handleReset: null,
 
 	load: function () {
-		return Promise.all([m.api.status(), m.api.smsList()]);
+		return loadPage();
 	},
 
 	render: function (data) {
@@ -34,7 +67,7 @@ return view.extend({
 		var self = this;
 
 		function reload() {
-			return Promise.all([m.api.status(), m.api.smsList()]).then(function (d) {
+			return loadPage().then(function (d) {
 				draw(d[0] || {}, d[1] || {});
 			});
 		}
@@ -161,11 +194,14 @@ only if your operator told you to.'))])
 					                      : _('%d parts missing').format(msg.missing),
 					                      'warning') : E([]),
 					msg.unread ? m.label(_('new'), 'notice') : E([]),
+					msg.decode_error ? m.label(_('decode error'), 'warning') : E([]),
 					(msg.status && msg.status.indexOf('STO') === 0)
 						? m.label(_('draft'), 'warning') : E([]),
 					acts
 				]),
-				E('div', { 'class': 'msg-body' }, msg.text || '')
+				E('div', { 'class': 'msg-body' }, msg.decode_error
+					? _('This stored message could not be decoded. It remains available for marking or deletion by slot.')
+					: (msg.text || ''))
 			]);
 		}
 
@@ -174,8 +210,20 @@ only if your operator told you to.'))])
 			var kids = [];
 			var warn = m.linkState(st);
 			if (warn) kids.push(warn);
+			if (list.ok !== true) kids.push(E('div', { 'class': 'alert-message error' }, [
+				E('h4', {}, _('Messages could not be refreshed')),
+				E('p', {}, String(list.error || _('The message store could not be read.'))),
+				msgs.length ? E('p', {}, _('The last cached messages are shown below.')) : E([])
+			]));
+			if ((list.decode_errors || 0) > 0) kids.push(E('div', {
+				'class': 'alert-message warning'
+			}, _('One or more stored messages could not be decoded. Other messages are still shown.')));
 
 			var pct = (sms.total ? Math.round(100 * (sms.used || 0) / sms.total) : 0);
+			var visibleUnread = msgs.filter(function (msg) { return msg.unread === true; }).length;
+			if (list.ok === true && !list.pending && sms.unread !== visibleUnread)
+				kids.push(E('div', { 'class': 'alert-message warning' },
+					_('The unread indicator and the visible message list are temporarily out of sync.')));
 
 			kids.push(E('div', { 'class': 'cbi-section fade-in' }, [
 				E('h3', {}, _('Messages')),
@@ -202,7 +250,13 @@ only if your operator told you to.'))])
 				])
 			]));
 
-			if (!msgs.length) {
+			if (!msgs.length && list.ok !== true) {
+				kids.push(E('div', { 'class': 'cbi-section fade-in' }, [
+					E('h3', {}, _('Inbox')),
+					E('p', { 'class': 'cbi-value-description' },
+					  _('No message rows can be shown until the message store refresh succeeds.'))
+				]));
+			} else if (!msgs.length) {
 				kids.push(E('div', { 'class': 'cbi-section fade-in' }, [
 					E('h3', {}, _('Inbox')),
 					E('p', { 'class': 'cbi-value-description' },

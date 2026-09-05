@@ -73,6 +73,7 @@ var api = {
 	apnSet:          decl('apn_set',      ['cid', 'apn', 'pdp_type', 'auth', 'user', 'pass']),
 	apnDelete:       decl('apn_delete',   ['cid']),
 	smsRead:         decl('sms_read',     ['index']),
+	smsSnapshot:     decl('sms_snapshot'),
 	smsMark:         decl('sms_mark',     ['index', 'ts', 'read']),
 	smsSend:         decl('sms_send',     ['to', 'text']),
 	smsSave:         decl('sms_save',     ['to', 'text']),
