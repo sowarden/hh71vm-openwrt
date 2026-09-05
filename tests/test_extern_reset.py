@@ -74,7 +74,7 @@ class ResetShellTests(unittest.TestCase):
         self.assertTrue((self.share / "opkg").is_dir())
         self.assertEqual(list((self.share / "opkg").iterdir()), [])
         self.assertFalse(self.pending.exists())
-        self.assertFalse(self.opkg_conf.exists())
+        self.assertEqual(self.opkg_conf.read_text(), f"dest extern {self.share}/opkg\n")
 
     def test_upgrade_removes_every_fixed_openwrt_area(self):
         for name in ("opkg", "bin", "control", "xray-loopback-test", "xray"):

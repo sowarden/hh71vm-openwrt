@@ -87,6 +87,13 @@ run() {
 
 	mkdir "$TARGET/opkg" || fail "cannot initialize a clean package destination"
 	chmod 0755 "$TARGET/opkg"
+	if [ "$(uci -q get hh71vm-extern.extern.opkg_dest 2>/dev/null || echo 1)" = 1 ]; then
+		# Complete publication before removing the marker. If power is lost
+		# during this write, the next retry removes the file and starts again.
+		printf 'dest extern %s\n' "$TARGET/opkg" > "$OPKG_CONF"
+	else
+		rm -f "$OPKG_CONF"
+	fi
 	sync
 	mount_is_safe || fail "mount changed before cleanup completion"
 	rm -f "$PENDING"
