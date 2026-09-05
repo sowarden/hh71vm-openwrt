@@ -385,7 +385,9 @@ class ImageInspectionTests(unittest.TestCase):
                 path = tree / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
-                if name == "usr/sbin/iwpriv":
+                # A real image installs every interpreter script executable; the
+                # fixture has to as well, or it would not represent one.
+                if name == "usr/sbin/iwpriv" or data.startswith(b"#!"):
                     path.chmod(0o755)
             squash = root / "rootfs.bin"
             subprocess.run(["mksquashfs", str(tree), str(squash), "-noappend", "-no-progress", "-all-root", "-processors", "1"],
@@ -402,7 +404,7 @@ class ImageInspectionTests(unittest.TestCase):
             (output / auto.IMAGE_ASSETS["sysupgrade"]).write_bytes(kernel.ljust(2949120, b"\xff") + body)
             cpio = bytearray()
             for name, data in list(files.items()) + [("TRAILER!!!", b"")]:
-                mode = 0o100755 if name == "usr/sbin/iwpriv" else 0o100644
+                mode = 0o100755 if name == "usr/sbin/iwpriv" or data.startswith(b"#!") else 0o100644
                 values = [0, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name) + 1, 0]
                 cpio += ("070701" + "".join(f"{v:08x}" for v in values)).encode() + name.encode() + b"\0"
                 cpio += b"\0" * (-len(cpio) % 4)
@@ -416,6 +418,14 @@ class ImageInspectionTests(unittest.TestCase):
             mode_probe.modes = {name: 0o100644 for name in files}
             with self.assertRaisesRegex(ValueError, "iwpriv is not executable"):
                 images.check_files(mode_probe, TAG, KEY, [package("kernel", version=KERNEL)])
+            # An image whose scripts cannot be executed is broken even when every
+            # binary and hash is right: /usr/sbin/hh71vm-modemd shipped 0644 once and
+            # took the whole modem interface down without a single failing check.
+            script_probe = images.ImageFiles(files)
+            script_probe.modes = {name: 0o100755 for name in files}
+            script_probe.modes["usr/sbin/autosysupgrade"] = 0o100644
+            with self.assertRaisesRegex(ValueError, "non-executable scripts: usr/sbin/autosysupgrade"):
+                images.check_files(script_probe, TAG, KEY, [package("kernel", version=KERNEL)])
             exact = output / auto.IMAGE_ASSETS["sysupgrade"]
             renamed = output / "renamed-sysupgrade.bin"
             exact.rename(renamed)

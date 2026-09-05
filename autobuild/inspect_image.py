@@ -90,7 +90,34 @@ def check_files(files, tag, key, expected_installed=None):
         raise ValueError("image iwpriv is not ELF")
     if not getattr(files, "modes", {}).get("usr/sbin/iwpriv", 0) & 0o111:
         raise ValueError("image iwpriv is not executable")
+    check_executable_scripts(files)
     return kernel
+
+
+# Directories whose contents are EXECUTED. Everything under lib/, etc/hotplug.d/ and
+# lib/upgrade/ is sourced by another shell instead, and is legitimately 0644.
+EXECUTED_DIRECTORIES = (
+    "bin/", "sbin/", "usr/bin/", "usr/sbin/", "usr/libexec/",
+    "etc/init.d/", "etc/uci-defaults/", "etc/rc.button/",
+)
+
+
+def check_executable_scripts(files):
+    """A script that cannot be executed is a broken image, not a cosmetic detail.
+
+    The iwpriv check above was written for one instance of this defect and only ever
+    covered that one file. On 2026-09-05 the same class of defect shipped
+    /usr/sbin/hh71vm-modemd at 0644 - the image was otherwise correct, and the router
+    reported the Qualcomm control channel as down because the init script's `[ -x ]`
+    guard skipped the daemon in silence. Fail the build instead of the router.
+    """
+    modes = getattr(files, "modes", {})
+    broken = sorted(name for name, body in files.items()
+                    if body[:2] == b"#!"
+                    and name.startswith(EXECUTED_DIRECTORIES)
+                    and not modes.get(name, 0) & 0o111)
+    if broken:
+        raise ValueError("image ships non-executable scripts: " + ", ".join(broken))
 
 
 def squashfs_files(path, offset):

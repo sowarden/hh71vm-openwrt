@@ -10,7 +10,17 @@ PROG=/usr/sbin/hh71vm-modemd
 
 start_service() {
 	# No modem link means nothing to talk to; the daemon would just spin.
-	[ -x "$PROG" ] || return 0
+	[ -f "$PROG" ] || return 0
+
+	# Installed but not executable is a packaging defect, not a configuration, and it
+	# must never pass silently: on 2026-09-05 a locally built image shipped the daemon
+	# 0644, this guard skipped the service without a word, and every modem page then
+	# reported the Qualcomm control channel as down on a router whose modem was fine.
+	if [ ! -x "$PROG" ]; then
+		logger -s -t hh71vm-modemd -p daemon.err \
+			"$PROG is not executable, the modem daemon cannot start (chmod +x to recover)"
+		return 1
+	fi
 
 	procd_open_instance
 	procd_set_param command "$PROG" --foreground

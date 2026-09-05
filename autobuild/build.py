@@ -419,6 +419,10 @@ def main():
     if subprocess.check_output(["git", "-C", str(args.source), "rev-parse", "HEAD"], text=True).strip() != args.commit:
         parser.error("checkout differs from requested source commit")
     lock = read_json(args.source / "autobuild/lock.json")
+    # collect() validates these at the very end, so a thirteenth changelog entry used to
+    # be reported half an hour into a clean build, with everything already compiled.
+    # Nothing here depends on the build, so refuse before the first stage instead.
+    read_release_notes(args.source / "release-notes.json")
     key = os.environ["HH71VM_FEED_PUBLIC_KEY"].encode()
     tag = identity(args.commit, args.run_id, args.attempt)
     normalized = prepare(args.source, args.build, args.downloads, key, tag, lock)

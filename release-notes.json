@@ -1,18 +1,6 @@
 {
   "schema": 1,
   "changes": [
-    "Eliminate Port 0 ingress CRC errors by matching the stock RGMII transmit compensation timing.",
-    "Raise 5 GHz throughput by applying the per-rate transmit power limits, forcing A-MSDU aggregation, enabling the 80 MHz short guard interval, and keeping the bridge shortcut on this platform.",
-    "Share 5 GHz airtime evenly between the access point and its clients, so neither direction starves while traffic runs both ways at once.",
-    "Show both radios with their real frequencies and modes on the LuCI wireless pages, and keep their band and channel when the form is saved instead of clearing them and bringing the 5 GHz radio back up as a 2.4 GHz one.",
-    "Answer USSD requests that take longer than the web interface allows a single call, by running them as a job and showing how long the network has been processing it.",
-    "Apply the TTL setting to outgoing traffic again: the packaged IP option extensions now contain the target it needs.",
-    "Follow the radios with the front panel Wi-Fi indicator, using the event channel the stock firmware uses instead of a write that is painted over a second later.",
-    "Mount the storage shared by the modem half at /mnt/extern for large packages, and reset only the OpenWrt-owned package payload after each firmware update so stale files cannot block a clean reinstall.",
-    "Expand the matching signed package feed with CIFS, NFSv3/NFSv4, FUSE, GRE, IPIP, L2TP/L2TPv3, PPTP, MPPE, and their required protocol helpers.",
-    "Preserve or remove modem-reported current-only LTE bands safely without fixed operator band lists.",
-    "Stop the switch core corrupting a few bytes of anything this router sends: frames the driver handed it as more than one buffer were damaged on the wire, invisibly to TCP, and are now assembled into one.",
-    "Add Telegram-only HTTP/SOCKS proxy support, fix Xray Proxy mode switching, and apply LuCI UI fixes.",
-    "Keep readable SMS messages visible when another slot is malformed, retry delayed arrivals in the announced storage, and show refresh failures instead of an empty inbox."
+    "Fix SMS and USSD on some Qualcomm modem revisions."
   ]
 }
