@@ -152,6 +152,14 @@ do
 	sms.M.parsers.cpms({ '+CPMS: "ME",4,100,"ME",4,100,"SM",10,10' })
 	equal(state.sms.storage, "ME", "quoted CPMS storage")
 	equal(state.sms.used, 4, "quoted CPMS used")
+	equal(state.sms.write_storage, "ME", "quoted CPMS write storage")
+	equal(state.sms.receive_storage, "SM", "quoted CPMS receive storage")
+	equal(state.sms.receive_used, 10, "quoted CPMS receive used")
+	sms.M.parsers.cpms({ '+CPMS: "SM" , 3 , 15 , "ME" , 0 , 100 , "ME" , 2 , 100' })
+	equal(state.sms.storage, "SM", "spaced CPMS read storage")
+	equal(state.sms.write_storage, "ME", "spaced CPMS write storage")
+	equal(state.sms.receive_storage, "ME", "spaced CPMS receive storage")
+	equal(state.sms.receive_used, 2, "spaced CPMS receive used")
 	sms.M.parsers.cpms({ "+CPMS:  SM , 2 , 10" })
 	equal(state.sms.storage, "SM", "unquoted CPMS storage")
 	equal(state.sms.total, 10, "unquoted CPMS total")
@@ -159,6 +167,14 @@ do
 	equal(state.sms.storage, "SM", "short CPMS preserves storage")
 	equal(state.sms.used, 3, "short CPMS used")
 	equal(state.sms.total, 50, "short CPMS total")
+	state.sms.write_storage, state.sms.receive_storage = "ME", "SM"
+	sms.M.parsers.cpms({ "+CPMS: 4,50,5,60,6,70" })
+	equal(state.sms.storage, "SM", "numeric CPMS preserves read storage")
+	equal(state.sms.write_storage, "ME", "numeric CPMS preserves write storage")
+	equal(state.sms.receive_storage, "SM", "numeric CPMS preserves receive storage")
+	equal(state.sms.used, 4, "numeric CPMS read used")
+	equal(state.sms.write_used, 5, "numeric CPMS write used")
+	equal(state.sms.receive_used, 6, "numeric CPMS receive used")
 end
 
 do
@@ -190,6 +206,12 @@ do
 	equal(job.steps[4].cmd, "AT+CMGL=4", "list command")
 	equal(job.steps[4].timeout, 24, "rpc-bounded list timeout")
 	equal(job.steps[4].tolerate, nil, "list errors are not tolerated")
+
+	M.state.sms = { storage = "ME", receive_storage = "SM" }
+	local receive_job = sms.sms_list_job(function() end)
+	equal(receive_job.steps[2].cmd, 'AT+CPMS="SM"', "boot uses CPMS receive storage")
+	local explicit_job = sms.sms_list_job(function() end, "ME")
+	equal(explicit_job.steps[2].cmd, 'AT+CPMS="ME"', "CMTI storage overrides CPMS receive storage")
 end
 
 do
@@ -209,7 +231,7 @@ do
 	local M, SMS = sms.M, sms.SMS
 	SMS.loaded, SMS.seen = true, {}
 	M.sms_pending_entries, M.sms_pending, M.sms_sync_storage = {}, 0, nil
-	M.state.sms = { used = 0 }
+	M.state.sms = { used = 0, storage = "ME" }
 	M.sms_generation, M.sms_messages, M.sms_last_error = 0, nil, nil
 	local outcome
 	local empty_job = sms.sms_list_job(function(ok, list, err)

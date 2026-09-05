@@ -7,6 +7,10 @@ QUEUED, so anything already in the AT queue -- an operator scan is up to 180 s, 
 submit up to 330 s -- burned the whole window before the code was ever sent, and the
 user got "USSD timeout" from a network that had not been asked anything.
 
+Older Qualcomm firmware can also accept AT+CUSD but omit the later +CUSD URC from
+/dev/smd7.  Its stock core_app still receives the QMI voice result, so the daemon now
+prefers that native polled service and keeps AT as a capability fallback.
+
 Measured on the device 2026-09-02: with the old daemon an idle modem answered *100# in
 1 s, and the same code sent while an operator scan was running failed with
 "USSD timeout" after exactly 25 s.  With the job API the same sequence waited 63 s in
@@ -41,13 +45,13 @@ class UssdDaemonTests(unittest.TestCase):
         self.assertIn("function API.ussd_result(cli)", self.source)
 
     def test_the_network_budget_starts_at_dispatch_not_at_enqueue(self):
-        # The whole point.  The clock is set in the on_dispatch hook, which runs when
-        # the request leaves the queue, and nowhere else.
+        # Both transports use one helper: native calls it after SendUSSD succeeds and
+        # AT receives it as the request dispatch hook.  Queue time is never charged.
         self.assertIn("M.ussd.deadline = mono() + CFG.ussd_timeout", self.source)
-        before, after = self.source.split("M.ussd.deadline = mono() + CFG.ussd_timeout", 1)
-        self.assertIn("end, function()", before[-400:],
-                      "the deadline must be set from the dispatch hook")
         self.assertEqual(self.source.count("M.ussd.deadline = mono()"), 1)
+        self.assertIn("local function ussd_start_budget()", self.source)
+        self.assertIn("M.ussd.transport = \"kcap\"\n\t\tussd_start_budget()", self.source)
+        self.assertIn("end, ussd_start_budget))", self.source)
 
     def test_the_queue_has_a_dispatch_hook_and_uses_it(self):
         self.assertIn("local function request(name, steps, cb, on_dispatch)", self.source)
@@ -64,6 +68,31 @@ class UssdDaemonTests(unittest.TestCase):
         # Nothing in a +CUSD line says which request it answers.
         self.assertIn('if M.ussd and M.ussd.state == "running" then return true end',
                       self.source)
+
+    def test_native_qmi_path_is_preferred_and_polled(self):
+        self.assertIn('KCAP.call("GetUSSDSendResult")', self.source)
+        self.assertIn('KCAP.call("SendUSSD", {', self.source)
+        self.assertIn('KCAP.call("SetUSSDEnd")', self.source)
+        self.assertIn('M.after(1, ussd_kcap_poll)', self.source)
+        self.assertIn('if state == 2 then', self.source)
+        self.assertIn('elseif state == 3 then', self.source)
+
+    def test_capability_probe_prevents_duplicate_fallback_send(self):
+        begin = self.source.index('local function ussd_begin(code)')
+        finish = self.source.index('function API.ussd_start', begin)
+        body = self.source[begin:finish]
+        probe = body.index('KCAP.call("GetUSSDSendResult")')
+        native_send = body.index('KCAP.call("SendUSSD", {')
+        at_send = body.index("AT+CUSD=1")
+        self.assertLess(probe, native_send)
+        self.assertLess(native_send, at_send)
+        self.assertIn('if native then', body[probe:native_send])
+        self.assertIn('M.ussd.transport = "at"', body[native_send:at_send])
+
+    def test_native_result_is_exposed_through_existing_job_snapshot(self):
+        self.assertIn("transport = u.transport", self.source)
+        self.assertIn("text = body", self.source)
+        self.assertIn("raw = json.stringify(result)", self.source)
 
     def test_the_blocking_call_survives_for_older_pages(self):
         self.assertIn("function API.ussd(cli, args)", self.source)

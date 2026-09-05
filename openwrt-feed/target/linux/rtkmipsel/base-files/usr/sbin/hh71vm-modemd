@@ -49,10 +49,10 @@ local CFG = {
 	-- minutes of reconnect loops.  Waiting it out is the only thing that works: ESC
 	-- does not interrupt a submit already in flight.
 	sms_send_timeout = 330,
-	-- USSD answers arrive as a +CUSD URC some time after the command itself says OK,
-	-- and how long that takes is the network's business, not ours.  This clock starts
-	-- when the request leaves the queue, so it is a network budget and not a queue
-	-- budget; the request is polled, so it is free to be longer than any RPC ceiling.
+	-- USSD answers arrive later, either in Qualcomm core_app's polled result or as an
+	-- AT +CUSD URC.  This clock starts only after the selected transport accepts the
+	-- request, so it is a network budget and not a queue budget; the request is polled,
+	-- so it is free to be longer than any RPC ceiling.
 	ussd_timeout  = 90,
 	connect_wait  = 10,    -- TCP connect deadline
 	sync_window   = 1.2,   -- discard shell noise for this long after `cat` starts
@@ -1896,19 +1896,43 @@ end
 function M.parsers.cpms(lines)
 	for _, l in ipairs(lines) do
 		local body = l:match("^%+CPMS:%s*(.+)$")
-		local m1, u1, t1
+		local m1, u1, t1, m2, u2, t2, m3, u3, t3
 		if body then
-			m1, u1, t1 = body:match('^%s*"([^"]+)"%s*,%s*(%d+)%s*,%s*(%d+)')
-			if not m1 then
-				m1, u1, t1 = body:match("^%s*([^,%s]+)%s*,%s*(%d+)%s*,%s*(%d+)")
+			local fields = {}
+			for item in (body .. ","):gmatch("([^,]*),") do
+				item = trim(item)
+				fields[#fields + 1] = item:match('^"(.*)"$') or item
 			end
-			if not u1 then u1, t1 = body:match("^%s*(%d+)%s*,%s*(%d+)") end
+			if fields[1] and fields[1]:match("^[A-Za-z][A-Za-z]$") then
+				m1, u1, t1 = fields[1], fields[2], fields[3]
+				m2, u2, t2 = fields[4], fields[5], fields[6]
+				m3, u3, t3 = fields[7], fields[8], fields[9]
+			else
+				-- A few firmwares omit the memory names and return only three
+				-- used/total pairs.  Preserve the known stores but still refresh counts.
+				u1, t1 = fields[1], fields[2]
+				u2, t2 = fields[3], fields[4]
+				u3, t3 = fields[5], fields[6]
+			end
+			if not tonumber(u1) or not tonumber(t1) then u1, t1 = nil, nil end
 		end
 		if u1 then
 			S.sms = S.sms or {}
 			if m1 then S.sms.storage = m1 end
 			S.sms.used = tonumber(u1)
 			S.sms.total = tonumber(t1)
+			if tonumber(u2) and tonumber(t2) then
+				if m2 then S.sms.write_storage = m2 end
+				S.sms.write_used = tonumber(u2)
+				S.sms.write_total = tonumber(t2)
+			end
+			if tonumber(u3) and tonumber(t3) then
+				-- The third CPMS memory is where unsolicited SMS delivery is stored.
+				-- It may differ from the first (read/delete) memory on older firmware.
+				if m3 then S.sms.receive_storage = m3 end
+				S.sms.receive_used = tonumber(u3)
+				S.sms.receive_total = tonumber(t3)
+			end
 		end
 	end
 end
@@ -2494,7 +2518,12 @@ end
 --- still the truth, and from then on the read state is ours (SMS.seen).
 local function sms_list_job(done, requested_storage)
 	local msgs, report = {}, { headers = 0, decode_errors = 0 }
-	local storage = sms_storage_name(requested_storage)
+	local sms_state = S.sms or {}
+	-- A +CMTI-selected store is authoritative.  At boot and on manual refresh use
+	-- CPMS's receive memory, not merely the current read/delete memory: affected older
+	-- firmware reports ME as empty read storage while delivering every SMS into SM.
+	local storage = sms_storage_name(requested_storage or sms_state.receive_storage or
+		sms_state.storage)
 	--- In PDU mode the header line is `+CMGL: <index>,<stat>,[<alpha>],<length>` and
 	--- the PDU itself is on the line after it.  Status may be numeric or quoted text.
 	local function parse(lines)
@@ -3185,9 +3214,10 @@ function API.phonebook_delete(cli, args)
 	})
 end
 
---- USSD.  The answer does not come back in the command's own response: AT+CUSD
---- returns OK almost at once and the text arrives later as a +CUSD URC, whenever the
---- network feels like it.
+--- USSD.  Prefer Qualcomm core_app's native QMI voice methods.  Some older HH71VM
+--- builds accept AT+CUSD on /dev/smd7 but never forward the resulting +CUSD URC to
+--- that port, even though GetUSSDSendResult contains the successful network answer.
+--- Firmware without the native methods keeps the established AT fallback.
 ---
 --- This is therefore a job, started by `ussd_start` and polled with `ussd_result`,
 --- for the same reason the operator scan is one: LuCI's /admin/ubus proxy cuts any
@@ -3215,17 +3245,30 @@ local function ussd_snapshot()
 		started = u.started,
 		finished = u.finished,
 		elapsed = u.started and ((u.finished or os.time()) - u.started) or nil,
+		transport = u.transport,
 	}
 end
 
 local function ussd_finish(state, fields)
 	local u = M.ussd
 	if not u or u.state ~= "running" then return end
+	local transport = u.transport
 	u.state = state
 	u.finished = os.time()
 	u.deadline = nil
 	M.ussd_wait = nil
 	for k, v in pairs(fields or {}) do u[k] = v end
+	if transport == "kcap" then
+		-- Result collection is complete; release an interactive or failed session.
+		KCAP.call("SetUSSDEnd")
+	end
+end
+
+local function ussd_start_budget()
+	if M.ussd and M.ussd.state == "running" then
+		M.ussd.deadline = mono() + CFG.ussd_timeout
+		M.ussd.started = os.time()
+	end
 end
 
 --- Called from M.on_urc for every +CUSD line while a job is waiting for one.
@@ -3238,6 +3281,37 @@ local function ussd_on_urc(line)
 	})
 end
 
+local ussd_kcap_poll
+ussd_kcap_poll = function()
+	local u = M.ussd
+	if not u or u.state ~= "running" or u.transport ~= "kcap" then return end
+
+	local result, err = KCAP.call("GetUSSDSendResult")
+	if result then
+		local state = tonumber(result.SendState or result.send_state)
+		local body = tostring(result.UssdContent or result.ussd_content or "")
+		if state == 2 then
+			ussd_finish("done", {
+				status = tonumber(result.UssdType or result.ussd_type),
+				text = body,
+				raw = json.stringify(result),
+			})
+			return
+		elseif state == 3 then
+			ussd_finish("failed", {
+				error = body ~= "" and body or "Qualcomm USSD service reported failure",
+			})
+			return
+		end
+	elseif err then
+		u.kcap_error = err
+	end
+
+	if M.ussd and M.ussd.state == "running" and M.ussd.transport == "kcap" then
+		M.after(1, ussd_kcap_poll)
+	end
+end
+
 --- Start the job.  Returns nil plus a reason when the code itself is unusable or the
 --- channel is down; returns true when the code has been queued.
 local function ussd_begin(code)
@@ -3246,6 +3320,29 @@ local function ussd_begin(code)
 	if M.ussd and M.ussd.state == "running" then return true end
 
 	M.ussd = { state = "running", code = code, started = os.time() }
+
+	-- Probe before sending, so an unavailable or older core_app can safely fall back
+	-- to AT without any chance of submitting the same USSD request twice.
+	local native = KCAP.call("GetUSSDSendResult")
+	if native then
+		KCAP.call("SetUSSDEnd")
+		local sent, send_err = KCAP.call("SendUSSD", {
+			UssdContent = code,
+			UssdType = 1,
+		})
+		if not sent then
+			ussd_finish("failed", {
+				error = send_err or "Qualcomm USSD service rejected the request",
+			})
+			return true
+		end
+		M.ussd.transport = "kcap"
+		ussd_start_budget()
+		M.after(1, ussd_kcap_poll)
+		return true
+	end
+
+	M.ussd.transport = "at"
 	M.ussd_wait = ussd_on_urc
 
 	M.enqueue(request("ussd", {
@@ -3256,14 +3353,7 @@ local function ussd_begin(code)
 		if not ok then
 			ussd_finish("failed", { error = err or "the modem refused the code" })
 		end
-	end, function()
-		-- Dispatch, not enqueue: this is the budget the network gets, and the time
-		-- the request spent behind other traffic is not charged to it.
-		if M.ussd and M.ussd.state == "running" then
-			M.ussd.deadline = mono() + CFG.ussd_timeout
-			M.ussd.started = os.time()
-		end
-	end))
+	end, ussd_start_budget))
 	M.start_next()
 	return true
 end
