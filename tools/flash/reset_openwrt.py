@@ -65,6 +65,14 @@ AFTER IT RUNS
     without holding any button, and it boots the firmware it already had with
     the settings of a fresh install: 192.168.1.1, no password.
 
+VERIFIED ON HARDWARE 2026-09-07
+
+    Run against a board that had stopped booting: link up, not one frame sent,
+    and nothing left after a power cycle.  The full erase brought it back on
+    192.168.1.1 with a fresh JFFS2 overlay holding only the default files, and
+    the firmware revision it had before was still installed - which is the
+    property that separates this from a reinstall.
+
 EXAMPLES
     python tools/flash/reset_openwrt.py --dry-run
     python tools/flash/reset_openwrt.py
