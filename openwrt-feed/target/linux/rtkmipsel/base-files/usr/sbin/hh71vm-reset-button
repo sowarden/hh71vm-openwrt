@@ -1,0 +1,141 @@
+#!/bin/sh
+#
+# Factory reset from the RESET button on the bottom of the case.
+#
+# Hold it for RESET_HOLD_SECONDS and the overlay is erased, which puts every
+# setting back to the state of a freshly installed image.  Nothing else on this
+# board can do that without a PC: a bad /etc/config/network locks out SSH, LuCI
+# and Ethernet at once, and reinstalling the firmware over TFTP does NOT help,
+# because that path writes kernel and rootfs only and leaves rootfs_data (the
+# overlay, 0x600000) untouched -- see docs/flash-write-paths.md.
+#
+# WHY A POLLING LOOP AND NOT gpio-keys.  This kernel has no input subsystem at
+# all (no CONFIG_INPUT_EVDEV, no gpio-keys, no button-hotplug), and this target
+# has no device tree to declare a button in, so a proper button source would
+# mean new kernel config plus a platform device in board code.  That is a poor
+# trade here: GPIO pads on this SoC are muxed with PCIe, and a blind export
+# sweep of pins 0..63 on 2026-09-07 took out the PCIe window at 0xb9000000 and
+# killed the next 8812F interrupt with a data bus error inside
+# InterruptRecognized88XX.  With panic_on_oops=1 that is an instant reboot.  So
+# this touches exactly one pin, with a known function, and never writes to it.
+#
+# GPIO 54 (port G6) is the RESET button: BSP_RESET_BTN_PIN, the bootloader reads
+# it as PEFGH_DAT bit 22, and it was confirmed on the device on 2026-09-07 by
+# watching two held presses (5.1 s each) while WPS on GPIO 56 stayed idle.
+# It is active low and idles high.
+#
+# Usage: hh71vm-reset-button [--dry-run]
+
+RESET_GPIO=54
+RESET_HOLD_SECONDS=10
+DRY_RUN=0
+
+[ "$1" = "--dry-run" ] && DRY_RUN=1
+
+GPIO_DIR="/sys/class/gpio/gpio$RESET_GPIO"
+
+log() {
+	logger -t hh71vm-reset-button -p "daemon.$1" "$2"
+}
+
+fail() {
+	log err "$1"
+	exit 1
+}
+
+# The pad already comes up as an input.  We deliberately do not write
+# "direction": on this SoC that reconfigures the mux, and the button is useless
+# to us anyway if something else has claimed the pin.
+if [ ! -d "$GPIO_DIR" ]; then
+	echo "$RESET_GPIO" > /sys/class/gpio/export 2>/dev/null || \
+		fail "cannot export gpio$RESET_GPIO, the reset button is unavailable"
+fi
+[ -d "$GPIO_DIR" ] || fail "gpio$RESET_GPIO did not appear after export"
+
+direction="$(cat "$GPIO_DIR/direction" 2>/dev/null)"
+[ "$direction" = "in" ] || \
+	fail "gpio$RESET_GPIO direction is '$direction', not 'in'; refusing to reconfigure the pad"
+
+read_button() {
+	# 0 = pressed (active low).  A read failure must not look like a press.
+	cat "$GPIO_DIR/value" 2>/dev/null
+}
+
+overlay_mounted() {
+	grep -q ' /overlay ' /proc/mounts
+}
+
+# Flash the front panel so the user can see that the hold registered.  Without it
+# the router just goes dark for a minute, which looks exactly like a brick.
+#
+# Backgrounded and never waited for.  The panel belongs to the Qualcomm half and
+# reaching it means a TCP connection to another processor; if that half is wedged,
+# or the link is down, or the helper is missing, the reset must still happen on
+# time.  An indicator may never gate the recovery it is announcing.
+announce() {
+	[ -x /usr/sbin/hh71vm-panel-blink ] || return 0
+	/usr/sbin/hh71vm-panel-blink 30 >/dev/null 2>&1 &
+}
+
+log notice "watching gpio$RESET_GPIO, ${RESET_HOLD_SECONDS}s hold resets to defaults${DRY_RUN:+ (dry run)}"
+
+# Arming guard: a button that is already down when we start is far more likely to
+# be a wiring fault or a jammed case than a user who pressed it before the router
+# finished booting.  Without this, a pin stuck low would erase the settings on
+# every boot, forever, and the symptom would look like the firmware losing its
+# configuration on its own.  So one confirmed release is required first.
+armed=0
+held=0
+
+while :; do
+	value="$(read_button)"
+
+	case "$value" in
+	1)
+		if [ "$armed" = 0 ]; then
+			armed=1
+			log notice "button released, reset is now armed"
+		fi
+		[ "$held" = 0 ] || log notice "button released after ${held}s, nothing to do"
+		held=0
+		;;
+	0)
+		if [ "$armed" = 0 ]; then
+			# Still waiting for the first release; say so once.
+			[ "$held" = 0 ] && log warn \
+				"gpio$RESET_GPIO is low at startup; ignoring it until it goes high once"
+			held=1
+		else
+			held=$((held + 1))
+			[ "$held" = 1 ] && log notice "button pressed, hold ${RESET_HOLD_SECONDS}s for a factory reset"
+			if [ "$held" -ge "$RESET_HOLD_SECONDS" ]; then
+				if ! overlay_mounted; then
+					log err "no /overlay is mounted; there are no saved settings to erase"
+					held=0
+				elif [ "$DRY_RUN" = 1 ]; then
+					log notice "DRY RUN: would run 'jffs2reset -y' and reboot now"
+					announce
+					held=0
+				else
+					log notice "held ${held}s: erasing the overlay and rebooting"
+					echo "FACTORY RESET: reset button held ${held}s" > /dev/console 2>/dev/null
+					announce
+					sync
+					jffs2reset -y && reboot
+					exit 0
+				fi
+			fi
+		fi
+		;;
+	*)
+		# An unreadable pin is not a pressed pin.
+		log err "cannot read gpio$RESET_GPIO, giving up"
+		exit 1
+		;;
+	esac
+
+	# No usleep and no fractional sleep in this busybox, so one sample a second.
+	# The hold counter is therefore in whole seconds and a real hold needs to be
+	# a little longer than the threshold, which is the safe direction to err in.
+	sleep 1
+done

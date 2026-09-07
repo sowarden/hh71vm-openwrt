@@ -1,0 +1,152 @@
+#!/usr/bin/lua
+--[[
+hh71vm-panel-blink -- flash the whole front panel for a few seconds.
+
+This exists for one thing: telling the user that a factory reset has actually
+started.  The reset erases the overlay and reboots, and without an indication
+the router simply goes dark for a minute, which is indistinguishable from
+having broken it.
+
+WHY NOT THE EVENT CHANNEL.  hh71vm-panel-led reports an *event* over kcap and
+lets core_app decide what to light, which is the right way to own a state.  It
+cannot do this job.  Measured on the device 2026-09-07:
+
+  * event 14 (wifi wps) blinks, but ledMask=0x02 is the wlan LED and nothing else;
+  * event 2 (registered) and event 5 (signal none) were accepted and then painted
+    straight back over -- core_app keeps its own network and signal state, so
+    net-blue stayed on and signal-red stayed off;
+  * event 25 is the vendor's own "key long reset" and lights nearly everything,
+    but ledValue == ledNextValue so it is steady rather than blinking, it carries
+    ledPowerOff=1, and event 25 is declared twice -- once as "key long power off"
+    (keyCode=1) and once as "key long reset" (keyCode=3).  MainLedStatus has no
+    field for the keyCode, so sending 25 might mean "power the device off".
+
+So the panel is driven directly instead.  core_app repaints a LED it owns about
+1.5 s after anyone else writes it, which is why direct writes are wrong for a
+lasting state -- but a 250 ms toggle simply outruns it.  Measured, with core_app
+running and losing:
+
+  wlan=0   net-blue=1   signal-blue=1  power=255
+  wlan=0   net-blue=0   signal-blue=0  power=0
+  wlan=255 net-blue=255 signal-blue=255 power=255
+
+The loop runs on the Qualcomm half, backgrounded and with a fixed iteration
+count, so it always stops on its own even though this side is about to reboot
+and will never be able to stop it.
+
+Failure is deliberately silent and never fatal: the panel is not a function, and
+nothing here may delay or prevent the reset it is announcing.
+
+Usage: hh71vm-panel-blink [seconds]
+]]
+
+local nixio = require "nixio"
+
+local HOST, PORT = "192.168.225.1", 23
+local CONNECT_TIMEOUT = 3
+local BANNER_WAIT = 1.5
+local DRAIN_WAIT = 2
+local HALF_PERIOD_US = 250000
+
+local IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
+
+local seconds = tonumber(arg[1]) or 30
+if seconds < 1 or seconds > 300 then seconds = 30 end
+-- One iteration is two half periods.
+local iterations = math.floor(seconds * 1000000 / (2 * HALF_PERIOD_US))
+
+-- Globbing the LED directory on the far side keeps this correct for whatever the
+-- panel actually has and keeps the line short: that shell truncates above 1023
+-- bytes (docs/qualcomm-side-control-channel.md).
+--
+-- `tee` and not a `for` loop over the files: a loop forks once per LED and the
+-- panel visibly tears, the first and last indicator changing 10-30 ms apart.
+-- One tee opens all of them and writes in a single process.
+--
+-- The loop ALWAYS ends by lighting everything again.  `power` is not listed in
+-- led_id_map.ini, so no event owns it and core_app never repaints it: whatever
+-- the last write leaves is what the user is left looking at.  This half is going
+-- to reboot and the Qualcomm half is not, so nothing here gets a second chance
+-- to tidy up -- ending on the "off" phase would simply leave the power indicator
+-- dark on a router that is running fine.
+local COMMAND = string.format(
+	"(i=0; while [ $i -lt %d ]; do " ..
+	"echo 255 | tee /sys/class/leds/*/brightness >/dev/null; usleep %d; " ..
+	"echo 0 | tee /sys/class/leds/*/brightness >/dev/null; usleep %d; " ..
+	"i=$((i+1)); done; " ..
+	"echo 255 | tee /sys/class/leds/*/brightness >/dev/null) >/dev/null 2>&1 &\n",
+	iterations, HALF_PERIOD_US, HALF_PERIOD_US)
+
+local sock = nixio.socket("inet", "stream")
+sock:setblocking(true)
+sock:setopt("socket", "sndtimeo", CONNECT_TIMEOUT)
+sock:setopt("socket", "rcvtimeo", CONNECT_TIMEOUT)
+if not sock:connect(HOST, PORT) then
+	sock:close()
+	os.exit(1)
+end
+
+local function write_all(data)
+	while #data > 0 do
+		local n = sock:write(data)
+		if not n or n <= 0 then return false end
+		data = data:sub(n + 1)
+	end
+	return true
+end
+
+-- Refuse every telnet option and drop the negotiation from the stream.  The same
+-- flat refusal hh71vm-modemd uses on this shell.
+local function answer_negotiation(data)
+	local reply, i = {}, 1
+	while i <= #data do
+		local b = data:byte(i)
+		if b == IAC and i < #data then
+			local cmd = data:byte(i + 1)
+			if (cmd == DO or cmd == DONT or cmd == WILL or cmd == WONT) and i + 2 <= #data then
+				local opt = data:byte(i + 2)
+				if cmd == DO then
+					reply[#reply + 1] = string.char(IAC, WONT, opt)
+				elseif cmd == WILL then
+					reply[#reply + 1] = string.char(IAC, DONT, opt)
+				end
+				i = i + 3
+			elseif cmd == SB then
+				local j = data:find(string.char(IAC, SE), i, true)
+				i = j and (j + 2) or (#data + 1)
+			else
+				i = i + 2
+			end
+		else
+			i = i + 1
+		end
+	end
+	if #reply > 0 then write_all(table.concat(reply)) end
+end
+
+-- Let telnetd finish negotiating and print its banner before typing at it.
+-- nixio:read() answers with `false` on a timeout, not nil, so anything that is
+-- not a non-empty string means "stop reading" here.
+local deadline = os.time() + BANNER_WAIT
+repeat
+	local data = sock:read(4096)
+	if type(data) ~= "string" or data == "" then break end
+	answer_negotiation(data)
+until os.time() > deadline
+
+local ok = write_all(COMMAND)
+if ok then
+	-- Stay connected until the shell has echoed the line back and forked the
+	-- background job.  Closing straight after the write looks like it works --
+	-- the write succeeds and the exit status is 0 -- but the command never runs:
+	-- verified on 2026-09-07 by looking for the loop on the other side, where no
+	-- usleep or tee process ever appeared.  The far shell needs the session to
+	-- outlive its own read of the line.
+	local drain = os.time() + DRAIN_WAIT
+	repeat
+		local data = sock:read(4096)
+		if type(data) ~= "string" or data == "" then break end
+	until os.time() > drain
+end
+sock:close()
+os.exit(ok and 0 or 1)
