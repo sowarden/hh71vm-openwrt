@@ -32,8 +32,24 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
     def test_backend_uses_existing_modem_ubus_path(self):
         runtime = (BACKEND / "files/runtime.lua").read_text(encoding="utf-8")
         self.assertIn("modem_call('sms_snapshot')", runtime)
-        self.assertIn("modem_call('sms_delete', { indexes = indexes })", runtime)
+        # Slot numbers restart in every message store, so a delete that carries only
+        # an index can remove a different message from the other store.
+        self.assertIn(
+            "modem_call('sms_delete', { indexes = indexes, storage = storage or '' })",
+            runtime)
+        self.assertIn("delete_sms = function(indexes, storage)", runtime)
         self.assertNotRegex(runtime, r"/dev/smd|AT\+|192\.168\.225\.1|telnet")
+
+    def test_delete_targets_the_store_the_message_came_from(self):
+        core = (BACKEND / "files/sms_to_telegram.lua").read_text(encoding="utf-8")
+        self.assertIn("function M.message_storage(message)", core)
+        self.assertIn("self.env.delete_sms(record.indexes, record.storage)", core)
+        # A same-numbered slot in the *other* store must not be read as proof that
+        # the delete failed, or the forwarder retries for ever against it.
+        self.assertIn("local function overlaps(indexes, storage, messages)", core)
+        self.assertIn("if not storage or not where or where == storage then", core)
+        # Records written before stores were tracked adopt the store when it appears.
+        self.assertIn("if record and not record.storage then", core)
 
     def test_https_transport_hides_request_and_requires_ca_validation(self):
         source = (BACKEND / "src/http_transport.c").read_text(encoding="utf-8")

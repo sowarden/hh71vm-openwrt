@@ -72,13 +72,16 @@ var api = {
 	apnList:         decl('apn_list'),
 	apnSet:          decl('apn_set',      ['cid', 'apn', 'pdp_type', 'auth', 'user', 'pass']),
 	apnDelete:       decl('apn_delete',   ['cid']),
-	smsRead:         decl('sms_read',     ['index']),
+	/* `storage` names one message store.  Slot numbers restart in every store, so a
+	   bare index names two different messages and every slot-numbered call carries the
+	   store it came from. */
+	smsRead:         decl('sms_read',     ['index', 'storage']),
 	smsSnapshot:     decl('sms_snapshot'),
-	smsMark:         decl('sms_mark',     ['index', 'ts', 'read']),
+	smsMark:         decl('sms_mark',     ['index', 'ts', 'read', 'storage']),
 	smsSend:         decl('sms_send',     ['to', 'text']),
-	smsSave:         decl('sms_save',     ['to', 'text']),
+	smsSave:         decl('sms_save',     ['to', 'text', 'storage']),
 	smsSettings:     decl('sms_settings'),
-	smsSettingsSet:  decl('sms_settings_set', ['sca']),
+	smsSettingsSet:  decl('sms_settings_set', ['sca', 'storage_mode']),
 	phonebookList:   decl('phonebook_list', ['first', 'count']),
 	phonebookAdd:    decl('phonebook_add',  ['index', 'number', 'name']),
 	phonebookDelete: decl('phonebook_delete', ['index']),
@@ -94,10 +97,13 @@ var api = {
 	ussdResult:    decl('ussd_result'),
 
 	/* slower than rpc.js's own 20 s, but still inside the 30 s ubus ceiling */
-	smsList:      function ()        { return callLong('sms_list', {}, 28); },
-	smsDelete:    function (i, list) { return callLong('sms_delete',
-	                                       { index: i, indexes: list }, 28); },
-	smsDeleteAll: function ()        { return callLong('sms_delete_all', {}, 28); },
+	smsList:      function (store)    { return callLong('sms_list',
+	                                       { storage: store || '' }, 28); },
+	smsDelete:    function (i, list, store) { return callLong('sms_delete',
+	                                       { index: i, indexes: list,
+	                                         storage: store || '' }, 28); },
+	smsDeleteAll: function (store)    { return callLong('sms_delete_all',
+	                                       { storage: store || '' }, 28); },
 	at:           function (cmds, t) { return callLong('at',
 	                                       { cmds: cmds, timeout: t || 22 }, 28); },
 

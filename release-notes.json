@@ -1,6 +1,8 @@
 {
   "schema": 1,
   "changes": [
-    "Fix SMS and USSD on some Qualcomm modem revisions."
+    "Show SMS from both the modem and the SIM store instead of only the one the modem reports as its receive memory, which hid every message kept in the other store.",
+    "Add a message storage selector to the SMS settings, and report by name any store whose messages are not being shown.",
+    "Fix USSD on some Qualcomm modem revisions."
   ]
 }

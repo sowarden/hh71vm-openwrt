@@ -67,12 +67,12 @@ const modem = {
 		status: () => { calls.push('status'); return Promise.resolve(statusResponse); },
 		smsList: () => { calls.push('list'); return Promise.resolve(listResponse); },
 		smsSnapshot: () => { calls.push('snapshot'); return Promise.resolve(snapshotResponse); },
-		smsMark: (index, ts, read) => {
-			calls.push(`mark:${index}:${ts}:${read}`);
+		smsMark: (index, ts, read, storage) => {
+			calls.push(`mark:${index}:${ts}:${read}:${storage}`);
 			return Promise.resolve({ ok: true });
 		},
-		smsDelete: (index, indexes) => {
-			calls.push(`delete:${index}:${indexes.join('+')}`);
+		smsDelete: (index, indexes, storage) => {
+			calls.push(`delete:${index}:${indexes.join('+')}:${storage}`);
 			return Promise.resolve({ ok: true });
 		},
 		smsDeleteAll: () => Promise.resolve({ ok: true }),
@@ -97,16 +97,23 @@ const page = new Function('view', 'ui', 'dom', 'm', 'E', '_', 'L', 'window', 'co
 	source)(view, ui, dom, modem, E, translate, L, windowStub, confirmStub);
 
 async function main() {
+	/* Both stores at once, with the same slot number in each: this is the shape the
+	   owner's modem really has, and the slot number alone cannot identify a message. */
 	listResponse = {
 		ok: true,
+		stores: ['ME', 'SM'],
 		messages: [
 			{ index: 4, indexes: [4], sender: 'SENDER-A', text: 'first body',
+			  storage: 'ME',
 			  ts: '26/09/05,01:00:01+00', unread: true, parts: 1, status: 'REC UNREAD' },
 			{ index: 5, indexes: [5, 6], sender: 'SENDER-B', text: 'second body',
+			  storage: 'SM',
 			  ts: '26/09/05,01:00:02+00', unread: true, parts: 2, status: 'REC UNREAD' }
 		]
 	};
-	statusResponse = { sms: { storage: 'SM', used: 3, total: 50, unread: 2, count: 2 } };
+	statusResponse = { sms: { storage: 'SM', used: 3, total: 50, unread: 2, count: 2,
+		read_stores: ['ME', 'SM'],
+		store_counts: { ME: { used: 8, total: 100 }, SM: { used: 10, total: 10 } } } };
 	calls = [];
 	const loaded = await page.load();
 	equal(calls.join(','), 'list,status', 'list/status ordering');
@@ -120,11 +127,28 @@ async function main() {
 	const mark = findNode(renderedTree, node => node.tag === 'button' && textOf(node) === 'Mark read');
 	truthy(mark && typeof mark.attrs.handler === 'function', 'mark action rendered');
 	await mark.attrs.handler();
-	truthy(calls.includes('mark:5:26/09/05,01:00:02+00:true'), 'mark action arguments');
+	truthy(calls.includes('mark:5:26/09/05,01:00:02+00:true:SM'),
+	       'mark action carries the store the message came from');
 	const remove = findNode(renderedTree, node => node.tag === 'button' && textOf(node) === 'Delete');
 	truthy(remove && typeof remove.attrs.handler === 'function', 'delete action rendered');
 	await remove.attrs.handler();
-	truthy(calls.includes('delete:null:5+6'), 'multipart delete action indexes');
+	truthy(calls.includes('delete:null:5+6:SM'),
+	       'delete names the store, so a colliding slot number cannot hit the other one');
+	truthy(rendered.includes('SIM card (SM)') && rendered.includes('Modem (ME)'),
+	       'both stores are named while both are read');
+
+	/* A store left unread must be reported, not silently dropped: that silence is the
+	   defect this page is being changed for. */
+	const narrowed = page.render([{ sms: { storage: 'SM', unread: 0, count: 1,
+		read_stores: ['SM'],
+		store_counts: { ME: { used: 8, total: 100 }, SM: { used: 10, total: 10 } } } },
+		{ ok: true, stores: ['SM'], messages: [
+			{ index: 0, indexes: [0], sender: 'S', text: 'only body', storage: 'SM',
+			  ts: '26/09/05,01:00:03+00', unread: false, parts: 1 } ] }]);
+	const narrowedText = textOf(narrowed);
+	truthy(narrowedText.includes('not shown'), 'unread store reported');
+	truthy(narrowedText.includes('Modem (ME)'), 'the hidden store is named');
+	truthy(narrowedText.includes('8'), 'the hidden slot count is given');
 
 	listResponse = { ok: false, error: 'CMGL failed', messages: [] };
 	snapshotResponse = { ok: false, stale: true, generation: 9, messages: loaded[1].messages };

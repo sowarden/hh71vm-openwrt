@@ -43,7 +43,13 @@ return {
 	parse_cmgl = parse_cmgl,
 	assemble = assemble,
 	sms_key = sms_key,
+	sms_slot = sms_slot,
+	sms_active_stores = sms_active_stores,
+	sms_storage_mode_get = sms_storage_mode_get,
+	sms_storage_mode_set = sms_storage_mode_set,
+	sms_storage_for = sms_storage_for,
 	sms_pending_add = sms_pending_add,
+	sms_pending_forget = sms_pending_forget,
 	sms_pending_reconcile = sms_pending_reconcile,
 	sms_schedule_retry = sms_schedule_retry,
 	sms_list_job = sms_list_job,
@@ -182,6 +188,56 @@ do
 	       sms.sms_key(9, "26/09/05,01:00:02+00"), "reused index timestamp")
 	truthy(sms.sms_key(9, nil, { sender = "A", text = "one" }) ~=
 	       sms.sms_key(9, nil, { sender = "A", text = "two" }), "missing timestamp fingerprint")
+
+	-- Slot numbers repeat across stores: measured on the stand, ME held 0-7 while SM
+	-- held 0-9 on the same modem, so an index alone cannot identify a message.
+	equal(sms.sms_slot("ME", 3), "ME:3", "store-qualified slot")
+	equal(sms.sms_slot(nil, 3), "3", "slot without a store keeps the bare index")
+	truthy(sms.sms_key(sms.sms_slot("ME", 3), "T") ~= sms.sms_key(sms.sms_slot("SM", 3), "T"),
+	       "same index in two stores is two keys")
+
+	-- A message with no timestamp is keyed by a fingerprint, and a stored draft never
+	-- has one.  Lua 5.1's "%x" casts through a signed 32-bit integer on the target, so
+	-- a hash with the top bit set used to abort the whole listing with
+	-- "bad argument #1 to 'format'".  Half of all hashes are that large.
+	local high = 0
+	for i = 1, 400 do
+		local key = sms.sms_key("ME:0", nil, { sender = "S", text = "draft " .. i })
+		local digest = key:match("|~(.*)$")
+		assertions = assertions + 1
+		if not digest or not digest:match("^%x%x%x%x%x%x%x%x$") then
+			error("fingerprint is not eight hex digits: " .. tostring(key), 2)
+		end
+		if digest:byte(1) >= ("8"):byte() then high = high + 1 end
+	end
+	truthy(high > 0, "fingerprints above 2^31 are produced and survive formatting")
+end
+
+do
+	-- Read state written before messages carried a store name must survive the
+	-- upgrade: AT+CMGL has already cleared the modem's own flag by then, so losing it
+	-- would silently mark every stored message unread again.
+	local SMS = sms.SMS
+	SMS.loaded, SMS.seen = true, { ["4|26/09/05,01:00:01+00"] = "unread" }
+	local merged = { { index = 4, ts = "26/09/05,01:00:01+00", storage = "SM", unread = false } }
+	equal(SMS.merge(merged), 1, "legacy read state adopted")
+	equal(merged[1].unread, true, "legacy unread flag preserved")
+	truthy(SMS.seen["SM:4|26/09/05,01:00:01+00"] == "unread", "adopted under the store key")
+	truthy(SMS.seen["4|26/09/05,01:00:01+00"] == nil, "legacy key retired after one merge")
+
+	-- The same slot number in the other store is a different message.
+	SMS.loaded, SMS.seen = true, {}
+	SMS.merge({ { index = 4, ts = "T", storage = "ME", unread = true },
+	            { index = 4, ts = "T", storage = "SM", unread = false } })
+	SMS.mark("ME", 4, "T", "read")
+	equal(SMS.seen["ME:4|T"], "read", "mark hits the named store")
+	equal(SMS.seen["SM:4|T"], "read", "same index in the other store is untouched")
+	SMS.mark("SM", 4, "T", "unread")
+	equal(SMS.seen["ME:4|T"], "read", "marking one store does not reach the other")
+	equal(SMS.seen["SM:4|T"], "unread", "second store marked independently")
+	SMS.forget("ME", 4)
+	equal(SMS.seen["ME:4|T"], nil, "forget removes the named store")
+	equal(SMS.seen["SM:4|T"], "unread", "forget leaves the other store alone")
 end
 
 do
@@ -191,27 +247,72 @@ do
 	sms.sms_pending_add("SM", 12)
 	equal(M.sms_pending, 1, "CMTI pending count")
 	equal(M.sms_sync_storage, "SM", "CMTI storage selection")
-	equal(sms.sms_pending_reconcile({}, "SM"), 1, "delayed storage entry")
+	equal(sms.sms_pending_reconcile({}, { "SM" }), 1, "delayed storage entry")
 	truthy(sms.sms_schedule_retry("delayed"), "retry scheduled")
 	truthy(M.sms_sync_due ~= nil, "retry due time")
 	equal(M.sms_generation, 7, "retry does not replace cache")
 	equal(M.sms_last_error, nil, "scheduled retry is not a terminal snapshot error")
-	equal(sms.sms_pending_reconcile({ { index = 12 } }, "SM"), 0, "delayed entry found")
+	equal(sms.sms_pending_reconcile({ { index = 12, storage = "SM" } }, { "SM" }), 0,
+	      "delayed entry found")
 	equal(M.sms_pending, 0, "pending cleared after read")
 
-	local job = sms.sms_list_job(function() end, "SM")
-	equal(job.steps[1].cmd, "AT+CMGF=0", "PDU mode command")
-	equal(job.steps[2].cmd, 'AT+CPMS="SM"', "CMTI storage command")
-	equal(job.steps[3].cmd, "AT+CPMS?", "storage query")
-	equal(job.steps[4].cmd, "AT+CMGL=4", "list command")
-	equal(job.steps[4].timeout, 24, "rpc-bounded list timeout")
-	equal(job.steps[4].tolerate, nil, "list errors are not tolerated")
+	-- A notification for a store the user chose not to read is not "still on its way".
+	-- Holding it pending would turn a deliberate setting into a permanent error.
+	M.sms_pending_entries, M.sms_pending, M.sms_sync_attempts = {}, 0, 0
+	sms.sms_pending_add("SM", 3)
+	equal(sms.sms_pending_reconcile({}, { "ME" }), 0, "notification outside the read set is dropped")
 
-	M.state.sms = { storage = "ME", receive_storage = "SM" }
-	local receive_job = sms.sms_list_job(function() end)
-	equal(receive_job.steps[2].cmd, 'AT+CPMS="SM"', "boot uses CPMS receive storage")
-	local explicit_job = sms.sms_list_job(function() end, "ME")
-	equal(explicit_job.steps[2].cmd, 'AT+CPMS="ME"', "CMTI storage overrides CPMS receive storage")
+	-- The same slot number in the store that was not read must not satisfy it.
+	M.sms_pending_entries, M.sms_pending, M.sms_sync_attempts = {}, 0, 0
+	sms.sms_pending_add("SM", 5)
+	equal(sms.sms_pending_reconcile({ { index = 5, storage = "ME" } }, { "ME", "SM" }), 1,
+	      "same index in the wrong store does not reconcile")
+	equal(sms.sms_pending_reconcile({ { index = 5, storage = "SM" } }, { "ME", "SM" }), 0,
+	      "matching store reconciles")
+end
+
+do
+	-- Store selection.  This is the regression the whole change exists for: preferring
+	-- CPMS's receive memory made every refresh read SM alone, and the eight messages
+	-- sitting in ME on the owner's modem stopped being listed at all.
+	local M = sms.M
+	M.state.sms = { storage = "ME", receive_storage = "SM", used = 0 }
+
+	local function commands(job)
+		local out = {}
+		for _, step in ipairs(job.steps) do out[#out + 1] = step.cmd end
+		return table.concat(out, " ")
+	end
+
+	local both = sms.sms_list_job(function() end)
+	equal(commands(both),
+	      'AT+CMGF=0 AT+CPMS="ME" AT+CMGL=4 AT+CPMS="SM" AT+CMGL=4 AT+CPMS?',
+	      "default reads every store, receive memory does not narrow it")
+
+	local named = sms.sms_list_job(function() end, "SM")
+	equal(commands(named), 'AT+CMGF=0 AT+CPMS="SM" AT+CMGL=4 AT+CPMS?',
+	      "an explicit store is read alone")
+
+	-- The listing deadline is shared out, never handed to each store: two stores must
+	-- not be able to outlast the 28 s rpcd call waiting for them.
+	local budget = sms.sms_list_job(function() end, nil, 20)
+	local listings = {}
+	for _, step in ipairs(budget.steps) do
+		if step.cmd == "AT+CMGL=4" then listings[#listings + 1] = step end
+	end
+	equal(#listings, 2, "one listing per store")
+	equal(listings[1].timeout, 10, "shared deadline per store")
+	truthy(listings[1].timeout * 2 < 28, "both stores fit inside the rpcd timeout")
+
+	-- Only stores the modem actually reported are read.
+	M.state.sms.stores = { "SM" }
+	equal(commands(sms.sms_list_job(function() end)), 'AT+CMGF=0 AT+CPMS="SM" AT+CMGL=4 AT+CPMS?',
+	      "a modem with one message store is read once")
+	M.state.sms.stores = nil
+
+	sms.M.parsers.cpms_range({ '+CPMS: ("ME","MT","SM","SR"),("ME","MT","SM","SR"),("ME","SM")' })
+	equal(table.concat(M.state.sms.stores, ","), "ME,SM",
+	      "MT and SR are not message stores to list")
 end
 
 do
@@ -229,15 +330,40 @@ do
 	-- Empty success, explicit failure and restart-style repopulation keep distinct
 	-- outcomes and generation changes.
 	local M, SMS = sms.M, sms.SMS
-	SMS.loaded, SMS.seen = true, {}
-	M.sms_pending_entries, M.sms_pending, M.sms_sync_storage = {}, 0, nil
-	M.state.sms = { used = 0, storage = "ME" }
-	M.sms_generation, M.sms_messages, M.sms_last_error = 0, nil, nil
+
+	--- Drive a job the way the AT engine would: each store's select answers with its
+	--- own slot counts, each listing answers with that store's +CMGL block.
+	--- `plan[store] = { used = n, lines = {...}, select_ok = false }`
+	local function run(job, plan)
+		local store
+		for _, step in ipairs(job.steps) do
+			local named = step.cmd:match('^AT%+CPMS="(%u%u)"$')
+			if named then
+				store = named
+				local p = plan[store] or {}
+				local ok = p.select_ok ~= false
+				step.parse({ ("+CPMS: %d,100,0,100,0,10"):format(p.used or 0) }, ok)
+			elseif step.cmd == "AT+CMGL=4" then
+				local p = plan[store] or {}
+				step.parse(p.lines or {}, p.list_ok ~= false)
+			end
+		end
+	end
+
+	local function reset(state)
+		SMS.loaded, SMS.seen = true, {}
+		M.sms_pending_entries, M.sms_pending, M.sms_sync_storage = {}, 0, nil
+		M.sms_sync_attempts = 0
+		M.state.sms = state
+		M.sms_generation, M.sms_messages, M.sms_last_error = 0, nil, nil
+	end
+
+	reset({ used = 0, storage = "ME", stores = { "ME" } })
 	local outcome
 	local empty_job = sms.sms_list_job(function(ok, list, err)
 		outcome = { ok = ok, count = #list, err = err }
 	end)
-	empty_job.steps[#empty_job.steps].parse({})
+	run(empty_job, { ME = { used = 0 } })
 	empty_job.cb(true, {}, nil)
 	equal(outcome.ok, true, "genuine empty success")
 	equal(outcome.count, 0, "genuine empty count")
@@ -251,23 +377,21 @@ do
 	equal(outcome.err, "ERROR", "list failure detail")
 	equal(M.sms_generation, 1, "failure preserves generation")
 
-	M.state.sms.used = 4
 	local missing_headers = sms.sms_list_job(function(ok, list, err)
 		outcome = { ok = ok, count = #list, err = err }
 	end)
-	missing_headers.steps[#missing_headers.steps].parse({})
+	run(missing_headers, { ME = { used = 4 } })
 	missing_headers.cb(true, {}, nil)
 	equal(outcome.ok, false, "occupied store without headers fails")
 	truthy(outcome.err:match("no parseable entries"), "occupied store diagnostic")
 	equal(M.sms_generation, 1, "unparseable store preserves generation")
 
-	M.state.sms.used = 0
 	M.sms_pending_entries, M.sms_pending, M.sms_sync_attempts = {}, 0, 0
 	sms.sms_pending_add("ME", 7)
 	local delayed_job = sms.sms_list_job(function(ok, list, err)
 		outcome = { ok = ok, count = #list, err = err }
 	end, "ME")
-	delayed_job.steps[#delayed_job.steps].parse({})
+	run(delayed_job, { ME = { used = 0 } })
 	delayed_job.cb(true, {}, nil)
 	equal(outcome.ok, false, "CMTI before storage availability")
 	equal(M.sms_pending, 1, "delayed CMTI remains pending")
@@ -276,7 +400,7 @@ do
 	local arrived_job = sms.sms_list_job(function(ok, list)
 		outcome = { ok = ok, count = #list }
 	end, "ME")
-	arrived_job.steps[#arrived_job.steps].parse({ "+CMGL: 7,0,,44", pdu_a })
+	run(arrived_job, { ME = { used = 1, lines = { "+CMGL: 7,0,,44", pdu_a } } })
 	arrived_job.cb(true, {}, nil)
 	equal(outcome.ok, true, "delayed CMTI retry success")
 	equal(M.sms_pending, 0, "delayed CMTI reconciled")
@@ -285,11 +409,90 @@ do
 	local restart_job = sms.sms_list_job(function(ok, list)
 		outcome = { ok = ok, count = #list }
 	end)
-	restart_job.steps[#restart_job.steps].parse({ "+CMGL: 0,0,,44", pdu_a })
+	run(restart_job, { ME = { used = 1, lines = { "+CMGL: 0,0,,44", pdu_a } } })
 	restart_job.cb(true, {}, nil)
 	equal(outcome.ok, true, "restart refresh")
 	equal(outcome.count, 1, "restart existing message")
 	equal(M.sms_generation, 3, "restart generation")
+end
+
+do
+	-- Two stores in one list: this is the shape the owner's modem actually has, with
+	-- eight messages in ME and ten in SM, and slot numbers that collide.
+	local M, SMS = sms.M, sms.SMS
+	SMS.loaded, SMS.seen = true, {}
+	M.sms_pending_entries, M.sms_pending, M.sms_sync_attempts = {}, 0, 0
+	M.state.sms = { storage = "SM", receive_storage = "SM", stores = { "ME", "SM" } }
+	M.sms_generation, M.sms_messages, M.sms_last_error = 0, nil, nil
+
+	local outcome
+	local job = sms.sms_list_job(function(ok, list, err)
+		outcome = { ok = ok, list = list, err = err }
+	end)
+	local store
+	for _, step in ipairs(job.steps) do
+		local named = step.cmd:match('^AT%+CPMS="(%u%u)"$')
+		if named then
+			store = named
+			step.parse({ "+CPMS: 1,100,0,100,0,10" }, true)
+		elseif step.cmd == "AT+CMGL=4" then
+			-- the same slot number in both stores, which is why storage has to travel
+			-- with the message
+			step.parse({ "+CMGL: 0,0,,44", store == "ME" and pdu_a or pdu_b }, true)
+		end
+	end
+	job.cb(true, {}, nil)
+	equal(outcome.ok, true, "both stores listed")
+	equal(#outcome.list, 2, "a colliding slot number in each store is two messages")
+	local seen = {}
+	for _, m in ipairs(outcome.list) do seen[m.storage] = m.index end
+	equal(seen.ME, 0, "message kept its ME slot")
+	equal(seen.SM, 0, "message kept its SM slot")
+	equal(M.state.sms.read_stores[1] .. "," .. M.state.sms.read_stores[2], "ME,SM",
+	      "the list reports which stores it read")
+
+	-- The cached list is what tells a later delete which store a slot belongs to.
+	M.sms_messages = outcome.list
+	equal(sms.sms_storage_for({ 0 }), outcome.list[1].storage, "slot resolved from the cache")
+
+	-- One store refusing to be selected must not discard the store that answered --
+	-- on a modem with a single message store that would hide every message there is --
+	-- and must not let the answering store's messages be filed under its name.
+	M.sms_generation, M.sms_last_error = 0, nil
+	local partial = sms.sms_list_job(function(ok, list, err, _, report)
+		outcome = { ok = ok, list = list, err = err, report = report }
+	end)
+	store = nil
+	for _, step in ipairs(partial.steps) do
+		local named = step.cmd:match('^AT%+CPMS="(%u%u)"$')
+		if named then
+			store = named
+			step.parse({ "+CPMS: 1,100,0,100,0,10" }, store ~= "SM")
+		elseif step.cmd == "AT+CMGL=4" then
+			step.parse({ "+CMGL: 0,0,,44", pdu_a }, true)
+		end
+	end
+	partial.cb(true, {}, nil)
+	equal(outcome.ok, true, "the store that answered still produces a list")
+	truthy(outcome.report.store_error:match("SM"), "the refused store is named")
+	equal(#outcome.list, 1, "only the store that was selected contributed messages")
+	equal(outcome.list[1].storage, "ME", "no message filed under the refused store")
+	equal(M.state.sms.read_stores[1], "ME", "only the store that answered counts as read")
+	equal(#M.state.sms.read_stores, 1, "the refused store is not reported as read")
+	equal(M.sms_generation, 1, "a partial list is still a list")
+
+	-- Every store failing is a real failure, not a quiet empty inbox.
+	M.sms_generation = 0
+	local dead = sms.sms_list_job(function(ok, list, err)
+		outcome = { ok = ok, list = list, err = err }
+	end)
+	for _, step in ipairs(dead.steps) do
+		if step.cmd:match('^AT%+CPMS="%u%u"$') then step.parse({ "+CMS ERROR: 321" }, false) end
+	end
+	dead.cb(true, {}, nil)
+	equal(outcome.ok, false, "no store readable is a failure")
+	truthy(outcome.err:match("ME") and outcome.err:match("SM"), "both refused stores named")
+	equal(M.sms_generation, 0, "a total failure preserves the cache")
 end
 
 print(("sms modem tests: %d assertions passed"):format(assertions))

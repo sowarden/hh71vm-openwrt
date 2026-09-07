@@ -10,6 +10,19 @@
  * announce themselves through +CMTI and show up in the header counter.)
  */
 
+/* The modem keeps two independent message stores and firmware builds disagree about
+ * which one receives new messages, so neither may be assumed empty: on one HH71VM the
+ * modem reported SM as its receive memory while eight messages sat unread in ME.  The
+ * page therefore shows both by default and lets the user narrow it deliberately. */
+var STORE_LABELS = {
+	ME: _('Modem (ME)'),
+	SM: _('SIM card (SM)')
+};
+
+function storeName(id) {
+	return STORE_LABELS[id] || id;
+}
+
 /* A GSM-7 message fits 160 characters, 153 per segment once it is split; UCS2 -- which
  * anything outside the GSM alphabet needs -- fits 70, or 67 per segment. */
 function segments(text) {
@@ -129,9 +142,36 @@ for it.').format(dst))) return;
 		function settingsDialog() {
 			m.api.smsSettings().then(function (res) {
 				res = res || {};
-				var sca = E('input', { 'type': 'text',
-				                       'value': (res.sms || {}).sca || '' });
+				var sms = res.sms || {};
+				var counts = sms.store_counts || {};
+				var stores = Array.isArray(res.stores) && res.stores.length
+					? res.stores : ['ME', 'SM'];
+				var sca = E('input', { 'type': 'text', 'value': sms.sca || '' });
+
+				var mode = E('select', { 'class': 'cbi-input-select' }, [
+					E('option', { 'value': 'both' }, _('Both stores'))
+				].concat(stores.map(function (id) {
+					return E('option', { 'value': id }, _('%s only').format(storeName(id)));
+				})));
+				mode.value = res.storage_mode || 'both';
+
+				/* Per-store occupancy, so choosing one store is an informed choice
+				   rather than a guess about where the messages are. */
+				var occupancy = stores.map(function (id) {
+					var c = counts[id];
+					return [storeName(id), c ? (c.used + ' / ' + c.total) + ' ' +
+						_('slots') : _('not read yet')];
+				});
+
 				ui.showModal(_('Message settings'), [
+					E('div', { 'class': 'cbi-value' }, [
+						E('label', { 'class': 'cbi-value-title' }, _('Message storage')),
+						E('div', { 'class': 'cbi-value-field' }, [mode,
+							E('div', { 'class': 'cbi-value-description' },
+							  _('Which store the message list reads and writes. Modems \
+disagree about where they put incoming messages, so "Both stores" is the setting that \
+cannot hide one; the SIM card holds only 10-20 messages, the modem far more.'))])
+					]),
 					E('div', { 'class': 'cbi-value' }, [
 						E('label', { 'class': 'cbi-value-title' }, _('Service centre')),
 						E('div', { 'class': 'cbi-value-field' }, [sca,
@@ -139,20 +179,20 @@ for it.').format(dst))) return;
 							  _('The operator number that relays your messages. Change it \
 only if your operator told you to.'))])
 					]),
-					m.facts([
-						[_('Storage'), (res.sms || {}).storage],
-						[_('Slots used'), ((res.sms || {}).used != null)
-							? (res.sms).used + ' / ' + (res.sms).total : null],
+					m.facts(occupancy.concat([
+						[_('Selected on the modem'), sms.storage],
 						[_('Text parameters (CSMP)'), res.csmp, { mono: true }]
-					]),
+					])),
 					E('div', { 'class': 'cbi-page-actions' }, [
 						E('button', { 'class': 'cbi-button', 'click': ui.hideModal },
 						  _('Cancel')),
 						E('button', { 'class': 'cbi-button cbi-button-action',
 							'click': function () {
-								return m.checked(m.api.smsSettingsSet(sca.value.trim()),
-								                 _('Service centre saved.'))
+								return m.checked(m.api.smsSettingsSet(sca.value.trim(),
+								                                     mode.value),
+								                 _('Message settings saved.'))
 									.then(ui.hideModal)
+									.then(reload)
 									.catch(function (e) {
 										ui.addNotification(null,
 											E('p', {}, String(e.message || e)), 'error');
@@ -163,21 +203,25 @@ only if your operator told you to.'))])
 			});
 		}
 
-		function messageCard(msg) {
+		/* Slot numbers restart in every store, so `storage` travels with every call that
+		   names a slot.  Without it a delete lands on whichever message happens to sit
+		   at that number in whichever store the modem was left on. */
+		function messageCard(msg, showStore) {
 			var acts = E('div', { 'class': 'msg-acts' }, [
 				// the `read` argument says what to set it to, so the message being
 				// unread right now is exactly the value we want to send
 				m.action(msg.unread ? _('Mark read') : _('Mark unread'), 'neutral',
 					function () {
 						return m.checked(m.api.smsMark(msg.index, msg.ts,
-						                               msg.unread === true))
+						                               msg.unread === true, msg.storage))
 							.then(reload);
 					}),
 				m.action(_('Copy'), 'neutral', function () {
 					m.copyText(msg.text || '');
 				}),
 				m.action(_('Delete'), 'negative', function () {
-					return m.checked(m.api.smsDelete(null, msg.indexes || [msg.index]),
+					return m.checked(m.api.smsDelete(null, msg.indexes || [msg.index],
+					                                 msg.storage),
 					                 _('Message deleted.')).then(reload);
 				}, _('Delete this message?'))
 			]);
@@ -186,6 +230,7 @@ only if your operator told you to.'))])
 				E('div', { 'class': 'msg-head' }, [
 					E('span', { 'class': 'msg-from' }, msg.sender || '?'),
 					E('span', { 'class': 'msg-time' }, m.smsTime(msg.ts)),
+					(showStore && msg.storage) ? m.label(storeName(msg.storage)) : E([]),
 					msg.parts > 1 ? m.label(_('%d parts').format(msg.parts)) : E([]),
 					/* a segment can still be on its way, or one slot of several may
 					   have been deleted -- say so instead of showing a hole */
@@ -218,12 +263,49 @@ only if your operator told you to.'))])
 			if ((list.decode_errors || 0) > 0) kids.push(E('div', {
 				'class': 'alert-message warning'
 			}, _('One or more stored messages could not be decoded. Other messages are still shown.')));
+			/* One store answered and another did not: the list below is real but it is
+			   not the whole inbox, and that has to be said rather than looked past. */
+			if (list.store_error) kids.push(E('div', {
+				'class': 'alert-message warning'
+			}, [
+				E('h4', {}, _('Part of the message storage could not be read')),
+				E('p', {}, String(list.store_error)),
+				E('p', {}, _('The messages below are only the ones that could be read.'))
+			]));
 
-			var pct = (sms.total ? Math.round(100 * (sms.used || 0) / sms.total) : 0);
+			var counts = sms.store_counts || {};
+			var read = Array.isArray(list.stores) && list.stores.length
+				? list.stores : (sms.read_stores || []);
+			var showStore = read.length > 1;
+
 			var visibleUnread = msgs.filter(function (msg) { return msg.unread === true; }).length;
 			if (list.ok === true && !list.pending && sms.unread !== visibleUnread)
 				kids.push(E('div', { 'class': 'alert-message warning' },
 					_('The unread indicator and the visible message list are temporarily out of sync.')));
+
+			/* A store that is not being read is the failure this page exists to make
+			   impossible to miss: say how many slots are being left out, by name. */
+			var hidden = Object.keys(counts).filter(function (id) {
+				return read.indexOf(id) < 0 && (counts[id].used || 0) > 0;
+			});
+			if (hidden.length) kids.push(E('div', { 'class': 'alert-message warning' }, [
+				E('p', {}, _('%s holds %d occupied slot(s) that are not shown, because message storage is set to %s.')
+					.format(hidden.map(storeName).join(', '),
+					        hidden.reduce(function (n, id) { return n + counts[id].used; }, 0),
+					        read.map(storeName).join(', ') || _('a single store'))),
+				E('p', {}, _('Use "Settings" to read both stores.'))
+			]));
+
+			/* One bar per store that is being read: a single combined bar would hide a
+			   full SIM behind a nearly empty modem store. */
+			var usage = read.length ? read.map(function (id) {
+				var c = counts[id] || {};
+				var pct = c.total ? Math.round(100 * (c.used || 0) / c.total) : 0;
+				return [storeName(id), E('div', {
+						'class': 'cbi-progressbar',
+						'title': '%d / %d (%d%%)'.format(c.used || 0, c.total || 0, pct)
+					}, E('div', { 'style': 'width:%d%%'.format(pct) })), { raw: true }];
+			}) : [];
 
 			kids.push(E('div', { 'class': 'cbi-section fade-in' }, [
 				E('h3', {}, _('Messages')),
@@ -236,18 +318,15 @@ only if your operator told you to.'))])
 					m.action(_('Delete all'), 'negative', function () {
 						return m.checked(m.api.smsDeleteAll(), _('All messages deleted.'))
 							.then(reload);
-					}, _('Delete every message stored on the modem? This cannot be undone.'))
+					}, _('Delete every message in the stores being read? This cannot be undone.'))
 				]),
 				m.facts([
 					[_('Messages'), String(msgs.length) +
 						(sms.unread ? '  (' + _('%d unread').format(sms.unread) + ')' : '')],
-					[_('Storage'), sms.storage],
-					[_('Slots used'), E('div', {
-							'class': 'cbi-progressbar',
-							'title': '%d / %d (%d%%)'.format(sms.used || 0, sms.total || 0, pct)
-						}, E('div', { 'style': 'width:%d%%'.format(pct) })), { raw: true }],
+					[_('Reading'), read.map(storeName).join(', ') || sms.storage]
+				].concat(usage).concat([
 					[_('Service centre'), sms.sca, { copy: true }]
-				])
+				]))
 			]));
 
 			if (!msgs.length && list.ok !== true) {
@@ -265,7 +344,7 @@ only if your operator told you to.'))])
 			} else {
 				var cards = [E('h3', {}, _('Inbox') + ' (' + msgs.length + ')')];
 				for (var i = msgs.length - 1; i >= 0; i--)
-					cards.push(messageCard(msgs[i]));
+					cards.push(messageCard(msgs[i], showStore));
 				kids.push(E('div', { 'class': 'cbi-section fade-in' }, cards));
 			}
 
