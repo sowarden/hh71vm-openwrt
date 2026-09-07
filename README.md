@@ -57,6 +57,10 @@ unrecoverable mistake.
   filesystem. The bootloader, the `hwsetting` area holding the MAC addresses, the vendor
   configuration, and the vendor JFFS2 partition are left alone. This is what makes recovery
   possible without opening the case.
+- **Settings survive a reinstall.** They live in their own partition that installation does
+  not touch, so reinstalling the firmware does not clear a configuration that has locked you
+  out. [`docs/factory-reset.md`](docs/factory-reset.md) covers the two ways to clear it: the
+  RESET button, and a TFTP tool that works even when the router does not boot.
 - **Recovery does not need UART.** The stock bootloader drops into its own console when the
   WPS button is held while power is applied, and brings Ethernet up by itself. The rollback
   tool uses that path.
@@ -117,6 +121,7 @@ credentials, and keys. Attach searchable text, not screenshots of text.
 |---|---|
 | [`docs/flash-install.md`](docs/flash-install.md) | Backup, permanent installation, update, rollback |
 | [`docs/ram-boot.md`](docs/ram-boot.md) | Optional RAM dry run over UART |
+| [`docs/factory-reset.md`](docs/factory-reset.md) | Restoring factory settings, by button or over TFTP |
 | [`docs/known-issues.md`](docs/known-issues.md) | Current limitations and expected quirks |
 | [`docs/testing.md`](docs/testing.md) | Test matrix, log collection, and reporting |
 | [`docs/sources.md`](docs/sources.md) | Source provenance and build instructions |

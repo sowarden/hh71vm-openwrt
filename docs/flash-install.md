@@ -304,6 +304,11 @@ time, because it lives in a region that is never written. Repeat the installatio
 **The router does not boot at all.** Use the same WPS-at-power-on path with your backup and
 `tools/flash/restore_stock_lan.py`. It does not need a working system on the device.
 
+**A configuration change locked you out.** Reinstalling the firmware does not help: the
+settings live in a partition that installation never writes, so the same configuration comes
+back on the next boot. Clear it with the RESET button, or with `tools/flash/reset_openwrt.py`
+if the router no longer boots. See [factory-reset.md](factory-reset.md).
+
 **Nothing works and there is no backup.** Do not use a dump from another device. Recovery then
 requires an SPI flash programmer and a verified full-chip image from the same unit. This is why
 step 2 exists.

@@ -28,12 +28,8 @@
 # watching two held presses (5.1 s each) while WPS on GPIO 56 stayed idle.
 # It is active low and idles high.
 #
-# VERIFIED ON HARDWARE 2026-09-07: held, the panel began flashing, the button was
-# released, and the board came back on the defaults about 45 s later without a
-# power cycle.  Every earlier attempt wedged it instead, and each one failed for
-# a different reason: the daemon was hand-started and died with the first reboot;
-# the indicator was started at the threshold and lost the race to the reboot; and
-# the reset ran from this file while jffs2reset was deleting it.
+# Verified on hardware 2026-09-07: held until the panel flashed, released, and
+# the board returned to the defaults about 45 s later without a power cycle.
 #
 # Usage: hh71vm-reset-button [--dry-run]
 

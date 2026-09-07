@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "changes": [
-    "Hold the RESET button for ten seconds to restore factory settings.",
-    "Fix open Wi-Fi clients being blocked before DHCP.",
-    "Fix SMS and USSD on some Qualcomm modem revisions."
+    "Open Wi-Fi networks work again: a client joining a network with no encryption now gets an address instead of being cut off right after it connects.",
+    "Hold the RESET button until the front panel flashes to restore factory settings.",
+    "New tool restores factory settings over TFTP, for a router that no longer boots."
   ]
 }
