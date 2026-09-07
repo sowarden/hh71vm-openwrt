@@ -108,15 +108,67 @@ class ResetButtonTests(unittest.TestCase):
     def test_the_indicator_can_never_delay_the_reset(self):
         # The panel lives on the other processor.  If that half is wedged, the
         # recovery still has to happen on time.
-        announce = re.search(r"announce\(\) \{(?P<body>.*?)\n\}", self.source, re.DOTALL)
-        self.assertIsNotNone(announce)
-        self.assertRegex(announce.group("body"), r"hh71vm-panel-blink 30 >/dev/null 2>&1 &")
-        self.assertIn("[ -x /usr/sbin/hh71vm-panel-blink ] || return 0", announce.group("body"))
+        body = self.source.split("announce() {", 1)[1].split("}", 1)[0]
+        self.assertIn("hh71vm-panel-blink 45 >/dev/null 2>&1 &", body)
+        self.assertIn("[ -x /usr/sbin/hh71vm-panel-blink ] || return 0", body)
 
-    def test_the_reset_still_runs_when_the_indicator_is_missing(self):
-        trigger = self.source[self.source.index("erasing the overlay and rebooting"):]
-        self.assertLess(trigger.index("announce"), trigger.index("jffs2reset"))
-        self.assertIn("jffs2reset -y && reboot", trigger)
+    def test_the_flashing_panel_means_the_button_can_be_released(self):
+        # The signal must never mean "keep holding": a user who lets go on it
+        # would cancel the very thing it announced. Once the threshold is
+        # reached the button is not read again.
+        self.assertIn("ANNOUNCE_SETTLE=4", self.source)
+        self.assertNotIn("ANNOUNCE_AT", self.source)
+        self.assertIn("the button can be released", self.source)
+        trigger = self.source[self.source.index("reset committed"):]
+
+        def where(text):
+            return trigger.index(text)
+
+        # Commit, then start the panel, then wait for it to actually be
+        # flashing, and only then pull the floor out.
+        self.assertLess(where("announce"), where('sleep "$ANNOUNCE_SETTLE"'))
+        self.assertLess(where('sleep "$ANNOUNCE_SETTLE"'), where('exec "$STAGE"'))
+
+
+    def test_the_reset_runs_from_tmpfs_not_from_the_file_being_deleted(self):
+        # jffs2reset deletes /overlay/upper, and this script itself lives there
+        # when it has been installed by hand. A shell reads its script one line
+        # at a time, so the line after jffs2reset can never be fetched and the
+        # reboot never happens. That wedged the board three times on 2026-09-07,
+        # and testing the same commands by hand over SSH did not reproduce it,
+        # because typed commands run from /rom rather than from the deleted file.
+        self.assertIn("STAGE=/tmp/hh71vm-reset-finish", self.source)
+        trigger = self.source[self.source.index("reset committed"):]
+        self.assertIn('exec "$STAGE"', trigger)
+        # Nothing destructive may be *run* from this file. A log line that
+        # merely names the command is fine; a line that invokes it is not.
+        for line in trigger.split(chr(10)):
+            bare = line.strip()
+            self.assertFalse(bare.startswith("jffs2reset"), line)
+            self.assertFalse(bare.startswith("reboot"), line)
+
+    def test_the_staged_script_needs_no_filesystem_after_the_erase(self):
+        lines = self.source.split(chr(10))
+        start = next(i for i, l in enumerate(lines) if l.startswith("stage_reset() {"))
+        end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
+        stage = lines[start:end]
+
+        def where(text):
+            return next(i for i, l in enumerate(stage) if text in l)
+
+        for want in ("jffs2reset -y", "echo b > /proc/sysrq-trigger", "reboot -f"):
+            self.assertTrue(any(want in l for l in stage), want)
+        # A shell builtin writing to procfs needs nothing looked up or executed.
+        # reboot -f does have to exec, which is why it may only be the fallback.
+        self.assertLess(where("jffs2reset -y"), where("/proc/sysrq-trigger"))
+        self.assertLess(where("/proc/sysrq-trigger"), where("reboot -f"))
+
+    def test_nothing_is_destroyed_unless_the_reboot_is_already_staged(self):
+        # A reset that erases and then cannot reboot is the worst outcome there
+        # is, and it is the one that actually kept happening.
+        loop = self.source[self.source.index("while :; do"):]
+        self.assertIn("elif ! stage_reset; then", loop)
+        self.assertIn("refusing to erase anything", loop)
 
 
 class PanelBlinkTests(unittest.TestCase):

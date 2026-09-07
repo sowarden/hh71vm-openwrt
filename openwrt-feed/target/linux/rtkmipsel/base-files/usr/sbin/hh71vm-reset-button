@@ -2,6 +2,10 @@
 #
 # Factory reset from the RESET button on the bottom of the case.
 #
+# FOR THE USER: hold the button until the whole front panel starts flashing,
+# then let go.  The flashing means the reset has already been decided; it is not
+# a request to keep holding, and releasing on it cannot cancel anything.
+#
 # Hold it for RESET_HOLD_SECONDS and the overlay is erased, which puts every
 # setting back to the state of a freshly installed image.  Nothing else on this
 # board can do that without a PC: a bad /etc/config/network locks out SSH, LuCI
@@ -24,10 +28,33 @@
 # watching two held presses (5.1 s each) while WPS on GPIO 56 stayed idle.
 # It is active low and idles high.
 #
+# VERIFIED ON HARDWARE 2026-09-07: held, the panel began flashing, the button was
+# released, and the board came back on the defaults about 45 s later without a
+# power cycle.  Every earlier attempt wedged it instead, and each one failed for
+# a different reason: the daemon was hand-started and died with the first reboot;
+# the indicator was started at the threshold and lost the race to the reboot; and
+# the reset ran from this file while jffs2reset was deleting it.
+#
 # Usage: hh71vm-reset-button [--dry-run]
 
 RESET_GPIO=54
 RESET_HOLD_SECONDS=10
+
+# WHAT THE FLASHING PANEL MEANS: the reset is already decided and the button can
+# be let go.  It never means "keep holding".  Anything else is a trap - a user
+# who releases on the signal would cancel the very thing the signal announced.
+#
+# So the button stops being read the moment the threshold is reached.  From then
+# on this runs to the end whatever the button does.
+#
+# hh71vm-panel-blink needs about three seconds on the Qualcomm half before the
+# first LED moves: it waits out the telnet banner before it transmits.  Starting
+# it and rebooting immediately is a race it loses, and losing it is what made the
+# first attempts on 2026-09-07 show no indication at all.  So the reset waits
+# here, once, for the panel to actually be flashing before it pulls the floor
+# out.  The wait costs the user nothing: by then they can already let go.
+ANNOUNCE_SETTLE=4
+
 DRY_RUN=0
 
 [ "$1" = "--dry-run" ] && DRY_RUN=1
@@ -74,7 +101,47 @@ overlay_mounted() {
 # time.  An indicator may never gate the recovery it is announcing.
 announce() {
 	[ -x /usr/sbin/hh71vm-panel-blink ] || return 0
-	/usr/sbin/hh71vm-panel-blink 30 >/dev/null 2>&1 &
+	/usr/sbin/hh71vm-panel-blink 45 >/dev/null 2>&1 &
+}
+
+# THE RESET CANNOT RUN FROM THIS FILE.
+#
+# This script lives in the overlay whenever it has been installed by hand, and
+# jffs2reset deletes the overlay - including /overlay/upper, the writable layer
+# overlayfs is mounted on, and including this very file.  A shell reads a script
+# incrementally, so the next line after jffs2reset has to be fetched from a
+# filesystem that no longer resolves, and it never arrives.  The board is left
+# with its link up at 1 Gbit and not one frame sent, and only a power cycle or a
+# TFTP erase of rootfs_data gets it back.  That happened three times on
+# 2026-09-07 before the cause was found, and testing `reboot -f` by hand over
+# SSH did not reproduce it - typed commands run from /rom, not from the file
+# being deleted.
+#
+# So the tail is staged in /tmp, which is tmpfs and therefore in RAM, and the
+# interpreter is handed that copy with exec.  After jffs2reset nothing may touch
+# the root filesystem again:
+#
+#   * `echo b > /proc/sysrq-trigger` is a shell builtin and a write to procfs,
+#     so it needs no binary to be looked up or executed.  sysrq is enabled here
+#     (/proc/sys/kernel/sysrq = 1), checked on the device.
+#   * `reboot -f` is only a fallback for a kernel built without sysrq, and it
+#     does have to exec - which is exactly why it is second, not first.
+#
+# /bin/sh and jffs2reset both live in /rom and resolve through the lower layer,
+# so exec'ing them stays safe; only the upper layer disappears.
+STAGE=/tmp/hh71vm-reset-finish
+
+stage_reset() {
+	{
+		echo '#!/bin/sh'
+		echo 'sync'
+		echo 'jffs2reset -y'
+		echo 'sync'
+		echo 'echo b > /proc/sysrq-trigger'
+		echo 'reboot -f'
+	} > "$STAGE" || return 1
+	chmod 0755 "$STAGE" || return 1
+	[ -s "$STAGE" ] || return 1
 }
 
 # Not ${DRY_RUN:+...}: that expands whenever the variable is *set*, and it is
@@ -118,17 +185,27 @@ while :; do
 				if ! overlay_mounted; then
 					log err "no /overlay is mounted; there are no saved settings to erase"
 					held=0
-				elif [ "$DRY_RUN" = 1 ]; then
-					log notice "DRY RUN: would run 'jffs2reset -y' and reboot now"
-					announce
+				elif ! stage_reset; then
+					# Nothing is destroyed unless the reboot is already staged: an
+					# erase that cannot then reboot is the worst outcome there is,
+					# and it is the one that actually kept happening.
+					log err "cannot stage $STAGE, refusing to erase anything"
 					held=0
 				else
-					log notice "held ${held}s: erasing the overlay and rebooting"
+					# Past this point the button is not read again. The panel is
+					# the contract: once it flashes, the reset happens whether the
+					# user keeps holding or lets go.
+					log notice "held ${held}s: reset committed, the button can be released"
 					echo "FACTORY RESET: reset button held ${held}s" > /dev/console 2>/dev/null
 					announce
-					sync
-					jffs2reset -y && reboot
-					exit 0
+					sleep "$ANNOUNCE_SETTLE"
+					if [ "$DRY_RUN" = 1 ]; then
+						log notice "DRY RUN: would run 'jffs2reset -y' and reboot now"
+						rm -f "$STAGE"
+						held=0
+					else
+						exec "$STAGE"
+					fi
 				fi
 			fi
 		fi
