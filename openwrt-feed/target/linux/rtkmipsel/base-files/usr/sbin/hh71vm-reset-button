@@ -77,7 +77,13 @@ announce() {
 	/usr/sbin/hh71vm-panel-blink 30 >/dev/null 2>&1 &
 }
 
-log notice "watching gpio$RESET_GPIO, ${RESET_HOLD_SECONDS}s hold resets to defaults${DRY_RUN:+ (dry run)}"
+# Not ${DRY_RUN:+...}: that expands whenever the variable is *set*, and it is
+# always set -- to 0 in the real mode -- so the startup line claimed "dry run" on
+# a daemon that was going to erase the overlay for real.
+mode=""
+[ "$DRY_RUN" = 1 ] && mode=" (dry run)"
+
+log notice "watching gpio$RESET_GPIO, ${RESET_HOLD_SECONDS}s hold resets to defaults$mode"
 
 # Arming guard: a button that is already down when we start is far more likely to
 # be a wiring fault or a jammed case than a user who pressed it before the router

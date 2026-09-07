@@ -88,6 +88,14 @@ class ResetButtonTests(unittest.TestCase):
         self.assertNotIn("reboot", released)
         self.assertNotIn("jffs2reset", released)
 
+    def test_the_startup_line_cannot_claim_a_dry_run_it_is_not_doing(self):
+        # ${DRY_RUN:+...} expands whenever the variable is set, and it is always
+        # set -- to 0 in the real mode -- so the daemon announced "dry run" while
+        # armed to erase the overlay for real.
+        self.assertNotIn("defaults${DRY_RUN:+", self.source)
+        self.assertIn('[ "$DRY_RUN" = 1 ] && mode=" (dry run)"', self.source)
+        self.assertIn('hold resets to defaults$mode"', self.source)
+
     def test_it_refuses_when_there_is_no_overlay_to_erase(self):
         self.assertIn("overlay_mounted()", self.source)
         self.assertIn("grep -q ' /overlay ' /proc/mounts", self.source)
