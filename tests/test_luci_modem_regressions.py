@@ -95,8 +95,11 @@ process.stdout.write(JSON.stringify(result));
         self.assertIn("cipher_mask=8", handler)
         self.assertIn("UNSUPPORTED_ENCRYPTION", handler)
         self.assertIn('case "$auth_type" in', handler)
-        self.assertIn('psk)  psk_enable="$wpa"', handler)
-        self.assertIn('none) psk_enable=0; encmode=0; cipher_mask=0', handler)
+        self.assertIn('psk_enable="$wpa"; ieee8021x=1; default_port=0', handler)
+        self.assertIn(
+            'psk_enable=0; encmode=0; cipher_mask=0; '
+            'ieee8021x=0; default_port=1', handler,
+        )
 
 
 class ModemIdentityIntegrationTests(unittest.TestCase):

@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "changes": [
+    "Fix open Wi-Fi clients being blocked before DHCP.",
     "Fix SMS and USSD on some Qualcomm modem revisions."
   ]
 }

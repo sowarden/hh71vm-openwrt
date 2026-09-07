@@ -187,6 +187,65 @@ class Rtl8192cdHandlerTests(unittest.TestCase):
         self.assertLess(mode_gate, interface_loop)
         self.assertIn("*)        ampdu=0; amsdu=0 ;;", body)
 
+    def test_open_security_disables_the_controlled_port_filter(self):
+        setup = re.search(
+            r"rtl_setup_vif\(\) \{(?P<body>.*?)\n\}", self.source, re.DOTALL
+        )
+        self.assertIsNotNone(setup)
+        body = setup.group("body")
+
+        self.assertIn("local ieee8021x=0 default_port=1", body)
+        self.assertIn(
+            "psk_enable=\"$wpa\"; ieee8021x=1; default_port=0", body
+        )
+        self.assertIn(
+            "psk_enable=0; encmode=0; cipher_mask=0; "
+            "ieee8021x=0; default_port=1",
+            body,
+        )
+
+    def test_complete_security_state_is_written_before_interface_up(self):
+        setup = re.search(
+            r"rtl_setup_vif\(\) \{(?P<body>.*?)\n\}", self.source, re.DOTALL
+        )
+        self.assertIsNotNone(setup)
+        body = setup.group("body")
+
+        down = body.index('ifconfig "$ifname" down')
+        apply_mib = body.index('rtl_apply_mib "$ifname"')
+        mib_failure = body.index("wireless_setup_vif_failed MIB_WRITE_FAILED")
+        up = body.index('ifconfig "$ifname" up')
+        for field in (
+            '"802_1x=$ieee8021x"',
+            '"default_port=$default_port"',
+            '"wpa_cipher=$cipher_mask"',
+            '"wpa2_cipher=$cipher_mask"',
+        ):
+            at = body.index(field)
+            self.assertLess(down, apply_mib)
+            self.assertLess(apply_mib, at, field)
+            self.assertLess(at, mib_failure, field)
+            self.assertLess(mib_failure, up)
+
+    def test_driver_filters_non_eapol_frames_when_8021x_stays_enabled(self):
+        driver_root = DRIVER_CONFIG.parent
+        ioctl = (driver_root / "8192cd_ioctl.c").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        core_rx = (driver_root / "core/8192cd_core_rx.c").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        self.assertIn('{"802_1x",', ioctl)
+        self.assertIn('{"default_port",', ioctl)
+        self.assertRegex(
+            core_rx,
+            re.compile(
+                r"if\(IEEE8021X_FUN\).*?only 802\.1x frame can pass.*?"
+                r"proto == __constant_htons\(0x888e\).*?return FAIL;",
+                re.DOTALL,
+            ),
+        )
+
 
 class Rtl8192cdHandlerModeTests(unittest.TestCase):
     """netifd executes the handler; a non-executable one leaves both radios missing."""

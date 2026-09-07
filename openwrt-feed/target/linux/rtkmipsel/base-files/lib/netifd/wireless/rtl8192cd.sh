@@ -233,6 +233,7 @@ rtl_setup_vif() {
 	local ssid key encryption hidden
 	local wpa auth_type wpa_cipher
 	local psk_enable=0 encmode=0 cipher_mask=0
+	local ieee8021x=0 default_port=1
 
 	ifname="$(rtl_vif_ifname "$dev_ifname" "$vif_idx")"
 	vif_idx=$((vif_idx + 1))
@@ -253,8 +254,18 @@ rtl_setup_vif() {
 	*TKIP*)                  cipher_mask=2;  encmode=2 ;;
 	esac
 	case "$auth_type" in
-		psk)  psk_enable="$wpa" ;;   # 1 = WPA, 2 = WPA2, 3 = mixed (PSK_WPA|PSK_WPA2)
-		none) psk_enable=0; encmode=0; cipher_mask=0 ;;
+		psk)
+			# 1 = WPA, 2 = WPA2, 3 = mixed (PSK_WPA|PSK_WPA2).
+			# A PSK station starts blocked; the driver's four-way handshake opens it.
+			psk_enable="$wpa"; ieee8021x=1; default_port=0
+		;;
+		none)
+			# The private MIB survives an ifconfig down/up and a previous PSK setup
+			# leaves 802_1x=1. An open client never runs the handshake which would
+			# authorize that controlled port, so every non-EAPOL frame (including
+			# DHCP) is dropped. Disable the filter and start stations authorized.
+			psk_enable=0; encmode=0; cipher_mask=0; ieee8021x=0; default_port=1
+		;;
 		*)
 			# WEP, EAP, SAE/WPA3, OWE: the built-in PSK of the driver cannot do them, and
 			# there is no hostapd in this build (that needs the cfg80211 path).
@@ -312,7 +323,11 @@ rtl_setup_vif() {
 		"hiddenAP=${hidden:-0}" \
 		"authtype=0" \
 		"psk_enable=$psk_enable" \
-		"encmode=$encmode" || {
+		"encmode=$encmode" \
+		"802_1x=$ieee8021x" \
+		"default_port=$default_port" \
+		"wpa_cipher=$cipher_mask" \
+		"wpa2_cipher=$cipher_mask" || {
 		wireless_setup_vif_failed MIB_WRITE_FAILED
 		return 1
 	}
@@ -320,8 +335,6 @@ rtl_setup_vif() {
 
 	[ "$psk_enable" = 0 ] || {
 		rtl_apply_mib "$ifname" \
-			"wpa_cipher=$cipher_mask" \
-			"wpa2_cipher=$cipher_mask" \
 			"passphrase=$key" || {
 			wireless_setup_vif_failed KEY_WRITE_FAILED
 			return 1
