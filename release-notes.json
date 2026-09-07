@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "changes": [
+    "Hold the RESET button for ten seconds to restore factory settings.",
     "Fix open Wi-Fi clients being blocked before DHCP.",
     "Fix SMS and USSD on some Qualcomm modem revisions."
   ]

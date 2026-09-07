@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _common                                           # noqa: E402
 import _lan                                              # noqa: E402
+import reset_openwrt                                     # noqa: E402
 import tftp_dump_mtd                                     # noqa: E402
 
 # The stock partition layout: device name, size, file label.
@@ -86,6 +87,11 @@ def parse_args():
     ap.add_argument("--telnet-port", type=tcp_port, default=2323,
                     help="temporary stock Telnet port (default: %(default)s; use 23 "
                          "for the marker-only firmware variant)")
+    ap.add_argument("--reset-settings", action="store_true",
+                    help="also erase rootfs_data, so the router starts on the "
+                         "defaults of the new firmware. Without this the existing "
+                         "settings survive the install and keep shadowing /rom, "
+                         "which is what makes a lockout survive a reinstall.")
     ap.add_argument("--dry-run", action="store_true",
                     help="check the image and take the backup, but write nothing to flash")
     ap.add_argument("--yes", action="store_true", help="do not ask for confirmations")
@@ -193,10 +199,17 @@ def verify_backup(outdir):
 
 # --- the write plan -----------------------------------------------------
 
-def build_plan(image_path):
+def build_plan(image_path, reset_settings=False):
     with open(image_path, "rb") as f:
         data = f.read()
     blobs = _common.split_container(data, os.path.splitext(os.path.basename(image_path))[0])
+    if reset_settings:
+        # The quick payload is enough here: the firmware being installed is ours
+        # and carries the first-boot hook that finishes the erase. Sending the
+        # whole 6 MiB instead would add about two minutes to every install for a
+        # result the first boot reaches anyway.
+        name, payload, _ = reset_openwrt.build_payload(quick=True)
+        blobs.append((name, payload))
     blobs, reordered = _common.order_reboot_last(blobs)
     plan = _common.build_bootloader_plan_blobs(blobs)
     return plan, reordered
@@ -206,7 +219,7 @@ def main():
     args = parse_args()
 
     _common.print_header("Step 1. Checking the image")
-    plan, reordered = build_plan(args.image)
+    plan, reordered = build_plan(args.image, reset_settings=args.reset_settings)
     if reordered:
         print("The section order was changed: the section with the automatic restart "
               "was moved last.")

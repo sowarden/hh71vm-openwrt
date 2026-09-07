@@ -25,7 +25,8 @@ SOURCE_FILES = {
 }
 FLASH_TOOLS = (
     "_common.py", "_lan.py", "flash_openwrt_tftp.py", "flash_openwrt_vendor.py",
-    "install_openwrt_lan.py", "restore_stock.py", "restore_stock_lan.py", "rtk_mkimg.py",
+    "install_openwrt_lan.py", "reset_openwrt.py", "restore_stock.py",
+    "restore_stock_lan.py", "rtk_mkimg.py",
     "rtk_romloader.py", "rtk_tftp_put.py", "tftp_dump_mtd.py", "uart_ram_boot.py",
     "uart_shell.py",
 )
