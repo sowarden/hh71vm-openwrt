@@ -1551,6 +1551,9 @@ a.label:hover { text-decoration: none; filter: brightness(.97); }
 	opacity: .5;
 	transition: width .3s ease;
 }
+/* A store at capacity refuses new messages, silently, so it must not read the same as
+   an ordinary busy bar. */
+.cbi-progressbar.full > div { background: var(--err); opacity: .7; }
 .cbi-progressbar::after {
 	content: attr(title);
 	position: absolute;

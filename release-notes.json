@@ -1,8 +1,10 @@
 {
   "schema": 1,
   "changes": [
-    "Show SMS from both the modem and the SIM store instead of only the one the modem reports as its receive memory, which hid every message kept in the other store.",
-    "Add a message storage selector to the SMS settings, and report by name any store whose messages are not being shown.",
-    "Fix USSD on some Qualcomm modem revisions."
+    "Fix SMS storage: messages are now read from and stored in both the modem and the SIM card, new messages are stored in the modem's memory by default and automatically move to the SIM card when the modem is full, and the message list shows messages in the correct order regardless of which store they came from. A message settings menu lets you choose a specific store instead.",
+    "Fix USSD on some Qualcomm modem revisions.",
+    "Open Wi-Fi networks work again: a client joining a network with no encryption now gets an address instead of being cut off right after it connects.",
+    "Hold the RESET button until the front panel flashes to restore factory settings.",
+    "New tool restores factory settings over TFTP, for a router that no longer boots."
   ]
 }

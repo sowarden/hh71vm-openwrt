@@ -23,6 +23,21 @@ function storeName(id) {
 	return STORE_LABELS[id] || id;
 }
 
+/* Where the daemon is telling the modem to put the next incoming message, in one
+   sentence.  Built from what the daemon already decided (sms.receive_target,
+   sms.stores_full) rather than re-deriving the choice here, so the page can never
+   disagree with the daemon about where a message actually went. */
+function receiveSentence(sms) {
+	if (sms.stores_full)
+		return _('Both message stores are full. Incoming messages are being refused until a slot is freed.');
+	if (!sms.receive_target) return '';
+	var s = _('Incoming messages are stored in %s.').format(storeName(sms.receive_target));
+	if (sms.receive_storage && sms.receive_storage !== sms.receive_target)
+		s += ' ' + _('This modem currently has %s selected instead of the requested store.')
+			.format(storeName(sms.receive_storage));
+	return s;
+}
+
 /* A GSM-7 message fits 160 characters, 153 per segment once it is split; UCS2 -- which
  * anything outside the GSM alphabet needs -- fits 70, or 67 per segment. */
 function segments(text) {
@@ -168,9 +183,11 @@ for it.').format(dst))) return;
 						E('label', { 'class': 'cbi-value-title' }, _('Message storage')),
 						E('div', { 'class': 'cbi-value-field' }, [mode,
 							E('div', { 'class': 'cbi-value-description' },
-							  _('Which store the message list reads and writes. Modems \
-disagree about where they put incoming messages, so "Both stores" is the setting that \
-cannot hide one; the SIM card holds only 10-20 messages, the modem far more.'))])
+							  _('Which store the message list reads and writes, and where \
+incoming messages are stored. Modems disagree about where they put incoming messages, so \
+"Both stores" also reads both; the SIM card holds only 10-20 messages, the modem far more, \
+so it is preferred whenever it has room.')),
+							E('div', { 'class': 'cbi-value-description' }, receiveSentence(sms))])
 					]),
 					E('div', { 'class': 'cbi-value' }, [
 						E('label', { 'class': 'cbi-value-title' }, _('Service centre')),
@@ -181,6 +198,7 @@ only if your operator told you to.'))])
 					]),
 					m.facts(occupancy.concat([
 						[_('Selected on the modem'), sms.storage],
+						[_('Incoming messages'), sms.receive_storage],
 						[_('Text parameters (CSMP)'), res.csmp, { mono: true }]
 					])),
 					E('div', { 'class': 'cbi-page-actions' }, [
@@ -296,13 +314,30 @@ only if your operator told you to.'))])
 				E('p', {}, _('Use "Settings" to read both stores.'))
 			]));
 
+			/* A full store silently refuses new messages and can lose the tail of a
+			   multipart message already arriving -- this is the failure the automatic
+			   fallback exists to prevent, so it has to be visible, not just logged. */
+			var full = Object.keys(counts).filter(function (id) {
+				var c = counts[id];
+				return c && c.total && (c.used || 0) >= c.total;
+			});
+			if (full.length) kids.push(E('div', {
+				'class': 'alert-message ' + (sms.stores_full ? 'error' : 'warning')
+			}, [
+				E('p', {}, (full.length > 1
+					? _('%s are full.').format(full.map(storeName).join(', '))
+					: _('%s is full.').format(storeName(full[0]))) + ' ' +
+					_('A full store refuses new messages and can lose the remaining parts of a message already arriving.')),
+				E('p', {}, receiveSentence(sms))
+			]));
+
 			/* One bar per store that is being read: a single combined bar would hide a
 			   full SIM behind a nearly empty modem store. */
 			var usage = read.length ? read.map(function (id) {
 				var c = counts[id] || {};
 				var pct = c.total ? Math.round(100 * (c.used || 0) / c.total) : 0;
 				return [storeName(id), E('div', {
-						'class': 'cbi-progressbar',
+						'class': 'cbi-progressbar' + (pct >= 100 ? ' full' : ''),
 						'title': '%d / %d (%d%%)'.format(c.used || 0, c.total || 0, pct)
 					}, E('div', { 'style': 'width:%d%%'.format(pct) })), { raw: true }];
 			}) : [];
@@ -323,7 +358,8 @@ only if your operator told you to.'))])
 				m.facts([
 					[_('Messages'), String(msgs.length) +
 						(sms.unread ? '  (' + _('%d unread').format(sms.unread) + ')' : '')],
-					[_('Reading'), read.map(storeName).join(', ') || sms.storage]
+					[_('Reading'), read.map(storeName).join(', ') || sms.storage],
+					[_('Incoming'), storeName(sms.receive_storage)]
 				].concat(usage).concat([
 					[_('Service centre'), sms.sca, { copy: true }]
 				]))

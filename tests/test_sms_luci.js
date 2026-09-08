@@ -51,7 +51,11 @@ function findNode(value, predicate) {
 
 const view = { extend: value => value };
 const dom = { content: (node, children) => { node.children = children; } };
-const ui = {};
+let lastModal = null;
+const ui = {
+	showModal: (title, children) => { lastModal = { title, children }; },
+	hideModal: () => {}
+};
 const L = { resolveDefault: (promise, fallback) => Promise.resolve(promise).catch(() => fallback) };
 const translate = value => value;
 const windowStub = {};
@@ -172,6 +176,71 @@ async function main() {
 	truthy(malformedText.includes('decode error'), 'decode placeholder badge');
 	truthy(malformedText.includes('remains available for marking or deletion'),
 	       'decode placeholder actions explained');
+
+	/* A full store silently refuses new messages and can lose the tail of one already
+	   arriving -- gap 3 from session 2, the regression this whole change exists to
+	   close. The page has to say so, and in a colour that reflects whether the daemon
+	   still has somewhere else to put the next message. */
+	{
+		const oneFull = page.render([{ sms: {
+			storage: 'ME', receive_storage: 'ME', receive_target: 'SM', stores_full: false,
+			unread: 0, count: 0, read_stores: ['ME', 'SM'],
+			store_counts: { ME: { used: 100, total: 100 }, SM: { used: 3, total: 10 } } } },
+			{ ok: true, stores: ['ME', 'SM'], messages: [] }]);
+		const oneFullText = textOf(oneFull);
+		truthy(oneFullText.includes('Modem (ME) is full'), 'the full store is named');
+		truthy(oneFullText.includes('Incoming messages are stored in SIM card (SM)'),
+		       'the page says where incoming messages are going instead');
+		const oneFullBanner = findNode(oneFull, node => node.attrs &&
+			node.attrs.class === 'alert-message warning' && textOf(node).includes('is full'));
+		truthy(oneFullBanner, 'one full store with room elsewhere is a warning');
+		const fullBar = findNode(oneFull, node =>
+			node.tag === 'div' && node.attrs.class === 'cbi-progressbar full');
+		truthy(fullBar, "the full store's own bar gets the full modifier class");
+
+		const bothFull = page.render([{ sms: {
+			storage: 'ME', receive_storage: 'ME', receive_target: 'ME', stores_full: true,
+			unread: 0, count: 0, read_stores: ['ME', 'SM'],
+			store_counts: { ME: { used: 100, total: 100 }, SM: { used: 10, total: 10 } } } },
+			{ ok: true, stores: ['ME', 'SM'], messages: [] }]);
+		const bothFullText = textOf(bothFull);
+		const bothFullBanner = findNode(bothFull, node => node.attrs &&
+			node.attrs.class === 'alert-message error' && textOf(node).includes('are full'));
+		truthy(bothFullBanner, 'both stores full is an error, not merely a warning');
+		truthy(bothFullText.includes('being refused until a slot is freed'),
+		       'the page says incoming messages are refused, not silently dropped');
+
+		const notFull = page.render([{ sms: {
+			storage: 'ME', receive_storage: 'ME', receive_target: 'ME', stores_full: false,
+			unread: 0, count: 0, read_stores: ['ME', 'SM'],
+			store_counts: { ME: { used: 8, total: 100 }, SM: { used: 3, total: 10 } } } },
+			{ ok: true, stores: ['ME', 'SM'], messages: [] }]);
+		truthy(!textOf(notFull).includes('is full'), 'no full-store banner below capacity');
+	}
+
+	/* The settings dialog has to name the store incoming messages are actually going
+	   to, not just the one selected for reading. */
+	{
+		modem.api.smsSettings = () => Promise.resolve({ ok: true, stores: ['ME', 'SM'],
+			storage_mode: 'both',
+			sms: { sca: '+380000000000', storage: 'ME', receive_storage: 'SM',
+			       receive_target: 'SM', stores_full: false,
+			       store_counts: { ME: { used: 100, total: 100 }, SM: { used: 3, total: 10 } } } });
+		lastModal = null;
+		const tree = page.render([statusResponse, listResponse]);
+		const settingsBtn = findNode(tree, node => node.tag === 'button' && textOf(node) === 'Settings');
+		truthy(settingsBtn, 'settings action rendered');
+		await settingsBtn.attrs.handler();
+		await Promise.resolve();
+		truthy(lastModal, 'settings dialog opened');
+		const modalText = textOf(lastModal.children);
+		truthy(modalText.includes('Incoming messages are stored in SIM card (SM)'),
+		       'settings dialog explains where incoming messages currently go');
+		const incomingRow = findNode(lastModal.children, node => node.tag === 'row' &&
+			Array.isArray(node.children) && node.children[0] === 'Incoming messages');
+		truthy(incomingRow, 'an "Incoming messages" fact row is shown');
+		equal(incomingRow.children[1], 'SM', 'it names the store the modem actually has selected');
+	}
 
 	console.log(`sms LuCI tests: ${assertions} assertions passed`);
 }

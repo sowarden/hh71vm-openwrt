@@ -689,6 +689,23 @@ end
 --- Put multi-part messages back together from their headers.  Segments come in
 --- storage-slot order, which is not sequence order, so each one is filed by its `seq`
 --- and the text is joined only at the end.
+--- The SCTS timestamp's epoch, for sorting only. Every message's yy/MM/dd,hh:mm:ss is
+--- run through the same os.time() base and then shifted by its own quarter-hour zone
+--- field, so comparisons stay correct even if this daemon's system clock is not
+--- exactly UTC -- only a constant bias could survive that, and a bias cannot reorder
+--- messages days or weeks apart. Returns nil for a message with no timestamp (a
+--- freshly stored, unsent draft).
+local function scts_epoch(ts)
+	local yy, mo, dd, hh, mi, ss, sign, zz =
+		tostring(ts or ""):match("^(%d%d)/(%d%d)/(%d%d),(%d%d):(%d%d):(%d%d)([%+%-])(%d%d)$")
+	if not yy then return nil end
+	local t = os.time({ year = 2000 + tonumber(yy), month = tonumber(mo), day = tonumber(dd),
+	                     hour = tonumber(hh), min = tonumber(mi), sec = tonumber(ss) })
+	local offset = tonumber(zz) * 15 * 60
+	if sign == "-" then offset = -offset end
+	return t - offset
+end
+
 local function assemble(list)
 	local out, groups = {}, {}
 	for _, m in ipairs(list) do
@@ -735,6 +752,15 @@ local function assemble(list)
 			table.sort(g.indexes)
 		end
 	end
+	-- Oldest first: the page reverses this to show newest first. Store-scan order (ME's
+	-- slots, then SM's) has no relation to arrival time once both stores hold real
+	-- traffic -- measured 2026-09-08, three brand-new ME messages rendered below
+	-- two-week-old SM ones because the list was in scan order, not time order. A
+	-- message with no timestamp (an unsent draft) sorts last, so it lands at the top
+	-- after the page's reversal.
+	table.sort(out, function(a, b)
+		return (scts_epoch(a.ts) or math.huge) < (scts_epoch(b.ts) or math.huge)
+	end)
 	return out
 end
 
@@ -1058,6 +1084,14 @@ function M.step_send()
 		M.finish(true)
 		return
 	end
+	-- A step's command is usually a fixed string decided when the request was built.
+	-- The rare exception is one whose command depends on a fact only an earlier step in
+	-- this same request produces (the SMS storage aim depends on occupancy counts read
+	-- moments before it, by steps in the same request) -- resolving it here, right
+	-- before it is sent, is what makes that fact current instead of the one known when
+	-- the request was assembled.  Resolved once and written back so every later use of
+	-- s.cmd (the URC-vs-answer check, logging, the recorded result) sees a plain string.
+	if type(s.cmd) == "function" then s.cmd = s.cmd() end
 	r.lines = {}
 	r.raw = ""
 	r.deadline = mono() + (s.timeout or CFG.at_timeout)
@@ -1422,6 +1456,10 @@ function M.on_ready()
 	-- ESC cancels unfinished input but produces no reply, so it is not a request step;
 	-- send it once before setup instead.
 	M.write_raw("\027")
+	-- A fresh channel may be a different modem, or the same one after it lost NV state,
+	-- so the three-argument AT+CPMS capability learned on the previous channel is not
+	-- assumed to still hold; the next aim step re-probes it.
+	M.sms_cpms3 = nil
 	M.enqueue(setup_request(), true)
 	-- bg_static is defined further down, in the polling section
 	if M.bg_static then M.enqueue(M.bg_static()) end
@@ -2078,6 +2116,24 @@ local function sms_selected_counts(lines, store)
 	end
 end
 
+--- Every message store this modem has actually reported via AT+CPMS=?, in the order
+--- SMS_STORES prefers.  Falls back to both known names before the first bring-up has
+--- populated S.sms.stores.  Shared by sms_active_stores and sms_receive_target so a
+--- modem with only one store -- untested on either known unit, but not to be assumed
+--- impossible -- cannot have either function reach for one it does not have.
+local function sms_known_stores()
+	local list, seen = {}, {}
+	for _, name in ipairs((S.sms or {}).stores or SMS_STORES) do
+		name = sms_storage_name(name)
+		if name and SMS_STORE_SET[name] and not seen[name] then
+			seen[name] = true
+			list[#list + 1] = name
+		end
+	end
+	if #list == 0 then list = { SMS_STORES[1], SMS_STORES[2] } end
+	return list
+end
+
 --- The stores to act on right now.  An explicit name always wins -- the page acting on
 --- one message, or a caller that knows where a message lives.  Otherwise the user's
 --- preference decides, and "both" means every message store the modem actually
@@ -2089,16 +2145,94 @@ local function sms_active_stores(requested)
 	if named then return { named } end
 	local mode = sms_storage_mode_get()
 	if mode ~= "both" then return { mode } end
-	local list, seen = {}, {}
-	for _, name in ipairs((S.sms or {}).stores or SMS_STORES) do
-		name = sms_storage_name(name)
-		if name and SMS_STORE_SET[name] and not seen[name] then
-			seen[name] = true
-			list[#list + 1] = name
+	return sms_known_stores()
+end
+
+--- The store the user asked incoming messages to land in.  "both" has no store of its
+--- own, so it takes the modem's first known store -- ME, the 100-slot store, over the
+--- 10-15 slot SIM, on both units seen so far.  An explicit ME/SM mode is itself the
+--- preference, provided the modem actually has that store; falling back to whatever it
+--- does have is better than aiming at one that does not exist.
+local function sms_preferred_store()
+	local known = sms_known_stores()
+	local mode = sms_storage_mode_get()
+	if mode ~= "both" then
+		for _, name in ipairs(known) do if name == mode then return mode end end
+	end
+	return known[1] or SMS_STORES[1]
+end
+
+--- Whether a named store has room, going only by what has actually been measured.  A
+--- store this session has not yet selected has no entry in store_counts; treat that as
+--- room rather than refuse to aim because the numbers have not arrived yet -- the first
+--- AT+CPMS? after aiming will correct it if that guess was wrong.
+local function sms_store_has_room(name)
+	local counts = (S.sms or {}).store_counts or {}
+	local c = counts[name]
+	if not c then return true end
+	return (tonumber(c.used) or 0) < (tonumber(c.total) or 0)
+end
+
+--- Where a new message should be told to land right now: the preferred store if it has
+--- room, the other known store if that one does not, and the preferred store again --
+--- with S.sms.stores_full raised -- if neither does.  This is what session 2 found
+--- missing: without it, every store-scan job left mem1/mem2/mem3 aimed at whichever
+--- store the scan read last, which on the owner's modem was a full SM, and three real
+--- messages sent into that state were refused outright with no +CMTI and no trace in
+--- either store.
+local function sms_receive_target()
+	local pref = sms_preferred_store()
+	if sms_store_has_room(pref) then
+		S.sms = S.sms or {}
+		S.sms.stores_full = false
+		return pref
+	end
+	for _, name in ipairs(sms_known_stores()) do
+		if name ~= pref and sms_store_has_room(name) then
+			S.sms = S.sms or {}
+			S.sms.stores_full = false
+			return name
 		end
 	end
-	if #list == 0 then list = { SMS_STORES[1], SMS_STORES[2] } end
-	return list
+	S.sms = S.sms or {}
+	S.sms.stores_full = true
+	return pref
+end
+
+--- Aim mem1/mem2/mem3 at the store `target_fn()` names and refresh the daemon's view of
+--- what the modem actually has selected.  `target_fn` is called at the moment this step
+--- is actually sent, not when the request is built -- steps earlier in the same request
+--- (a store scan, a delete) supply the occupancy this decision needs, and they have not
+--- run yet when a caller assembles its steps table.  `M.step_send` is what evaluates a
+--- function-valued `cmd`; see the comment there.
+---
+--- The three-argument form also moves mem3 (receive) -- proved on the stand 2026-09-08:
+--- `AT+CPMS="ME","ME","ME"` answered OK and AT+CPMS? echoed it back immediately, and it
+--- survived a daemon restart (channel rebuild), so it lives in modem NV rather than
+--- resetting every session.  Older or different firmware may refuse the three-argument
+--- form outright; M.sms_cpms3 remembers that per channel so every later call falls back
+--- to the two-argument form (mem1+mem2 only) without retrying the refusal.  Aiming
+--- mem1/mem2 at the same target as mem3 is deliberate: it is what repairs the
+--- mem1-left-on-a-full-store regression, and it makes a saved draft land in the same
+--- store as a live message without a separate aim/restore step.
+local function sms_aim_steps(target_fn)
+	return {
+		{ cmd = function()
+			local target = sms_storage_name(target_fn()) or SMS_STORES[1]
+			if M.sms_cpms3 == false then
+				return ('AT+CPMS="%s","%s"'):format(target, target)
+			end
+			return ('AT+CPMS="%s","%s","%s"'):format(target, target, target)
+		end, tolerate = true, parse = function(lines, ok)
+			if ok then
+				if M.sms_cpms3 == nil then M.sms_cpms3 = true end
+			elseif M.sms_cpms3 ~= false then
+				M.sms_cpms3 = false
+				log("modem refused three-argument AT+CPMS; falling back to mem1+mem2 only")
+			end
+		end },
+		{ cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true },
+	}
 end
 
 
@@ -2584,6 +2718,10 @@ local function sms_refresh_unread()
 		if not reading[name] then hidden = hidden + (counts.used or 0) end
 	end
 	S.sms.hidden_slots = hidden
+	-- Recomputed on every refresh rather than only when an aim step runs, so the page
+	-- can show where the next message is headed even between syncs.  Also raises
+	-- S.sms.stores_full as a side effect when neither known store has room.
+	S.sms.receive_target = sms_receive_target()
 	local n = SMS.count_all()
 	-- An empty store with occupied slots means the list has never been fetched in
 	-- this session; say "unknown" rather than "none", which would be a lie.
@@ -2772,9 +2910,16 @@ local function sms_list_job(done, requested_storage, budget)
 				report.decode_errors = report.decode_errors + part_report.decode_errors
 			end }
 	end
-	-- Leave the daemon's own view describing what the modem really has selected now,
-	-- and refresh the counts of the stores this job did not read.
-	steps[#steps + 1] = { cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true }
+	-- Point the modem at the store that should receive the next incoming message,
+	-- rather than leaving it wherever the last per-store select above happened to land
+	-- (which is always the last entry of `stores` -- SM on both known units, and SM is
+	-- the small store).  That was the regression session 2 found: every list refresh
+	-- parked mem1/mem2/mem3 on a full SM, and three real messages sent into that state
+	-- were refused outright.  The per-store selects just above already populated
+	-- store_counts, so the target this picks reflects what was just measured.
+	for _, step in ipairs(sms_aim_steps(sms_receive_target)) do
+		steps[#steps + 1] = step
+	end
 	return request("sms_list", steps, function(ok, _, err)
 		S.sms = S.sms or {}
 		local list = assemble(msgs)
@@ -2992,7 +3137,12 @@ function API.sms_delete(cli, args)
 	for _, n in ipairs(wanted) do
 		steps[#steps + 1] = { cmd = "AT+CMGD=" .. n, timeout = 25, tolerate = true }
 	end
-	steps[#steps + 1] = { cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true }
+	-- A delete can be exactly what frees the preferred store back up, so re-aim rather
+	-- than just re-reading: leaving mem1/mem2/mem3 on whatever this delete happened to
+	-- select would otherwise strand them there until the next list refresh.
+	for _, step in ipairs(sms_aim_steps(sms_receive_target)) do
+		steps[#steps + 1] = step
+	end
 	run_for(cli, "sms_delete", steps, function(ok, _, err)
 		if ok then
 			for _, n in ipairs(wanted) do
@@ -3028,7 +3178,13 @@ function API.sms_delete_all(cli, args)
 		steps[#steps + 1] = { cmd = ('AT+CPMS="%s"'):format(store), tolerate = true }
 		steps[#steps + 1] = { cmd = "AT+CMGD=1,4", timeout = 60, tolerate = true }
 	end
-	steps[#steps + 1] = { cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true }
+	-- Wiping a store is the other way a full store gets room again; re-aim rather than
+	-- leave mem1/mem2/mem3 on whichever store this wipe last selected.  Appended after
+	-- the per-store loop, so it does not disturb the fixed two-steps-per-store indexing
+	-- `result[i * 2]` below relies on.
+	for _, step in ipairs(sms_aim_steps(sms_receive_target)) do
+		steps[#steps + 1] = step
+	end
 	run_for(cli, "sms_delete_all", steps, function(ok, result, err)
 		local refused = {}
 		for i, store in ipairs(stores) do
@@ -3151,18 +3307,20 @@ local function sms_write(cli, args, save)
 	-- saved draft therefore lands wherever mem2 happens to point unless it is aimed
 	-- first.  The two-argument form is what makes that safe: measured on the stand
 	-- 2026-09-07, `AT+CPMS="ME","SM"` moved the write memory and left the receive
-	-- memory alone, so aiming a draft cannot redirect incoming messages.
-	local target, restore_read, restore_write
+	-- memory alone, so aiming a draft at one store cannot redirect incoming messages
+	-- meant for another -- this positioning step must stay two-argument even though
+	-- the tail of this function aims all three.
+	local target
 	if save then
 		local mode = sms_storage_mode_get()
 		target = sms_storage_name(args.storage)
 			or (mode ~= "both" and sms_storage_name(mode) or nil)
 		local now = S.sms or {}
-		restore_read  = sms_storage_name(now.storage)
-		restore_write = sms_storage_name(now.write_storage)
-		if target and target ~= restore_write then
+		local current_read  = sms_storage_name(now.storage)
+		local current_write = sms_storage_name(now.write_storage)
+		if target and target ~= current_write then
 			steps[#steps + 1] = { cmd = ('AT+CPMS="%s","%s"')
-				:format(restore_read or target, target) }
+				:format(current_read or target, target) }
 		else
 			target = nil
 		end
@@ -3184,15 +3342,23 @@ local function sms_write(cli, args, save)
 		end }
 	end
 
-	-- Put the write memory back where it was, whatever happened above: leaving it
-	-- aimed at the draft's store would silently redirect the next save.  Tolerated,
-	-- because a failed restore must not turn a written message into a reported failure.
+	-- Leave mem1/mem2/mem3 aimed at whichever store should receive the next incoming
+	-- message, rather than wherever this write happened to leave them.  Restoring the
+	-- values seen *before* this write is what left mem2 stuck on a store that had just
+	-- proved full: measured on the stand 2026-09-08, AT+CMGW into a full SM answered
+	-- "+CMS ERROR: 322" and a restore-to-old-values step put mem2 right back on SM, so
+	-- the next unaimed save silently went there too.  Aiming at the computed target
+	-- instead cannot repeat that -- and sms_aim_steps' own trailing AT+CPMS? reports
+	-- immediately whether the aim actually landed.
+	--
+	-- Built fresh each time rather than shared, so the copy appended here and the copy
+	-- the failure path enqueues below never end up as one request's steps twice over.
+	local function restore_steps()
+		return sms_aim_steps(sms_receive_target)
+	end
+
 	if target then
-		if restore_read and restore_write then
-			steps[#steps + 1] = { cmd = ('AT+CPMS="%s","%s"')
-				:format(restore_read, restore_write), tolerate = true }
-		end
-		steps[#steps + 1] = { cmd = "AT+CPMS?", parse = M.parsers.cpms, tolerate = true }
+		for _, s in ipairs(restore_steps()) do steps[#steps + 1] = s end
 	end
 
 	run_for(cli, save and "sms_save" or "sms_send", steps, function(ok, _, err)
@@ -3203,6 +3369,16 @@ local function sms_write(cli, args, save)
 			log("%s to %s failed after %d part(s): %s",
 				save and "sms_save" or "sms_send", to, info.parts,
 				tostring(err))
+			-- A step without `tolerate` ends the whole run, so the restore appended
+			-- above is never reached when a write fails -- and the write that fails
+			-- most often is the one into a store that just filled up.  Measured on the
+			-- stand 2026-09-08: AT+CMGW into a full SM answered "+CMS ERROR: 322" and
+			-- left "+CPMS: \"SM\",10,10,\"SM\",10,10,\"SM\",10,10" behind, after which
+			-- the next save with no explicit storage silently aimed at SM as well.
+			-- Put mem2 back in a request of its own, which the abort cannot reach.
+			if target then
+				M.enqueue(request("sms-write-restore", restore_steps()))
+			end
 		end
 		if ok and save then
 			-- A new draft occupies a slot the cached list does not know about.

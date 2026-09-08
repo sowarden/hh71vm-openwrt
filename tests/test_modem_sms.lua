@@ -45,6 +45,11 @@ return {
 	sms_key = sms_key,
 	sms_slot = sms_slot,
 	sms_active_stores = sms_active_stores,
+	sms_known_stores = sms_known_stores,
+	sms_preferred_store = sms_preferred_store,
+	sms_store_has_room = sms_store_has_room,
+	sms_receive_target = sms_receive_target,
+	sms_aim_steps = sms_aim_steps,
 	sms_storage_mode_get = sms_storage_mode_get,
 	sms_storage_mode_set = sms_storage_mode_set,
 	sms_storage_for = sms_storage_for,
@@ -72,6 +77,16 @@ end
 local function truthy(value, label)
 	assertions = assertions + 1
 	if not value then error(label or "expected truthy value", 2) end
+end
+
+--- A step's `cmd` is a plain string almost everywhere, and a zero-argument function for
+--- the storage-aim step alone -- resolved lazily by M.step_send, at the moment it is
+--- actually sent, because it depends on occupancy counts earlier steps in the same
+--- request just read.  This harness drives steps by hand without going through
+--- M.step_send, so it has to do that resolution itself wherever it inspects step.cmd.
+local function step_cmd(step)
+	if type(step.cmd) == "function" then return step.cmd() end
+	return step.cmd
 end
 
 local pdu_a = "00000B912120550501F10000629050100010001CD3E614C44ECFE920723A7C76BFE7F4F41814042D6F4D593407"
@@ -280,18 +295,26 @@ do
 
 	local function commands(job)
 		local out = {}
-		for _, step in ipairs(job.steps) do out[#out + 1] = step.cmd end
+		for _, step in ipairs(job.steps) do out[#out + 1] = step_cmd(step) end
 		return table.concat(out, " ")
 	end
 
+	-- The aim step's target depends on M.sms_cpms3 (3-argument capability, learned per
+	-- channel) and on store_counts (occupancy). Reset to the "nothing known yet" state
+	-- so these assertions do not depend on order against later do-blocks.
+	M.sms_cpms3 = nil
+	M.state.sms.store_counts = nil
+
 	local both = sms.sms_list_job(function() end)
 	equal(commands(both),
-	      'AT+CMGF=0 AT+CPMS="ME" AT+CMGL=4 AT+CPMS="SM" AT+CMGL=4 AT+CPMS?',
-	      "default reads every store, receive memory does not narrow it")
+	      'AT+CMGF=0 AT+CPMS="ME" AT+CMGL=4 AT+CPMS="SM" AT+CMGL=4 AT+CPMS="ME","ME","ME" AT+CPMS?',
+	      "default reads every store, receive memory does not narrow it, and the tail " ..
+	      "aims at ME (the preferred store) rather than wherever the scan last read")
 
 	local named = sms.sms_list_job(function() end, "SM")
-	equal(commands(named), 'AT+CMGF=0 AT+CPMS="SM" AT+CMGL=4 AT+CPMS?',
-	      "an explicit store is read alone")
+	equal(commands(named), 'AT+CMGF=0 AT+CPMS="SM" AT+CMGL=4 AT+CPMS="ME","ME","ME" AT+CPMS?',
+	      "an explicit store is read alone, but the receive aim still follows the " ..
+	      "general preference, not this one-off request")
 
 	-- The listing deadline is shared out, never handed to each store: two stores must
 	-- not be able to outlast the 28 s rpcd call waiting for them.
@@ -304,15 +327,86 @@ do
 	equal(listings[1].timeout, 10, "shared deadline per store")
 	truthy(listings[1].timeout * 2 < 28, "both stores fit inside the rpcd timeout")
 
-	-- Only stores the modem actually reported are read.
+	-- Only stores the modem actually reported are read, and the receive aim follows:
+	-- a modem that only ever advertised SM must never be aimed at an ME it does not
+	-- have.
 	M.state.sms.stores = { "SM" }
-	equal(commands(sms.sms_list_job(function() end)), 'AT+CMGF=0 AT+CPMS="SM" AT+CMGL=4 AT+CPMS?',
-	      "a modem with one message store is read once")
+	equal(commands(sms.sms_list_job(function() end)),
+	      'AT+CMGF=0 AT+CPMS="SM" AT+CMGL=4 AT+CPMS="SM","SM","SM" AT+CPMS?',
+	      "a modem with one message store is read once and aims only at that store")
 	M.state.sms.stores = nil
 
 	sms.M.parsers.cpms_range({ '+CPMS: ("ME","MT","SM","SR"),("ME","MT","SM","SR"),("ME","SM")' })
 	equal(table.concat(M.state.sms.stores, ","), "ME,SM",
 	      "MT and SR are not message stores to list")
+end
+
+do
+	-- Where an incoming message should land: this is gap 3 from session 2, the
+	-- regression that motivated this whole change. Every store-scan job used to end on
+	-- a bare AT+CPMS?, which left mem1/mem2/mem3 wherever the scan's last per-store
+	-- select happened to leave them -- SM on both known units -- and three real
+	-- messages sent while SM was full and selected were refused outright.
+	local M = sms.M
+	M.state.sms = { storage_mode = nil, stores = { "ME", "SM" }, store_counts = nil }
+	sms.sms_storage_mode_set("both")
+
+	equal(sms.sms_preferred_store(), "ME",
+	      "\"both\" prefers ME -- the 100-slot store -- over the 10-15 slot SIM")
+
+	M.state.sms.store_counts = { ME = { used = 100, total = 100 } }
+	equal(sms.sms_receive_target(), "SM",
+	      "a full preferred store falls back to the other known store")
+	equal(M.state.sms.stores_full, false, "the fallback store has room, so nothing is full")
+
+	M.state.sms.store_counts = { ME = { used = 100, total = 100 }, SM = { used = 10, total = 10 } }
+	equal(sms.sms_receive_target(), "ME",
+	      "with nowhere to go, the target stays the preferred store")
+	equal(M.state.sms.stores_full, true, "and stores_full is raised so the page can say so")
+
+	M.state.sms.store_counts = nil
+	equal(sms.sms_receive_target(), "ME",
+	      "a store never yet measured this session is assumed to have room, not refused")
+	equal(M.state.sms.stores_full, false, "an unmeasured store is not reported full")
+
+	-- An explicit mode is itself the preference, but never for a store the modem does
+	-- not actually have -- untested on real hardware, but not to be assumed impossible.
+	-- sms_storage_mode_set persists to /etc/hh71vm-modem/, which a dev/CI host may not
+	-- have writable; skip rather than fail the suite over an unrelated environment gap.
+	local set_ok = sms.sms_storage_mode_set("SM")
+	if set_ok then
+		M.state.sms.store_counts = nil
+		equal(sms.sms_preferred_store(), "SM", "an explicit mode is honoured when available")
+		M.state.sms.stores = { "ME" }
+		equal(sms.sms_preferred_store(), "ME",
+		      "an explicit mode naming a store the modem never advertised falls back to one it has")
+		M.state.sms.stores = { "ME", "SM" }
+		sms.sms_storage_mode_set("both")
+	else
+		print("sms modem tests: skipped explicit-mode-fallback assertions " ..
+		      "(/etc/hh71vm-modem is not writable in this environment)")
+	end
+
+	-- The aim command itself: three arguments while the modem has not refused that
+	-- form, two once M.sms_cpms3 remembers a refusal -- proved on the stand
+	-- 2026-09-08, where AT+CPMS="ME","ME","ME" moved mem3 and survived a daemon
+	-- restart, so it is the default rather than an opt-in.
+	M.sms_cpms3 = nil
+	M.state.sms.store_counts = nil
+	local steps = sms.sms_aim_steps(sms.sms_receive_target)
+	equal(#steps, 2, "one aim command plus one confirming read")
+	equal(step_cmd(steps[1]), 'AT+CPMS="ME","ME","ME"',
+	      "three-argument form by default -- moves mem1, mem2 and mem3 together")
+	steps[1].parse({}, true)
+	equal(M.sms_cpms3, true, "a successful three-argument aim is remembered as supported")
+
+	M.sms_cpms3 = nil
+	local refused = sms.sms_aim_steps(sms.sms_receive_target)
+	refused[1].parse({ "+CME ERROR: 4" }, false)
+	equal(M.sms_cpms3, false, "a refused three-argument aim is remembered as unsupported")
+	local after_refusal = sms.sms_aim_steps(sms.sms_receive_target)
+	equal(step_cmd(after_refusal[1]), 'AT+CPMS="ME","ME"',
+	      "every later aim falls back to the two-argument form without retrying the refusal")
 end
 
 do
@@ -337,13 +431,14 @@ do
 	local function run(job, plan)
 		local store
 		for _, step in ipairs(job.steps) do
-			local named = step.cmd:match('^AT%+CPMS="(%u%u)"$')
+			local cmd = step_cmd(step)
+			local named = cmd:match('^AT%+CPMS="(%u%u)"$')
 			if named then
 				store = named
 				local p = plan[store] or {}
 				local ok = p.select_ok ~= false
 				step.parse({ ("+CPMS: %d,100,0,100,0,10"):format(p.used or 0) }, ok)
-			elseif step.cmd == "AT+CMGL=4" then
+			elseif cmd == "AT+CMGL=4" then
 				local p = plan[store] or {}
 				step.parse(p.lines or {}, p.list_ok ~= false)
 			end
@@ -431,11 +526,12 @@ do
 	end)
 	local store
 	for _, step in ipairs(job.steps) do
-		local named = step.cmd:match('^AT%+CPMS="(%u%u)"$')
+		local cmd = step_cmd(step)
+		local named = cmd:match('^AT%+CPMS="(%u%u)"$')
 		if named then
 			store = named
 			step.parse({ "+CPMS: 1,100,0,100,0,10" }, true)
-		elseif step.cmd == "AT+CMGL=4" then
+		elseif cmd == "AT+CMGL=4" then
 			-- the same slot number in both stores, which is why storage has to travel
 			-- with the message
 			step.parse({ "+CMGL: 0,0,,44", store == "ME" and pdu_a or pdu_b }, true)
@@ -464,11 +560,12 @@ do
 	end)
 	store = nil
 	for _, step in ipairs(partial.steps) do
-		local named = step.cmd:match('^AT%+CPMS="(%u%u)"$')
+		local cmd = step_cmd(step)
+		local named = cmd:match('^AT%+CPMS="(%u%u)"$')
 		if named then
 			store = named
 			step.parse({ "+CPMS: 1,100,0,100,0,10" }, store ~= "SM")
-		elseif step.cmd == "AT+CMGL=4" then
+		elseif cmd == "AT+CMGL=4" then
 			step.parse({ "+CMGL: 0,0,,44", pdu_a }, true)
 		end
 	end
@@ -487,12 +584,42 @@ do
 		outcome = { ok = ok, list = list, err = err }
 	end)
 	for _, step in ipairs(dead.steps) do
-		if step.cmd:match('^AT%+CPMS="%u%u"$') then step.parse({ "+CMS ERROR: 321" }, false) end
+		if step_cmd(step):match('^AT%+CPMS="%u%u"$') then step.parse({ "+CMS ERROR: 321" }, false) end
 	end
 	dead.cb(true, {}, nil)
 	equal(outcome.ok, false, "no store readable is a failure")
 	truthy(outcome.err:match("ME") and outcome.err:match("SM"), "both refused stores named")
 	equal(M.sms_generation, 0, "a total failure preserves the cache")
+end
+
+do
+	-- Store-scan order must not leak into display order. Found 2026-09-08 on real
+	-- hardware: the owner sent 3 fresh messages that landed in ME, and LuCI showed
+	-- them *below* two-week-old SM messages, because assemble() used to preserve
+	-- whatever order the per-store scan produced (ME's slots, then SM's) with no
+	-- notion of when a message actually arrived. LuCI reverses this list to show
+	-- newest first, so assemble() has to return real chronological order, oldest
+	-- first, regardless of which store answered when.
+	local old_sm  = { index = 0, storage = "SM", sender = "OLD",  ts = "26/08/06,11:45:11+12" }
+	local mid_sm  = { index = 1, storage = "SM", sender = "MID",  ts = "26/08/18,05:09:03+12" }
+	local new_me1 = { index = 4, storage = "ME", sender = "NEW1", ts = "26/09/08,11:38:33+00" }
+	local new_me2 = { index = 5, storage = "ME", sender = "NEW2", ts = "26/09/08,11:39:03+00" }
+	local draft   = { index = 8, storage = "ME", sender = "DRAFT", ts = "" }
+
+	local function order_of(list)
+		local out = sms.assemble(list)
+		local senders = {}
+		for _, m in ipairs(out) do senders[#senders + 1] = m.sender end
+		return table.concat(senders, ",")
+	end
+
+	equal(order_of({ new_me1, new_me2, old_sm, mid_sm, draft }),
+	      "OLD,MID,NEW1,NEW2,DRAFT",
+	      "chronological order survives even when ME's fresh messages are fed first")
+	equal(order_of({ mid_sm, draft, new_me2, old_sm, new_me1 }),
+	      "OLD,MID,NEW1,NEW2,DRAFT",
+	      "the sort does not depend on input order at all")
+	equal(order_of({ draft }), "DRAFT", "a lone undated draft does not crash the sort")
 end
 
 print(("sms modem tests: %d assertions passed"):format(assertions))
