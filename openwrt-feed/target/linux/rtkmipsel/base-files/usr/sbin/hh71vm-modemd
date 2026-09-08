@@ -970,6 +970,132 @@ function KCAP.call(method, params, timeout)
 	end
 end
 
+--======================================================== Qualcomm profile persistence
+
+--- The APN the router treats as its own connection is written twice: once over AT
+--- (AT+CGDCONT/$QCPDPP, effective at once but volatile) and once into the Qualcomm
+--- profile store over KCAP (persistent, but only re-applied to the modem when core_app
+--- itself starts). This file is a third copy, kept so a daemon restart -- or a
+--- core_app restart/factory reset that wipes the KCAP profile too -- has something
+--- authoritative to re-apply from. Measured 2026-09-08: an AT-only write is lost the
+--- moment core_app restarts, because core_app owns a separate persistent database and
+--- reasserts it unconditionally; see PROFILE below.
+local APN_STATE_FILE = "/etc/hh71vm-modem/apn.json"
+local apn_state
+local apn_state_loaded = false
+local apn_reconcile_tries = 0
+local APN_RECONCILE_MAX_TRIES = 5   -- stop hammering a write that keeps failing
+
+local function apn_state_get()
+	if apn_state_loaded then return apn_state end
+	apn_state_loaded = true
+	local f = io.open(APN_STATE_FILE, "r")
+	if f then
+		local body = f:read("*a")
+		f:close()
+		local t = body and body ~= "" and json.parse(body)
+		if type(t) == "table" and t.apn ~= nil and t.cid ~= nil then apn_state = t end
+	end
+	return apn_state
+end
+
+local function apn_state_set(entry)
+	apn_state = entry
+	apn_state_loaded = true
+	apn_reconcile_tries = 0
+	fs.mkdirr((APN_STATE_FILE:match("^(.*)/[^/]*$")))
+	local f = io.open(APN_STATE_FILE .. ".tmp", "w")
+	if not f then return nil, "the APN could not be saved for restart-persistence" end
+	f:write(json.stringify(entry))
+	f:close()
+	fs.move(APN_STATE_FILE .. ".tmp", APN_STATE_FILE)
+	return entry
+end
+
+local function apn_state_clear()
+	apn_state = nil
+	apn_state_loaded = true
+	apn_reconcile_tries = 0
+	fs.remove(APN_STATE_FILE)
+end
+
+--- Field codes the Qualcomm profile store actually stores for PdpType, confirmed by
+--- round-trip on a scratch profile 2026-09-08: 0 PPP, 1 IP, 2 IPV6, 3 IPV4V6 -- the same
+--- order as PDP_TYPES near API.apn_set, just the integer core_app expects instead of the
+--- AT-side string.
+local PDP_CODE = { PPP = 0, IP = 1, IPV6 = 2, IPV4V6 = 3 }
+
+local PROFILE = {}
+
+--- The Qualcomm profile store is a small, independent list of "dial profiles" -- not a
+--- mirror of the AT +CGDCONT context table. Measured 2026-09-08: GetProfileList kept
+--- returning data_len:1 while +CGDCONT always listed 5 defined contexts, and adding,
+--- editing or deleting scratch ProfileIDs never touched any +CGDCONT cid. Only the
+--- profile flagged Default is what core_app re-applies to the modem on its own restart
+--- (confirmed both by watching only cid 1 revert after a live core_app restart, and by
+--- GetProfileList/getCurrentProfile always answering with that one profile) -- so this
+--- manages exactly that one profile and never invents one for any other cid.
+function PROFILE.list()
+	local r, err = KCAP.call("GetProfileList")
+	if not r then return nil, err end
+	return r.ProfileList or {}
+end
+
+function PROFILE.get_default()
+	local list, err = PROFILE.list()
+	if not list then return nil, err end
+	for _, p in ipairs(list) do
+		if tonumber(p.Default) == 1 then return p end
+	end
+	return list[1]   -- nothing flagged Default: degrade to whatever exists
+end
+
+--- Writes entry = { apn, pdp_type, auth, user, pass } as the modem's default dial
+--- profile: edits the existing Default profile when there is one, or creates one and
+--- marks it Default otherwise (an empty store was never seen on the test unit, but
+--- nothing guarantees it can't happen after a factory reset).
+function PROFILE.write(entry)
+	local cur, err = PROFILE.get_default()
+	if err then return nil, err end
+	local params = {
+		ProfileName = (entry.apn ~= "" and entry.apn) or "default",
+		APN         = entry.apn,
+		UserName    = entry.user or "",
+		Password    = entry.pass or "",
+		AuthType    = entry.auth or 0,
+		DailNumber  = (cur and cur.DailNumber ~= "" and cur.DailNumber) or "*99#",
+		PdpType     = PDP_CODE[entry.pdp_type] or PDP_CODE.IPV4V6,
+		IPAdrress   = "",
+	}
+	if cur then
+		params.ProfileID = cur.ProfileID
+		local _, werr = KCAP.call("EditProfile", params)
+		if werr then return nil, werr end
+		return cur.ProfileID
+	end
+	local _, aerr = KCAP.call("AddNewProfile", params)
+	if aerr then return nil, aerr end
+	local list, lerr = PROFILE.list()
+	if not list then return nil, lerr end
+	local added
+	for _, p in ipairs(list) do
+		if not added or tonumber(p.ProfileID) > tonumber(added.ProfileID) then added = p end
+	end
+	if not added then return nil, "profile not found after creation" end
+	local _, derr = KCAP.call("SetDefaultProfile", { ProfileID = added.ProfileID })
+	if derr then return nil, derr end
+	return added.ProfileID
+end
+
+function PROFILE.delete_default()
+	local cur, err = PROFILE.get_default()
+	if err then return nil, err end
+	if not cur then return true end
+	local _, derr = KCAP.call("DeleteProfile", { ProfileID = cur.ProfileID })
+	if derr then return nil, derr end
+	return true
+end
+
 --====================================================================== AT engine
 
 local M = {
@@ -1906,6 +2032,59 @@ function M.parsers.qcpdpp(lines)
 	end
 end
 
+--- Heals a stale APN on the profile-owning cid: a core_app restart, a factory reset of
+--- the Qualcomm side, or the KCAP write failing at the moment of an otherwise-successful
+--- apn_set can all leave the live modem disagreeing with what was last saved. Runs from
+--- the slow poll, right after it has refreshed both $QCPDPP? and +CGDCONT? into S, so
+--- the comparison below is never stale by more than one poll interval. Credentials
+--- (user/pass) cannot be read back over AT at all -- +CGAUTH answers ERROR on this
+--- firmware -- so only apn, pdp_type and the auth *type* are compared; a reverted
+--- password alone would not be caught here, which is a known gap, not an oversight.
+local function apn_reconcile()
+	local stored = apn_state_get()
+	if not stored then return end
+	if apn_reconcile_tries >= APN_RECONCILE_MAX_TRIES then return end
+
+	local cid_str = tostring(stored.cid)
+	local live
+	for _, e in ipairs((S.apn or {}).list or {}) do
+		if tostring(e.cid) == cid_str then live = e break end
+	end
+	if not live then return end   -- the context itself is gone; nothing sane to compare
+
+	local live_auth = M.cgauth and M.cgauth[cid_str]
+	local mismatch = live.apn ~= stored.apn
+	                  or (live.pdp_type or ""):upper() ~= (stored.pdp_type or ""):upper()
+	                  or (live_auth or 0) ~= (stored.auth or 0)
+	if not mismatch then
+		apn_reconcile_tries = 0
+		return
+	end
+
+	apn_reconcile_tries = apn_reconcile_tries + 1
+	log("apn: cid %d drifted from the saved profile (modem now apn=%q auth=%s), " ..
+	    "re-applying (%d/%d)", stored.cid, live.apn, tostring(live_auth),
+	    apn_reconcile_tries, APN_RECONCILE_MAX_TRIES)
+
+	local steps = {
+		{ cmd = ('AT+CGDCONT=%d,"%s","%s"'):format(stored.cid, stored.pdp_type, stored.apn),
+		  timeout = 25 },
+	}
+	steps[#steps + 1] = (not stored.auth or stored.auth == 0)
+		and { cmd = ("AT$QCPDPP=%d,0"):format(stored.cid), tolerate = true, timeout = 25 }
+		or  { cmd = ('AT$QCPDPP=%d,%d,"%s","%s"'):format(
+		          stored.cid, stored.auth, stored.pass or "", stored.user or ""),
+		      tolerate = true, timeout = 25 }
+	steps[#steps + 1] = { cmd = "AT$QCPDPP?",  parse = M.parsers.qcpdpp,  tolerate = true }
+	steps[#steps + 1] = { cmd = "AT+CGDCONT?", parse = M.parsers.cgdcont, tolerate = true }
+
+	M.enqueue(request("apn-reconcile", steps, function()
+		M.publish()
+		local _, werr = PROFILE.write(stored)
+		if werr then log("apn: KCAP write-through failed while reconciling: %s", werr) end
+	end))
+end
+
 --- Every defined context answers +CGPADDR, most of them with all zeros.  Taking the
 --- last line -- which the first version did -- therefore reported "0.0.0.0" while the
 --- link was up: pick the first context that actually holds an address instead.
@@ -2451,6 +2630,7 @@ local function bg_slow()
 	}, function()
 		M.check_session()
 		M.publish()
+		apn_reconcile()
 	end)
 end
 
@@ -3409,6 +3589,16 @@ local PDP_TYPES = { IP = true, IPV6 = true, IPV4V6 = true, PPP = true }
 --- Define or edit a profile.  Credentials do not live in +CGDCONT on this firmware --
 --- +CGAUTH answers ERROR -- so they go through Qualcomm's $QCPDPP, whose argument
 --- order is (cid, auth type, password, username).
+---
+--- The AT write only ever reaches the modem's *volatile* runtime context: it takes
+--- effect at once, but core_app overwrites it with its own persistent profile store the
+--- moment core_app restarts (measured 2026-09-08, see PROFILE above). So whichever cid
+--- the router currently treats as its own data connection (S.data.profile_cid --
+--- "Profile 1" in this daemon's and apn.js's own words when nothing else has been
+--- detected) is additionally written through KCAP and mirrored to /etc/hh71vm-modem/,
+--- so a restart -- of core_app, of the whole board, or of this daemon -- has something
+--- authoritative to restore from. Any other cid keeps today's AT-only behavior: the KCAP
+--- profile store does not track it and never did (see PROFILE's own comment).
 function API.apn_set(cli, args)
 	local cid = tonumber(args.cid) or 1
 	local apn = tostring(args.apn or "")
@@ -3417,38 +3607,77 @@ function API.apn_set(cli, args)
 	if apn:find('[",\r\n]') then return reply(cli, { error = "invalid APN" }) end
 	if not PDP_TYPES[pdp] then return reply(cli, { error = "invalid PDP type" }) end
 
+	local has_auth = args.auth ~= nil or args.user ~= nil or args.pass ~= nil
+	local auth, user, pass
+
 	local steps = {
 		{ cmd = ('AT+CGDCONT=%d,"%s","%s"'):format(cid, pdp, apn), timeout = 25 },
 	}
-	if args.auth ~= nil or args.user ~= nil or args.pass ~= nil then
-		local user, pass = tostring(args.user or ""), tostring(args.pass or "")
+	if has_auth then
+		user, pass = tostring(args.user or ""), tostring(args.pass or "")
 		if user:find('[",\r\n]') or pass:find('[",\r\n]') then
 			return reply(cli, { error = "invalid credentials" })
 		end
-		local a = tonumber(args.auth)
-		if not a then a = (user ~= "") and 3 or 0 end
-		if a < 0 or a > 3 then return reply(cli, { error = "invalid auth type" }) end
-		steps[#steps + 1] = (a == 0)
+		auth = tonumber(args.auth)
+		if not auth then auth = (user ~= "") and 3 or 0 end
+		if auth < 0 or auth > 3 then return reply(cli, { error = "invalid auth type" }) end
+		steps[#steps + 1] = (auth == 0)
 			and { cmd = ("AT$QCPDPP=%d,0"):format(cid), tolerate = true, timeout = 25 }
-			or  { cmd = ('AT$QCPDPP=%d,%d,"%s","%s"'):format(cid, a, pass, user),
+			or  { cmd = ('AT$QCPDPP=%d,%d,"%s","%s"'):format(cid, auth, pass, user),
 			      tolerate = true, timeout = 25 }
 	end
 	steps[#steps + 1] = { cmd = "AT$QCPDPP?",  parse = M.parsers.qcpdpp,  tolerate = true }
 	steps[#steps + 1] = { cmd = "AT+CGDCONT?", parse = M.parsers.cgdcont, tolerate = true }
 
+	-- Read before the steps run: this is "the profile the data call runs on" as of the
+	-- last poll, the same value the cgdcont parser publishes and apn.js quotes to the user.
+	local target_cid = (S.data and S.data.profile_cid) or 1
+
 	run_for(cli, "apn_set", steps, function(ok, _, err)
 		M.publish()
-		return { ok = ok, error = err, list = (S.apn and S.apn.list) or {} }
+		local persisted, kcap_error
+		if ok and cid == target_cid then
+			local prev = apn_state_get()
+			local entry = {
+				cid = cid, apn = apn, pdp_type = pdp,
+				auth = has_auth and auth or (prev and prev.auth) or 0,
+				user = has_auth and user or (prev and prev.user) or "",
+				pass = has_auth and pass or (prev and prev.pass) or "",
+			}
+			local _, werr = PROFILE.write(entry)
+			if werr then
+				kcap_error = werr
+				log("apn_set: KCAP write-through failed for cid %d: %s", cid, werr)
+			else
+				persisted = apn_state_set(entry) ~= nil
+			end
+		end
+		return { ok = ok, error = err, list = (S.apn and S.apn.list) or {},
+		         persisted = persisted or false, kcap_error = kcap_error }
 	end)
 end
 
+--- Mirrors apn_set: clearing the cid the data call actually runs on also drops the
+--- Qualcomm default profile and the local mirror, so apn_reconcile has nothing left to
+--- resurrect. apn.js never offers Delete for cid 1 (see its own comment), so this branch
+--- is reached only through the raw ubus API, not the web UI -- kept correct anyway.
 function API.apn_delete(cli, args)
 	local cid = tonumber(args.cid)
 	if not cid then return reply(cli, { error = "cid required" }) end
+	local target_cid = (S.data and S.data.profile_cid) or 1
 	run_for(cli, "apn_delete", {
 		{ cmd = "AT+CGDCONT=" .. cid, timeout = 25 },
 		{ cmd = "AT+CGDCONT?", parse = M.parsers.cgdcont, tolerate = true },
-	})
+	}, function(ok, _, err)
+		if ok and cid == target_cid then
+			local _, derr = PROFILE.delete_default()
+			if derr then
+				log("apn_delete: KCAP delete failed for cid %d: %s", cid, derr)
+			end
+			apn_state_clear()
+		end
+		return { ok = ok, error = err, list = (S.apn and S.apn.list) or {} }
+	end)
 end
 
 function API.pin_status(cli)
