@@ -57,19 +57,45 @@ def sign(directory, tag, commit, expected_key, expected_run_id=None):
     validate_candidate(directory, tag, commit, signed=True)
 
 
+def _retry_gh(attempts, run):
+    # `gh` calls this script makes are individually rare, but the asset-verification pass
+    # makes one per package, twice (before and after upload) - a release with ~150 packages
+    # is ~300 calls in a couple of minutes, well into where a transient GitHub secondary
+    # rate limit or network blip becomes likely. `anonymous_hash` below already retries for
+    # exactly this reason; this gives the `gh`-backed calls the same margin. Retried only on
+    # a bare nonzero exit - a caller-supplied `missing=True` 404 short-circuits before this.
+    last = None
+    for attempt in range(attempts):
+        try:
+            return run()
+        except subprocess.CalledProcessError as error:
+            last = error
+            if attempt == attempts - 1:
+                detail = (error.stderr or "").strip()
+                if isinstance(detail, bytes):
+                    detail = detail.decode(errors="replace")
+                detail = detail.replace("\n", " ")[-500:]
+                raise RuntimeError(f"GitHub CLI call failed after {attempts} attempts: "
+                                    + " ".join(error.cmd) + (": " + detail if detail else "")) from error
+            time.sleep(2 ** attempt)
+    raise AssertionError("unreachable") from last
+
+
 class GitHub:
     def api(self, endpoint, method="GET", payload=None, missing=False):
         args = ["gh", "api", f"repos/{REPOSITORY}/{endpoint}", "--method", method]
         if payload is not None:
             args += ["--input", "-"]
-        result = subprocess.run(args, input=json.dumps(payload) if payload is not None else None,
-                                capture_output=True, text=True, timeout=120)
-        if result.returncode:
-            if missing and "(HTTP 404)" in result.stderr:
-                return None
-            detail = result.stderr.strip().replace("\n", " ")[-500:]
-            raise RuntimeError("GitHub API request failed: " + endpoint + (": " + detail if detail else ""))
-        return json.loads(result.stdout or "null")
+
+        def run():
+            result = subprocess.run(args, input=json.dumps(payload) if payload is not None else None,
+                                    capture_output=True, text=True, timeout=120)
+            if result.returncode:
+                if missing and "(HTTP 404)" in result.stderr:
+                    return None
+                raise subprocess.CalledProcessError(result.returncode, args, result.stdout, result.stderr)
+            return json.loads(result.stdout or "null")
+        return _retry_gh(4, run)
 
     def assets(self, release_id):
         result, page = [], 1
@@ -97,18 +123,29 @@ class GitHub:
             page += 1
 
     def upload(self, tag, path):
-        subprocess.run(["gh", "release", "upload", tag, str(path), "--repo", REPOSITORY], check=True, timeout=1800)
+        args = ["gh", "release", "upload", tag, str(path), "--repo", REPOSITORY]
+
+        def run():
+            completed = subprocess.run(args, stderr=subprocess.PIPE, timeout=1800)
+            if completed.returncode:
+                raise subprocess.CalledProcessError(completed.returncode, args, stderr=completed.stderr)
+        _retry_gh(4, run)
 
     def asset_hash(self, asset):
-        with tempfile.TemporaryFile() as stream:
-            subprocess.run(["gh", "api", f"repos/{REPOSITORY}/releases/assets/{asset['id']}",
-                            "-H", "Accept: application/octet-stream"], stdout=stream,
-                           stderr=subprocess.PIPE, check=True, timeout=1800)
-            stream.seek(0)
-            result = hashlib.sha256()
-            for block in iter(lambda: stream.read(1048576), b""):
-                result.update(block)
-            return result.hexdigest()
+        args = ["gh", "api", f"repos/{REPOSITORY}/releases/assets/{asset['id']}",
+                "-H", "Accept: application/octet-stream"]
+
+        def run():
+            with tempfile.TemporaryFile() as stream:
+                completed = subprocess.run(args, stdout=stream, stderr=subprocess.PIPE, timeout=1800)
+                if completed.returncode:
+                    raise subprocess.CalledProcessError(completed.returncode, args, stderr=completed.stderr)
+                stream.seek(0)
+                result = hashlib.sha256()
+                for block in iter(lambda: stream.read(1048576), b""):
+                    result.update(block)
+                return result.hexdigest()
+        return _retry_gh(4, run)
 
     def anonymous_hash(self, url):
         for attempt in range(4):

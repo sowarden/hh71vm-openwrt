@@ -2,6 +2,7 @@
 import base64
 import copy
 import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -744,6 +745,81 @@ class MigrationAndSignatureTests(unittest.TestCase):
                 publisher.sign(output, TAG, COMMIT, KEY)
             self.assertNotIn("HH71VM_FEED_SIGNING_KEY", os.environ)
         self.assertFalse((output / "Packages.sig").exists())
+
+
+class GitHubRetryTests(unittest.TestCase):
+    """A release with ~150 packages calls asset_hash() twice per package - about 300 `gh`
+    subprocess calls in a couple of minutes. Run 34230512591 on `main` failed there with a
+    bare 'exit status 1' and no retry, on a release whose assets were otherwise all fine on
+    a re-check - a transient GitHub-side blip, not a real content mismatch. These exercise
+    the retry/backoff these calls now share, against the real `GitHub` class rather than the
+    `FakeGitHub` test double used elsewhere in this file."""
+
+    def setUp(self):
+        patcher = patch.object(publisher.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.github = publisher.GitHub()
+
+    def fake_run(self, *outcomes):
+        calls = iter(outcomes)
+
+        def run(*args, **kwargs):
+            outcome = next(calls)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return run
+
+    def completed(self, returncode=0, stdout="", stderr=""):
+        return subprocess.CompletedProcess(["gh"], returncode, stdout, stderr)
+
+    def test_api_retries_a_transient_failure_and_then_succeeds(self):
+        with patch.object(subprocess, "run", side_effect=self.fake_run(
+                self.completed(1, "", "secondary rate limit"),
+                self.completed(0, '{"ok": true}', ""))):
+            self.assertEqual(self.github.api("releases/1"), {"ok": True})
+
+    def test_api_does_not_retry_a_404_with_missing_true(self):
+        with patch.object(subprocess, "run", side_effect=self.fake_run(
+                self.completed(1, "", "gh: Not Found (HTTP 404)"))) as run:
+            self.assertIsNone(self.github.api("releases/tags/x", missing=True))
+            self.assertEqual(run.call_count, 1)
+
+    def test_api_gives_up_after_four_attempts_with_the_captured_detail(self):
+        with patch.object(subprocess, "run", side_effect=self.fake_run(*[
+                self.completed(1, "", "secondary rate limit") for _ in range(4)])):
+            with self.assertRaisesRegex(RuntimeError, "secondary rate limit"):
+                self.github.api("releases/1")
+
+    def test_asset_hash_retries_a_transient_failure(self):
+        attempts = []
+
+        def run(args, stdout, stderr, timeout):
+            self.assertEqual(stderr, subprocess.PIPE)
+            attempts.append(1)
+            if len(attempts) == 1:
+                return self.completed(1, stderr=b"network blip")
+            stdout.write(b"payload")
+            return self.completed(0)
+
+        with patch.object(subprocess, "run", side_effect=run):
+            digest = self.github.asset_hash({"id": 1})
+        self.assertEqual(digest, hashlib.sha256(b"payload").hexdigest())
+        self.assertEqual(len(attempts), 2)
+
+    def test_upload_retries_a_transient_failure(self):
+        attempts = []
+
+        def run(args, stderr, timeout):
+            attempts.append(1)
+            if len(attempts) == 1:
+                return self.completed(1, stderr=b"network blip")
+            return self.completed(0)
+
+        with patch.object(subprocess, "run", side_effect=run):
+            self.github.upload(TAG, Path("sysupgrade.bin"))
+        self.assertEqual(len(attempts), 2)
 
 
 if __name__ == "__main__":
