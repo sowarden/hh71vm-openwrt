@@ -53,7 +53,7 @@ class Rtl8192cdHandlerTests(unittest.TestCase):
 
     def test_txpwrlmt_is_a_default_on_device_option_with_explicit_opt_out(self):
         self.assertRegex(self.source, r"(?m)^\s*config_add_boolean txpwrlmt\s*$")
-        self.assertRegex(self.source, r"json_get_vars ifname ampdu amsdu txpwrlmt edca_fairness shortgi80\b")
+        self.assertRegex(self.source, r"json_get_vars ifname ampdu amsdu txpwrlmt edca_fairness shortgi80 swq_max_len\b")
         # The UCI option is positive, the MIB is negative; the mapping has to invert.
         self.assertIn(
             '[ "${txpwrlmt:-1}" = 0 ] && disable_txpwrlmt=1 || disable_txpwrlmt=0',
@@ -81,7 +81,7 @@ class Rtl8192cdHandlerTests(unittest.TestCase):
     def test_amsdu_is_a_default_on_device_option_with_explicit_opt_out(self):
         self.assertRegex(self.source, r"(?m)^\s*config_add_boolean amsdu\s*$")
         self.assertNotIn("config_add_boolean amsdu 1", self.source)
-        self.assertRegex(self.source, r"json_get_vars ifname ampdu amsdu txpwrlmt edca_fairness shortgi80\b")
+        self.assertRegex(self.source, r"json_get_vars ifname ampdu amsdu txpwrlmt edca_fairness shortgi80 swq_max_len\b")
         # Both the UCI option and the MIB are positive, so this one maps straight through.
         self.assertIn('"mustAmsdu=$amsdu"', self.source)
 
@@ -172,6 +172,30 @@ class Rtl8192cdHandlerTests(unittest.TestCase):
         body = setup.group("body")
         apply_mib = body.index('rtl_apply_mib "$ifname"')
         at = body.index('"shortGI80M=$shortgi80"')
+        mib_failure = body.index("wireless_setup_vif_failed MIB_WRITE_FAILED")
+        self.assertLess(apply_mib, at)
+        self.assertLess(at, mib_failure)
+
+    def test_swq_max_len_is_a_device_option_defaulting_short_for_2_4ghz_only(self):
+        self.assertRegex(self.source, r"(?m)^\s*config_add_int swq_max_len\s*$")
+        setup = re.search(
+            r"drv_rtl8192cd_setup\(\) \{(?P<body>.*?)\n\}", self.source, re.DOTALL
+        )
+        self.assertIsNotNone(setup)
+        body = setup.group("body")
+        # The skew was measured and fixed on 2.4 GHz; 5 GHz keeps the vendor queue depth
+        # because it was not measured there.
+        self.assertIn('a) swq_max_len="${swq_max_len:-4096}" ;;', body)
+        self.assertIn('*) swq_max_len="${swq_max_len:-256}" ;;', body)
+
+    def test_swq_max_len_is_written_in_the_fail_closed_mib_batch(self):
+        setup = re.search(
+            r"rtl_setup_vif\(\) \{(?P<body>.*?)\n\}", self.source, re.DOTALL
+        )
+        self.assertIsNotNone(setup)
+        body = setup.group("body")
+        apply_mib = body.index('rtl_apply_mib "$ifname"')
+        at = body.index('"swq_max_len=$swq_max_len"')
         mib_failure = body.index("wireless_setup_vif_failed MIB_WRITE_FAILED")
         self.assertLess(apply_mib, at)
         self.assertLess(at, mib_failure)

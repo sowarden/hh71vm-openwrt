@@ -75,6 +75,20 @@ drv_rtl8192cd_init_device_config() {
 	# The field only governs 80 MHz, so the option is named for it and the narrower
 	# widths keep their vendor settings - they were not measured.
 	config_add_boolean shortgi80
+	# The vendor default lets the driver's internal software TX queue (SWQ) grow to 4096
+	# entries per station before a lower-priority frame is dropped, only kicking in for the
+	# roughly 5.5-160 Mbit/s range where the hardware descriptor ring alone is not the
+	# bottleneck (8192cd_core_tx.c). A queue that deep lets the AP win a run of transmit
+	# opportunities and answer them all from its own backlog before the station gets a
+	# chance to send, so a bidirectional TCP test (downlink and uplink saturating at once)
+	# measured 3-10x skew in favour of the downlink on 2.4 GHz HT20 - reproduced on both
+	# channel 1 and channel 6, so it is not RF/channel-specific. Shortening the queue forces
+	# the AP to hand back the medium sooner: skew fell to about 2-2.5x with `swq_max_len=256`,
+	# at the cost of a modest rise in driver-level TX drops that TCP's own retransmit already
+	# covers (checked: isolated one-way UDP loss stayed at 0% downlink, ~0.08% uplink).
+	# 5 GHz was not measured with this option, so it defaults to the vendor value there.
+	# `option swq_max_len` overrides the default in either direction.
+	config_add_int swq_max_len
 }
 
 drv_rtl8192cd_init_iface_config() {
@@ -319,6 +333,7 @@ rtl_setup_vif() {
 		"manual_edca=$edca_manual" \
 		"sta_beq_cwmin=$edca_sta_cwmin" \
 		"ap_beq_txoplimit=$edca_ap_txop" \
+		"swq_max_len=$swq_max_len" \
 		"opmode=16" \
 		"hiddenAP=${hidden:-0}" \
 		"authtype=0" \
@@ -354,11 +369,11 @@ drv_rtl8192cd_setup() {
 	local dev="$1"
 	local dev_ifname raw_htmode band ampdu amsdu txpwrlmt disable_txpwrlmt vif_idx=0
 	local edca_fairness edca_manual edca_sta_cwmin edca_ap_txop
-	local shortgi80
+	local shortgi80 swq_max_len
 	local ht_bit vht_bit use40m choffset
 
 	json_select config
-	json_get_vars ifname ampdu amsdu txpwrlmt edca_fairness shortgi80
+	json_get_vars ifname ampdu amsdu txpwrlmt edca_fairness shortgi80 swq_max_len
 	json_get_var raw_htmode htmode
 	json_select ..
 
@@ -395,6 +410,13 @@ drv_rtl8192cd_setup() {
 		# previous setup's EDCA just because this one turned the option off.
 		edca_manual=0; edca_sta_cwmin=4; edca_ap_txop=0
 	fi
+	# Only 2.4 GHz by default: that is where the bidirectional skew was measured. A radio
+	# must not inherit the previous setup's queue depth just because this one left the
+	# option unset, so the vendor value is restored explicitly on 5 GHz.
+	case "$hwmode" in
+		a) swq_max_len="${swq_max_len:-4096}" ;;
+		*) swq_max_len="${swq_max_len:-256}" ;;
+	esac
 	# $hwmode and $channel are filled in by _wdev_prepare_channel before this function runs.
 	band="$(rtl_band_mask "$hwmode")"
 
