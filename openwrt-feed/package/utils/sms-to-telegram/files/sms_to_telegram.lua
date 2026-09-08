@@ -81,6 +81,16 @@ function M.message_indexes(message)
 	return M.valid_indexes(indexes)
 end
 
+--- Which message store a message lives in, when the daemon says.  Slot numbers restart
+--- in every store -- ME held 0-7 while SM held 0-9 on the same modem -- so a delete
+--- that carries only an index can land on the wrong message entirely.
+function M.message_storage(message)
+	local storage = message and message.storage
+	if type(storage) ~= 'string' then return nil end
+	storage = storage:upper()
+	return storage:match('^%u%u$') and storage or nil
+end
+
 function M.compose(message)
 	local sender = type(message.sender) == 'string' and message.sender or 'unknown'
 	local text = type(message.text) == 'string' and message.text or ''
@@ -191,19 +201,25 @@ local function retry_delay(attempt, requested)
 	return math.min(3600, 15 * (2 ^ math.min(8, math.max(0, attempt - 1))))
 end
 
-local function overlaps(indexes, messages)
+--- Is any of `indexes` still present in `storage`?  A message at the same slot number
+--- in a *different* store is a different message and must not be read as proof that
+--- the delete failed -- that would retry the delete for ever against the wrong store.
+local function overlaps(indexes, storage, messages)
 	local wanted = {}
 	for _, index in ipairs(indexes) do wanted[index] = true end
 	for _, message in ipairs(messages or {}) do
-		for _, index in ipairs(M.message_indexes(message) or {}) do
-			if wanted[index] then return true end
+		local where = M.message_storage(message)
+		if not storage or not where or where == storage then
+			for _, index in ipairs(M.message_indexes(message) or {}) do
+				if wanted[index] then return true end
+			end
 		end
 	end
 	return false
 end
 
 function Engine:retry_delete(record)
-	local deleted = self.env.delete_sms(record.indexes)
+	local deleted = self.env.delete_sms(record.indexes, record.storage)
 	if not deleted or deleted.ok ~= true then
 		record.delete_attempts = (tonumber(record.delete_attempts) or 0) + 1
 		record.next_delete_attempt = self.env.now() + retry_delay(record.delete_attempts)
@@ -212,7 +228,8 @@ function Engine:retry_delete(record)
 		return false
 	end
 	local readback = self.env.readback()
-	if not readback or readback.ok ~= true or overlaps(record.indexes, readback.messages) then
+	if not readback or readback.ok ~= true
+	   or overlaps(record.indexes, record.storage, readback.messages) then
 		record.delete_attempts = (tonumber(record.delete_attempts) or 0) + 1
 		record.next_delete_attempt = self.env.now() + retry_delay(record.delete_attempts)
 		record.updated = self.env.now()
@@ -268,10 +285,16 @@ function Engine:step(config)
 			if message.unread == true or record then
 				if not record and message.unread == true then
 					record = { state = 'pending', indexes = indexes, attempts = 0,
+						storage = M.message_storage(message),
 						first_seen = self.env.now(), updated = self.env.now(), next_attempt = 0 }
 					self.state.records[fingerprint] = record
 					current[fingerprint].record = record
 					self:save()
+				end
+				-- A record written before stores were tracked has no storage; adopt the
+				-- one the daemon now reports so its delete cannot go to the wrong store.
+				if record and not record.storage then
+					record.storage = M.message_storage(message)
 				end
 				messages[#messages + 1] = { fingerprint = fingerprint, message = message, record = record }
 			end

@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# Keep the AT control channel to the Qualcomm side alive across a firewall rebuild.
+#
+# THE FAILURE THIS PREVENTS.  hh71vm-modemd holds a long-lived telnet session to
+# 192.168.225.1 (the Qualcomm half) over eth2, and eth2 is in the `wan` zone, whose
+# input policy is REJECT.  The only rule that lets the modem's answers back in is the
+# generic
+#
+#     -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+#
+# so the channel depends entirely on one conntrack entry.  fw3 empties the conntrack
+# table whenever a zone's device set changes or the firewall is restarted -- which
+# netifd triggers by itself on every ifup ("Reloading firewall due to ifup of lan
+# (br-lan)"), i.e. on any LAN or router-IP change made from LuCI.  The entry is gone,
+# the modem's next answer is no longer ESTABLISHED, it falls through to
+# zone_wan_input -> REJECT, and the session is black-holed: the socket stays open at
+# both ends and nothing ever arrives.
+#
+# Measured on the stand 2026-09-08.  `/etc/init.d/firewall restart` took the conntrack
+# table from 25 entries to 1 in under a second; the daemon noticed only after two
+# consecutive 15 s AT deadlines, logged "channel down: modem not answering" and
+# reconnected 2.6 s later.  Total outage 37 s, during which every LuCI modem page shows
+# "No connection to the modem" and the SMS page fails to load.  `firewall reload`
+# without a zone change does not flush conntrack and is harmless.
+#
+# WHY A HOST RULE IS THE RIGHT SCOPE.  192.168.225.1 is the other half of this same
+# device, not the Internet: the router already telnets into it as root with no password
+# to reach /dev/smd7, so it is inside the trust boundary either way.  Internet traffic
+# arrives through it NAT-ed and therefore never carries 192.168.225.1 as its source
+# address, so this rule cannot match anything coming from outside.  Accepting it
+# statelessly is what makes the channel independent of conntrack, which is the whole
+# point -- narrowing it to tcp/23 would leave the kcap channel on 2016 and anything
+# added later exposed to the same fault.
+#
+# Only added when absent, and keyed by name, so a user who deletes or edits the rule
+# keeps their decision.  sysupgrade wipes the overlay and re-runs uci-defaults, so this
+# is re-applied on every update on top of restored user settings.
+
+RULE_NAME='Allow-Qualcomm-Control'
+
+if ! uci -q show firewall | grep -q "\.name='${RULE_NAME}'\$"; then
+	rule="$(uci -q add firewall rule)"
+	[ -n "$rule" ] || exit 0
+	uci -q set "firewall.${rule}.name=${RULE_NAME}"
+	uci -q set "firewall.${rule}.src=wan"
+	uci -q set "firewall.${rule}.src_ip=192.168.225.1"
+	uci -q set "firewall.${rule}.proto=all"
+	uci -q set "firewall.${rule}.target=ACCEPT"
+	uci -q commit firewall
+fi
+
+exit 0

@@ -135,7 +135,11 @@ local function environment()
 		save_state = write_state,
 		fingerprint = fingerprint,
 		snapshot = function() return modem_call('sms_snapshot') end,
-		delete_sms = function(indexes) return modem_call('sms_delete', { indexes = indexes }) end,
+		-- `storage` names the message store the slots belong to; slot numbers repeat in
+		-- every store, so without it a delete can land on a different message.
+		delete_sms = function(indexes, storage)
+			return modem_call('sms_delete', { indexes = indexes, storage = storage or '' })
+		end,
 		readback = function()
 			local result = modem_call('sms_list')
 			return { ok = result.ok == true, messages = result.messages or {} }
