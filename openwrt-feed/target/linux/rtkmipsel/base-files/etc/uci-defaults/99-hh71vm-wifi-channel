@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# HH71VM default 2.4 GHz channel.
+#
+# Measured on a clear bench (main router's 2.4 GHz radio off, one client at 1-2 m):
+# channels 1, 6 and 11 all showed the same bidirectional-fairness behaviour once
+# `swq_max_len` was applied (see rtl8192cd.sh), but 11 had both the lowest measured
+# skew and the cleanest noise floor (-89 dBm against -80 on 6) in that environment.
+# It is picked as the new out-of-box default on that basis; local RF conditions vary,
+# and the owner can always override it - see below.
+#
+# ONLY EMPTY POINTS WILL BE FILLED, same rule and same reason as
+# 99-hh71vm-wan-gateway: a 2026-08-25 sysupgrade honestly erases the overlay, so
+# every uci-defaults script runs again on top of the restored user settings. An
+# unconditional write would silently move a channel the owner picked deliberately
+# back to this default on every update.
+#
+# The owner can change the channel at any time, on top of this default or after it:
+#   SSH:  uci set wireless.radio0.channel='<1-11>'; uci commit wireless; wifi up radio0
+#   LuCI: Network -> Wireless -> the 2.4 GHz radio's Edit -> Channel
+
+[ -n "$(uci -q get wireless.radio0.channel)" ] || uci -q set wireless.radio0.channel='11'
+
+uci -q commit wireless
+
+exit 0
