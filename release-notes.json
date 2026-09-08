@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "changes": [
-    "Fix a custom APN resetting to the operator default: it is now saved and automatically restored if the modem ever reverts it."
+    "Fix a custom APN resetting to the operator default: it is now saved and automatically restored if the modem ever reverts it.",
+    "Shorten the 2.4 GHz Wi-Fi transmit queue so downloads and uploads share the connection more evenly when both run at once."
   ]
 }
