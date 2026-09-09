@@ -1,7 +1,6 @@
 {
   "schema": 1,
   "changes": [
-    "Fix a custom APN resetting to the operator default: it is now saved and automatically restored if the modem ever reverts it.",
-    "Shorten the 2.4 GHz Wi-Fi transmit queue so downloads and uploads share the connection more evenly when both run at once."
+    "Fix Xray filling the router's RAM over time: an upstream connection leak is patched and its memory use is now bounded, with a watchdog guard as a backstop."
   ]
 }
