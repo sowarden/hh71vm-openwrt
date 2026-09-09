@@ -31,6 +31,7 @@ local nixio = require "nixio"
 local X = require "hh71vm.xray"
 
 local JOBFILE = "/var/run/xray.job.json"
+local VERSION_CACHE = "/var/run/xray.version"
 
 local function out(t)
 	io.write(json.stringify(t), "\n")
@@ -45,6 +46,24 @@ local function sh(cmd)
 end
 
 -- ----------------------------------------------------------------------- status
+
+--- The version string only changes when the binary does.  Exec-ing a 34 MB binary
+--- on every ten-second status poll just to print one line was a third of what turned
+--- Xray's own RSS growth into uhttpd failing to fork a CGI process; keyed on the
+--- binary's own path, size and mtime, this makes an unchanged binary a file read.
+local function cached_version(bin)
+	local size = nixio.fs.stat(bin, "size")
+	local mtime = nixio.fs.stat(bin, "mtime")
+	local key = bin .. ":" .. tostring(size) .. ":" .. tostring(mtime)
+	local cached = X.readfile(VERSION_CACHE)
+	if cached then
+		local ck, cv = cached:match("^([^\n]*)\n(.*)$")
+		if ck == key and X.trim(cv) ~= "" then return X.trim(cv) end
+	end
+	local v = X.trim(sh(X.shq(bin) .. " version | head -1"))
+	X.writefile(VERSION_CACHE, key .. "\n" .. v)
+	return v
+end
 
 local function service_status()
 	local s = X.settings()
@@ -62,7 +81,7 @@ local function service_status()
 		running = (pid ~= nil),
 		pid = pid,
 		binary = bin,
-		version = bin and X.trim(sh(X.shq(bin) .. " version | head -1")) or nil,
+		version = bin and cached_version(bin) or nil,
 		share = X.share_mounted(),
 		assets = nixio.fs.access(s.assets) and true or false,
 		config = s.config,
@@ -78,13 +97,19 @@ local function service_status()
 			redirect = tonumber(s.redirect_port), tproxy = tonumber(s.tproxy_port),
 			dns = tonumber(s.dns_port)
 		},
-		listening = {
-			socks = X.listening(tonumber(s.socks_port) or 0),
-			http = X.listening(tonumber(s.http_port) or 0),
-			redirect = X.listening(tonumber(s.redirect_port) or 0)
-		},
 		clock = os.date("!%Y-%m-%d %H:%M:%S UTC"),
 		uptime = nil
+	}
+
+	-- One read of /proc/net/tcp{,6} covers all three ports; the single-port version
+	-- of this check made a status poll six full file reads instead of two.
+	local heard = X.listening_many({
+		tonumber(s.socks_port) or 0, tonumber(s.http_port) or 0, tonumber(s.redirect_port) or 0
+	})
+	r.listening = {
+		socks = heard[tonumber(s.socks_port) or 0] or false,
+		http = heard[tonumber(s.http_port) or 0] or false,
+		redirect = heard[tonumber(s.redirect_port) or 0] or false
 	}
 
 	if pid then
@@ -93,25 +118,23 @@ local function service_status()
 		local ps = X.readfile("/proc/" .. pid .. "/stat") or ""
 		local starttime = tonumber(ps:match("^%S+ %b() %S+" .. string.rep(" %S+", 18) .. " (%S+)"))
 		if starttime then r.uptime = math.floor(up - starttime / 100) end
-		local statm = X.readfile("/proc/" .. pid .. "/statm") or ""
-		local rss = tonumber(statm:match("^%S+ (%S+)"))
-		if rss then r.rss = rss * 4096 end
+		r.rss = X.rss_bytes(pid)
 	end
 
-	-- What the firewall really holds, not what we think we installed.
-	local fw = sh("/usr/sbin/hh71vm-xray-fw status 2>/dev/null")
-	r.rules = fw:find("XRAY_PRE") and true or false
-	r.firewall = fw
-
-	-- Which interfaces are captured *right now*.  The setting is normally empty,
-	-- meaning "work it out", so the page cannot show the setting and call it an
-	-- answer -- it has to show what the answer came out as.
-	local caps = sh("/usr/sbin/hh71vm-xray-fw ifaces 2>/dev/null")
+	-- What the firewall really holds, and which interfaces are captured *right now*
+	-- (the setting is normally empty, meaning "work it out", so the page cannot show
+	-- the setting and call it an answer -- it has to show what the answer came out
+	-- as). One run of hh71vm-xray-fw answers both; this used to be two full runs of a
+	-- 426-line script per poll. The page only ever used a boolean derived from the
+	-- full firewall text (whether "XRAY_" rules exist), so only that boolean goes in
+	-- the normal reply -- the full text stays available on demand through fw_status.
+	local brief = sh("/usr/sbin/hh71vm-xray-fw brief 2>/dev/null")
+	r.rules = brief:find("rules=1") and true or false
 	r.capture = {
-		mode     = X.trim(caps:match("mode=([^\n]*)") or ""),
-		ifaces   = X.trim(caps:match("ifaces=([^\n]*)") or ""),
-		uplink   = X.trim(caps:match("uplink=([^\n]*)") or ""),
-		wireless = X.trim(caps:match("wireless=([^\n]*)") or "")
+		mode     = X.trim(brief:match("mode=([^\n]*)") or ""),
+		ifaces   = X.trim(brief:match("ifaces=([^\n]*)") or ""),
+		uplink   = X.trim(brief:match("uplink=([^\n]*)") or ""),
+		wireless = X.trim(brief:match("wireless=([^\n]*)") or "")
 	}
 	return r
 end
