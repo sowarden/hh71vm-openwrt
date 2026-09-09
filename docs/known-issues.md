@@ -169,6 +169,22 @@ Shipped early on purpose. Read [Xray VPN](extra/xray-vpn.md) before installing i
 - **The tunnel over the mobile connection is untested.** Everything was measured with the
   router's uplink on a cable. Nothing in the design depends on which interface the default
   route uses, but that is not the same as having run it.
+- **RAM slowly fills up while Xray runs, eventually producing `Failed to create CGI process:
+  Out of memory` in LuCI; only a reboot recovered.** The root cause is an upstream connection
+  leak in the `reality` library bundled with Xray-core v26.3.27 (XTLS/Xray-core#6684): a peer
+  that goes silent without a clean FIN/RST is never reclaimed, and this router's LTE uplink
+  produces exactly that peer behavior. Mitigated by pinning a newer `reality` dependency
+  (commit `8056be3`, "Try pass RST") plus TCP keepalive on the proxy socket, `policy`
+  connection-idle/handshake limits, a `GOMEMLIMIT`/`GOGC` ceiling on the Xray process, and an
+  RSS guard added to the reconnect watchdog that restarts Xray if its memory stays over a
+  threshold for several consecutive checks. See [memory on a 128 MiB
+  board](extra/xray-vpn.md#memory-on-a-128-mib-board) for the settings involved. If the RSS
+  guard has fired, the system log carries a line from the `xray-watchdog` tag reading
+  `recycling: RSS stayed over ... MiB for ... checks`, and
+  `/var/run/xray.watchdog.json` records it under `mem_guard_last` / `mem_guard_fired`. A
+  multi-hour soak test against real traffic on the mobile uplink is still needed to confirm
+  these bounds hold in practice; only the RAM-exhaustion mechanism itself and the settings
+  that bound it have been verified so far.
 
 ## Not yet independently reproduced
 
