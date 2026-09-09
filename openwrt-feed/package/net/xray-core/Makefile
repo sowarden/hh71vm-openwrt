@@ -21,7 +21,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xray-core
 PKG_VERSION:=26.3.27
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/XTLS/Xray-core/tar.gz/v$(PKG_VERSION)?
@@ -129,16 +129,30 @@ endef
 # on every fetch - a stronger guarantee than one archive hash. GOENV=off and the
 # explicit cache directories keep the build out of the builder's home directory, which
 # on a container build host may not exist at all.
+#
+# One dependency is bumped past what go.sum pins: the reality library vendored by
+# v26.3.27 has a confirmed upstream leak (XTLS/Xray-core#6684) - a peer that goes
+# silent without a clean FIN/RST is never reclaimed, and the goroutine, the fd and the
+# RSS behind it leak with it. This board's uplink is LTE, which produces exactly that
+# peer behaviour, and 128 MiB has no slack to absorb it over an uptime measured in
+# days. The fix upstream is "Try pass RST"; only the dependency is bumped to the
+# commit that carries it, not Xray itself and not the Go toolchain. GOFLAGS=-mod=mod
+# is what lets `go get` rewrite go.mod/go.sum instead of refusing outside a module
+# boundary.
 define Build/Compile
 	( set -ex; cd $(PKG_BUILD_DIR); \
 	  mkdir -p $(GO_WORK_DIR)/path $(GO_WORK_DIR)/mod $(GO_WORK_DIR)/cache $(GO_WORK_DIR)/tmp; \
-	  GOROOT="$(GOROOT_DIR)" \
-	  GOPATH="$(GO_WORK_DIR)/path" \
-	  GOMODCACHE="$(GO_WORK_DIR)/mod" \
-	  GOCACHE="$(GO_WORK_DIR)/cache" \
-	  GOTMPDIR="$(GO_WORK_DIR)/tmp" \
-	  GOENV=off GOTOOLCHAIN=local GOFLAGS=-mod=mod CGO_ENABLED=0 \
-	  GOOS=linux GOARCH=mipsle GOMIPS=softfloat \
+	  export GOROOT="$(GOROOT_DIR)"; \
+	  export GOPATH="$(GO_WORK_DIR)/path"; \
+	  export GOMODCACHE="$(GO_WORK_DIR)/mod"; \
+	  export GOCACHE="$(GO_WORK_DIR)/cache"; \
+	  export GOTMPDIR="$(GO_WORK_DIR)/tmp"; \
+	  export GOENV=off GOTOOLCHAIN=local GOFLAGS=-mod=mod CGO_ENABLED=0; \
+	  export GOOS=linux GOARCH=mipsle GOMIPS=softfloat; \
+	  $(GOROOT_DIR)/bin/go get github.com/xtls/reality@v0.0.0-20260827183302-8530a57042be; \
+	  $(GOROOT_DIR)/bin/go list -m github.com/xtls/reality | \
+	    grep -q 20260827183302-8530a57042be || \
+	    { echo "xray-core: the reality dependency did not pin to the leak-fix commit"; exit 1; }; \
 	  $(GOROOT_DIR)/bin/go build -o xray -trimpath -buildvcs=false \
 	    -ldflags "-s -w -buildid=" ./main ) >$(COMPILE_LOG) 2>&1 || \
 	  { echo "xray-core: compile failed, tail of $(COMPILE_LOG):"; tail -60 $(COMPILE_LOG); exit 1; }
