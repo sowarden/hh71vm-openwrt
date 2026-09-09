@@ -59,6 +59,37 @@ and `xtls-rprx-vision`, about **12 Mbit/s** with REALITY alone, about **27 Mbit/
 VMess over plain TCP, and about **87 Mbit/s** for VLESS with no encryption. Four parallel
 encrypted streams reach the same 14 Mbit/s in total, which is the processor.
 
+## Memory on a 128 MiB board
+
+Xray-core v26.3.27 bundles a version of the `reality` library with a confirmed upstream
+connection leak (XTLS/Xray-core#6684): a peer that goes silent without closing cleanly is
+never reclaimed. On the LTE uplink this router normally runs on, that is not a rare case.
+Several settings exist to bound the damage instead of relying only on the upstream fix:
+
+- **Connection limits.** `policy_handshake` and `policy_conn_idle` (Settings) cap how long a
+  handshake or an idle connection may sit in Xray's own table before it is dropped, and TCP
+  keepalive (`keepalive_idle`, `keepalive_interval`) makes the kernel notice a silent peer on
+  the proxy's own socket instead of waiting for Xray to.
+- **A Go memory ceiling.** `gogc` and `gomemlimit_mb` are passed to the Xray process as
+  `GOGC` and `GOMEMLIMIT`, so the runtime collects sooner and has a soft limit to collect
+  against, rather than only reacting after the fact on a board with no swap.
+- **An RSS guard in the watchdog.** When `mem_guard_mb` is non-zero (`96` by default), the
+  reconnect watchdog checks Xray's own resident memory every tick. If it stays above the
+  limit for `mem_guard_fails` consecutive checks (`3` by default), the watchdog sends the
+  process a `SIGTERM` the same way it does for a dead tunnel, and procd starts a fresh one.
+  This shows up in the system log as `xray-watchdog: recycling: RSS stayed over ... MiB for
+  ... checks`, and in `/var/run/xray.watchdog.json` as `mem_guard_last` / `mem_guard_fired`.
+  It is a symptom being treated, not a fix - see [known issues](../known-issues.md).
+- **The error log is bounded.** `/var/log/xray.log` lives on tmpfs and nothing else rotates
+  it; the service truncates it on start and the watchdog truncates it in place above
+  `logfile_max_kb` (`256` by default) so a long-running connection cannot slowly fill RAM
+  with its own log. Access logging is off in the generated configuration for the same reason.
+- **A loopback metrics endpoint**, off by default (`metrics_listen` empty). Set it to
+  something like `127.0.0.1:18888` to expose Xray's own pprof/metrics while chasing a leak;
+  it is never reachable from anything but this router, by validation on the settings API.
+
+None of this is a substitute for the watchdog being enabled - it is what runs the RSS guard.
+
 ## Installing
 
 Two packages, and they are deliberately separate. The binary is 34 MB and cannot live in

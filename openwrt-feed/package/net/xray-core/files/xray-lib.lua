@@ -76,7 +76,20 @@ M.DEFAULTS = {
 	tproxy_table     = "100",
 	api_enabled      = "0",
 	api_token        = "",
-	set_clock        = "1"
+	set_clock        = "1",
+	-- memory bounding (RAM exhaustion fix, see docs/known-issues.md).  "0" means
+	-- "omit this and let Xray or Go use its own default" for every one of these.
+	policy_handshake    = "15",
+	policy_conn_idle    = "180",
+	keepalive_idle      = "90",
+	keepalive_interval  = "15",
+	tcp_user_timeout    = "0",
+	gogc                = "50",
+	gomemlimit_mb       = "80",
+	mem_guard_mb        = "96",
+	mem_guard_fails     = "3",
+	logfile_max_kb      = "256",
+	metrics_listen      = ""
 }
 
 -- ------------------------------------------------------------------ small helpers
@@ -111,6 +124,19 @@ local function writefile(path, data)
 	return true
 end
 M.writefile = writefile
+
+--- Truncate a file to zero length in place, keeping its inode.
+--- Xray holds the error log open for the life of the process; unlinking and
+--- recreating the path (the usual "rotate" move) would leave it writing to a deleted
+--- file that nothing can ever read again. Opening for write with truncation, rather
+--- than removing the path, hands back the same inode with the same fd still valid.
+local function truncate_file(path)
+	local f = io.open(path, "w")
+	if not f then return false end
+	f:close()
+	return true
+end
+M.truncate_file = truncate_file
 
 local function popen(cmd)
 	local p = io.popen(cmd .. " 2>&1", "r")
@@ -337,7 +363,7 @@ end
 
 -- ------------------------------------------------------------ config generation
 
-local function stream_settings(p, mark)
+local function stream_settings(p, mark, keepalive)
 	local st = {}
 	local net = p.transport or "tcp"
 	if net == "h2" then net = "http" end
@@ -408,14 +434,25 @@ local function stream_settings(p, mark)
 
 	-- The socket mark is what keeps VPN mode from eating its own tail: the firewall
 	-- returns anything carrying it before the redirect rules can see it.
-	st.sockopt = { mark = mark }
+	local sock = { mark = mark }
+	-- Keepalive on the proxy's own TCP connection mitigates the reality leak
+	-- (XTLS/Xray-core#6684) from the other side: a peer that goes silent still gets
+	-- probed, so a dead one is torn down by the kernel instead of sitting open
+	-- indefinitely waiting for the fix upstream to reclaim it.
+	if keepalive then
+		if keepalive.idle then sock.tcpKeepAliveIdle = keepalive.idle end
+		if keepalive.interval then sock.tcpKeepAliveInterval = keepalive.interval end
+		if keepalive.user_timeout then sock.tcpUserTimeout = keepalive.user_timeout end
+	end
+	st.sockopt = sock
 	return st
 end
 
 --- Build the proxy outbound for one profile.
 --- `addr` overrides the address (used to pass the resolved IP), `mark` is the socket
---- mark.  Returns the outbound table.
-function M.outbound(p, addr, mark)
+--- mark, `keepalive` (optional) carries the TCP keepalive/user-timeout sockopt fields.
+--- Returns the outbound table.
+function M.outbound(p, addr, mark, keepalive)
 	local address = addr or p.address
 	local port = M.isnum(p.port, 1, 65535) or 443
 	local o = { tag = "proxy", protocol = p.protocol, settings = {} }
@@ -444,7 +481,7 @@ function M.outbound(p, addr, mark)
 		return nil, "unknown protocol " .. tostring(p.protocol)
 	end
 
-	o.streamSettings = stream_settings(p, mark)
+	o.streamSettings = stream_settings(p, mark, keepalive)
 	if p.mux then
 		o.mux = { enabled = true, concurrency = M.isnum(p.muxConcurrency, 1, 1024) or 8 }
 	end
@@ -480,13 +517,49 @@ function M.build_config(p, s, opts)
 		if trim(pp.sni or "") == "" and (pp.tls == "tls") then pp.sni = p.address end
 	end
 
-	local out, oerr = M.outbound(pp, resolved, mark)
+	-- TCP keepalive on the proxy's own socket, and the policy timeouts below, are the
+	-- direct memory-bounding fix for the reality leak (XTLS/Xray-core#6684): together
+	-- they make sure a peer that goes silent is reclaimed here even before the
+	-- upstream fix in the pinned reality dependency ever gets a chance to run.
+	local ka_idle = M.isnum(s.keepalive_idle, 0, 3600)
+	if ka_idle == nil then ka_idle = 90 end
+	local ka_interval = M.isnum(s.keepalive_interval, 0, 3600)
+	if ka_interval == nil then ka_interval = 15 end
+	local ka_timeout = M.isnum(s.tcp_user_timeout, 0, 3600000)
+	if ka_timeout == nil then ka_timeout = 0 end
+	local keepalive = {}
+	if ka_idle ~= 0 then keepalive.idle = ka_idle end
+	if ka_interval ~= 0 then keepalive.interval = ka_interval end
+	if ka_timeout ~= 0 then keepalive.user_timeout = ka_timeout end
+
+	local out, oerr = M.outbound(pp, resolved, mark, keepalive)
 	if not out then return nil, nil, oerr end
+
+	-- Policy timeouts bound how long a handshake or an idle connection is allowed to
+	-- sit in Xray's own connection table. Xray's defaults (60s / 300s) are generous
+	-- for a 128 MiB board; a level is only ever "0" here, because every user this
+	-- generator creates is created with level = 0, and the key has to be the string
+	-- "0" rather than a bare number: Xray unmarshals levels as map[uint32]*Policy from
+	-- a JSON object, and a numeric key would not be an object key at all.
+	-- Deliberately not touching bufferSize/uplinkOnly/downlinkOnly here: this board
+	-- already gets an arch-aware default for those from Xray itself, and overriding
+	-- it would make things worse, not better.
+	local policy_hs = M.isnum(s.policy_handshake, 0, 3600)
+	if policy_hs == nil then policy_hs = 15 end
+	local policy_ci = M.isnum(s.policy_conn_idle, 0, 3600)
+	if policy_ci == nil then policy_ci = 180 end
+	local level = {}
+	if policy_hs ~= 0 then level.handshake = policy_hs end
+	if policy_ci ~= 0 then level.connIdle = policy_ci end
 
 	local cfg = {
 		log = {
 			loglevel = s.loglevel or "warning",
-			error = M.LOGFILE
+			error = M.LOGFILE,
+			-- Access records are per-connection and go to syslog when this is unset,
+			-- which is its own slow RAM leak on a router that logs to a tmpfs ring
+			-- buffer. The shipped example already sets this; the generator did not.
+			access = "none"
 		},
 		inbounds = {},
 		outbounds = {
@@ -496,8 +569,15 @@ function M.build_config(p, s, opts)
 			{ tag = "block", protocol = "blackhole",
 			  settings = { response = { type = "none" } } }
 		},
-		routing = { domainStrategy = "AsIs", rules = {} }
+		routing = { domainStrategy = "AsIs", rules = {} },
+		policy = { levels = { ["0"] = level } }
 	}
+
+	-- Off by default: an unauthenticated pprof/metrics endpoint must never be reachable
+	-- off-box, so this only exists at all when metrics_listen names a loopback address.
+	if trim(s.metrics_listen or "") ~= "" then
+		cfg.metrics = { tag = "metrics", listen = s.metrics_listen }
+	end
 
 	-- A *new* table each time, not one shared reference: luci.jsonc writes the second
 	-- and every later appearance of the same table as null, and an inbound whose
@@ -927,6 +1007,42 @@ function M.listening(port)
 		end
 	end
 	return false
+end
+
+--- Is anything listening on any of these TCP ports?
+--- Same dual-stack caveat as M.listening(), but /proc/net/tcp and /proc/net/tcp6 are
+--- each read once no matter how many ports are asked about, not once per port. The
+--- status page checks three ports on every poll; the single-port version made that
+--- six full file reads per tick.
+function M.listening_many(ports)
+	local want, found = {}, {}
+	for _, p in ipairs(ports) do want[string.format("%04X", p)] = true end
+	for _, path in ipairs({ "/proc/net/tcp", "/proc/net/tcp6" }) do
+		local out = readfile(path) or ""
+		for line in out:gmatch("[^\n]+") do
+			local laddr, st = line:match("^%s*%d+:%s+(%x+:%x+)%s+%x+:%x+%s+(%x%x)")
+			if laddr and st == "0A" then
+				local hex = laddr:sub(-4)
+				if want[hex] then found[hex] = true end
+			end
+		end
+	end
+	local result = {}
+	for _, p in ipairs(ports) do
+		result[p] = found[string.format("%04X", p)] or false
+	end
+	return result
+end
+
+--- RSS in bytes for a running process, or nil if it cannot be read.
+--- The status page and the watchdog's memory guard both need this number; kept in one
+--- place so the /proc/<pid>/statm parsing (page-count, not bytes) is not duplicated.
+function M.rss_bytes(pid)
+	if not pid then return nil end
+	local statm = readfile("/proc/" .. pid .. "/statm") or ""
+	local rss = tonumber(statm:match("^%S+ (%S+)"))
+	if not rss then return nil end
+	return rss * 4096
 end
 
 function M.tproxy_available()

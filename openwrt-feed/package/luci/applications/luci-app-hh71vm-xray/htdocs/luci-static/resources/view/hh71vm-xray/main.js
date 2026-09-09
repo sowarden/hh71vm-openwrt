@@ -1028,13 +1028,18 @@ where a failure explains itself when the page cannot.'));
 
 		draw();
 		/* A slow refresh only: everything that changes here is changed from this page,
-		   and the status call walks /proc. */
+		   and the status call walks /proc. 30s rather than 10s, and skipped entirely
+		   while the tab is not visible, because the status call is also what execs
+		   the binary, forks the firewall script and reads /proc/net/tcp{,6} - a
+		   background tab polling it as fast as an active one is most of what turned
+		   Xray's own memory growth into uhttpd failing to fork a CGI process. */
 		poll.add(function () {
+			if (document.hidden) return;
 			return fetch().then(function () {
 				/* redrawing under an open dialog would close it */
 				if (!document.querySelector('.modal')) draw();
 			});
-		}, 10);
+		}, 30);
 
 		return body;
 	}

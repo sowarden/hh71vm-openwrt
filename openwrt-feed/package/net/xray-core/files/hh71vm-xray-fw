@@ -416,11 +416,32 @@ do_ifaces() {
 ' ' ')"
 }
 
+# One run instead of two.  hh71vm-xrayctl used to call `status` and `ifaces`
+# separately on every LuCI status poll - two full runs of this script, 426 lines,
+# just to get a rule-installed boolean and the capture set. This prints both in a
+# format the Lua side already knows how to parse (it is the same "key=value" shape
+# `ifaces` used), so one exec covers what used to take two.
+do_brief() {
+	load_settings
+	if $IPT -t nat -S 2>/dev/null | grep -q "$PRE_NAT"; then
+		echo "rules=1"
+	else
+		echo "rules=0"
+	fi
+	echo "mode=$CAPTURE_MODE"
+	echo "ifaces=$LAN_IFACES"
+	echo "uplink=$(uplink_ifaces | tr '
+' ' ')"
+	echo "wireless=$(wireless_via | tr '
+' ' ')"
+}
+
 case "${1:-status}" in
 	up)      do_up ;;
 	ifaces)  do_ifaces ;;
+	brief)   do_brief ;;
 	down)    do_down ;;
 	restore) do_restore ;;
 	status)  do_status ;;
-	*) echo "usage: $0 {up|down|restore|status|ifaces}" >&2; exit 2 ;;
+	*) echo "usage: $0 {up|down|restore|status|ifaces|brief}" >&2; exit 2 ;;
 esac

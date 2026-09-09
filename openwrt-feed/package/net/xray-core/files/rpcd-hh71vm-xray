@@ -173,7 +173,23 @@ local WRITABLE = {
 	loglevel = "^[a-z]+$",
 	probe_url = "^https?://[%w%.%-_:/%?&=~%%]+$",
 	probe_timeout = "^%d+$",
-	api_enabled = "^[01]$"
+	api_enabled = "^[01]$",
+
+	-- memory bounding (see docs/known-issues.md)
+	policy_handshake = "^%d+$",
+	policy_conn_idle = "^%d+$",
+	keepalive_idle = "^%d+$",
+	keepalive_interval = "^%d+$",
+	tcp_user_timeout = "^%d+$",
+	gogc = "^%d+$",
+	gomemlimit_mb = "^%d+$",
+	mem_guard_mb = "^%d+$",
+	mem_guard_fails = "^%d+$",
+	logfile_max_kb = "^%d+$",
+	-- Character allowlist only. Lua patterns have no alternation, so "empty, or a
+	-- loopback address with a port" cannot be one pattern; it is checked explicitly
+	-- below instead, the same way the port range checks are.
+	metrics_listen = "^[%d%.:]*$"
 }
 
 local ENUMS = {
@@ -207,6 +223,14 @@ function handlers.settings_set(p)
 		if kv[k] and not X.isnum(kv[k], 1, 65535) then
 			return { error = k .. " must be a port number" }
 		end
+	end
+	-- This endpoint is unauthenticated pprof/metrics, so it must never be reachable
+	-- from anything but this router itself: empty (off) or a loopback address with a
+	-- port, nothing else.
+	if kv.metrics_listen and kv.metrics_listen ~= "" and
+	   not kv.metrics_listen:match("^127%.%d+%.%d+%.%d+:%d+$") then
+		return { error = "metrics_listen must be empty or a loopback address " ..
+		                 "with a port, like 127.0.0.1:18888" }
 	end
 	local ok, err = X.set_settings(kv)
 	if not ok then return { error = err } end
