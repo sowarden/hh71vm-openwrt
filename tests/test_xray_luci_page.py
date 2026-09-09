@@ -29,6 +29,7 @@ APP = ROOT / "openwrt-feed/package/luci/applications/luci-app-hh71vm-xray"
 VIEW = APP / "htdocs/luci-static/resources/view/hh71vm-xray/main.js"
 MODULE = APP / "htdocs/luci-static/resources/hh71vm/xray.js"
 RPCD = (XRAY / "files/rpcd-hh71vm-xray").read_text(encoding="utf-8")
+WRITABLE_BLOCK = RPCD.split("local WRITABLE = {", 1)[1].split("\n}", 1)[0]
 ACL = json.loads((APP / "root/usr/share/rpcd/acl.d/luci-app-hh71vm-xray.json")
                  .read_text(encoding="utf-8"))
 LIB = (XRAY / "files/xray-lib.lua").read_text(encoding="utf-8")
@@ -417,6 +418,159 @@ class BackendContractTests(unittest.TestCase):
         self.assertIn("option api_enabled '0'", SETTINGS)
         self.assertIn("api_enabled", api)
         self.assertIn("bad token", api)
+
+
+class MemoryBoundingConfigTests(unittest.TestCase):
+    """RAM-exhaustion fix: policy/keepalive/log/metrics additions to build_config().
+
+    No Lua interpreter is assumed to be on the host running these tests (none of the
+    existing checks against xray-lib.lua execute it either - they all read the source
+    the way this class does), so these check the generator's actual code for the
+    specific literal shapes the fix depends on, rather than a paraphrase of them.
+    """
+
+    def test_policy_uses_a_string_level_key(self):
+        # Xray unmarshals `levels` as map[uint32]*Policy from a JSON object. A bare
+        # numeric key would not survive as an object key through luci.jsonc at all.
+        self.assertIn('policy = { levels = { ["0"] = level } }', LIB)
+
+    def test_policy_defaults_match_the_documented_15_and_180(self):
+        self.assertIn('policy_handshake    = "15"', LIB)
+        self.assertIn('policy_conn_idle    = "180"', LIB)
+        self.assertIn('if policy_hs == nil then policy_hs = 15 end', LIB)
+        self.assertIn('if policy_ci == nil then policy_ci = 180 end', LIB)
+
+    def test_a_zero_policy_value_omits_that_field_not_the_whole_block(self):
+        block = LIB.split("local level = {}", 1)[1].split("local cfg = {", 1)[0]
+        self.assertIn("if policy_hs ~= 0 then level.handshake = policy_hs end", block)
+        self.assertIn("if policy_ci ~= 0 then level.connIdle = policy_ci end", block)
+
+    def test_policy_never_sets_buffer_or_direction_only_fields(self):
+        # This board already gets an arch-aware default for these from Xray itself;
+        # overriding it here would make memory use worse, not better.
+        block = LIB.split("local level = {}", 1)[1].split("local cfg = {", 1)[0]
+        for forbidden in ("bufferSize", "uplinkOnly", "downlinkOnly"):
+            self.assertNotIn(forbidden, block)
+
+    def test_access_log_is_silenced(self):
+        log_block = LIB.split("local cfg = {", 1)[1].split("inbounds = {}", 1)[0]
+        self.assertIn('access = "none"', log_block)
+
+    def test_proxy_sockopt_carries_keepalive_and_can_omit_each_field(self):
+        sock = LIB.split("local sock = { mark = mark }", 1)[1].split("st.sockopt = sock", 1)[0]
+        self.assertIn("sock.tcpKeepAliveIdle = keepalive.idle", sock)
+        self.assertIn("sock.tcpKeepAliveInterval = keepalive.interval", sock)
+        self.assertIn("sock.tcpUserTimeout = keepalive.user_timeout", sock)
+        self.assertIn('keepalive_idle      = "90"', LIB)
+        self.assertIn('keepalive_interval  = "15"', LIB)
+        self.assertIn('tcp_user_timeout    = "0"', LIB)
+        build = LIB.split("function M.build_config", 1)[1].split("local out, oerr", 1)[0]
+        self.assertIn("if ka_idle ~= 0 then keepalive.idle = ka_idle end", build)
+        self.assertIn("if ka_interval ~= 0 then keepalive.interval = ka_interval end", build)
+        self.assertIn("if ka_timeout ~= 0 then keepalive.user_timeout = ka_timeout end", build)
+
+    def test_metrics_endpoint_is_off_by_default_and_gated_on_a_non_empty_listen(self):
+        self.assertIn('metrics_listen      = ""', LIB)
+        self.assertIn('if trim(s.metrics_listen or "") ~= "" then', LIB)
+        self.assertIn('cfg.metrics = { tag = "metrics", listen = s.metrics_listen }', LIB)
+
+    def test_the_watchdog_runs_by_default_so_the_rss_guard_actually_runs(self):
+        self.assertIn("option watchdog '1'", SETTINGS)
+
+    def test_the_new_uci_options_ship_with_the_documented_defaults(self):
+        for line in ("option policy_handshake '15'", "option policy_conn_idle '180'",
+                     "option keepalive_idle '90'", "option keepalive_interval '15'",
+                     "option tcp_user_timeout '0'", "option gogc '50'",
+                     "option gomemlimit_mb '80'", "option mem_guard_mb '96'",
+                     "option mem_guard_fails '3'", "option logfile_max_kb '256'",
+                     "option metrics_listen ''"):
+            self.assertIn(line, SETTINGS)
+
+    def test_the_new_options_are_all_validated_by_the_rpcd_plugin(self):
+        for key in ("policy_handshake", "policy_conn_idle", "keepalive_idle",
+                    "keepalive_interval", "tcp_user_timeout", "gogc", "gomemlimit_mb",
+                    "mem_guard_mb", "mem_guard_fails", "logfile_max_kb", "metrics_listen"):
+            self.assertIn(key + " = ", RPCD)
+
+    def test_metrics_listen_is_validated_without_pattern_alternation(self):
+        # Lua patterns have no |; a prior bug (fixed in commit 4a75f94) came from using
+        # one anyway, so the loopback:port check has to be an explicit match, not part
+        # of the WRITABLE character-filter pattern.
+        self.assertNotIn("|", WRITABLE_BLOCK)
+        self.assertIn('metrics_listen:match("^127%.%d+%.%d+%.%d+:%d+$")', RPCD)
+
+    def test_the_process_is_bounded_by_procd_limits_and_go_env_vars(self):
+        self.assertIn('procd_set_param limits nofile="1024 4096"', INIT)
+        self.assertIn("GOGC=$gogc", INIT)
+        self.assertIn("GOMEMLIMIT=${gomemlimit_mb}MiB", INIT)
+
+    def test_the_error_log_is_truncated_on_start_and_bounded_by_the_watchdog(self):
+        self.assertIn("/var/log/xray.log", INIT)
+        wd = (XRAY / "files/hh71vm-xray-watchdog").read_text(encoding="utf-8")
+        self.assertIn("check_logfile", wd)
+        self.assertIn("truncate_file", wd)
+
+    def test_the_rss_guard_reuses_the_existing_recycle_call_and_state_file(self):
+        wd = (XRAY / "files/hh71vm-xray-watchdog").read_text(encoding="utf-8")
+        self.assertIn("mem_guard_mb", wd)
+        self.assertIn("mem_guard_fails", wd)
+        guard = wd.split("local recycled = false", 1)[1].split("if recycled then", 1)[0]
+        self.assertIn("nixio.kill(pid, 15)", guard)
+        self.assertIn("write_state(", guard)
+        # the fields already used by the reconnect path must survive a memory-guard
+        # write, and vice versa - write_state merges rather than overwrites
+        self.assertIn("for k, v in pairs(patch) do cur[k] = v end", wd)
+
+    def test_settings_are_only_re_read_when_the_uci_file_actually_changes(self):
+        wd = (XRAY / "files/hh71vm-xray-watchdog").read_text(encoding="utf-8")
+        self.assertIn('nixio.fs.stat(UCI_FILE, "mtime")', wd)
+
+    def test_reality_dependency_is_pinned_in_the_compile_recipe(self):
+        compile_recipe = MAKEFILE.split("define Build/Compile", 1)[1].split("endef", 1)[0]
+        self.assertIn("github.com/xtls/reality@v0.0.0-20260827183302-8530a57042be",
+                      compile_recipe)
+        self.assertIn("go list -m github.com/xtls/reality", compile_recipe)
+
+
+class StatusPollEfficiencyTests(unittest.TestCase):
+    """Cause C: a 10s status poll forking ~50 processes per tick."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.view = VIEW.read_text(encoding="utf-8")
+        cls.ctl = (XRAY / "files/hh71vm-xrayctl").read_text(encoding="utf-8")
+
+    def test_the_steady_poll_is_30s_and_skips_a_hidden_tab(self):
+        poll_block = self.view.split("poll.add(function () {", 1)[1].split("}, 30);", 1)
+        self.assertEqual(len(poll_block), 2, "poll.add(...) is not set to a 30s interval")
+        self.assertIn("document.hidden", poll_block[0])
+
+    def test_the_status_reply_uses_a_boolean_for_the_firewall_field_not_raw_text(self):
+        # st.rules (a boolean) is what the page actually reads; the previous code also
+        # attached the full multi-line `hh71vm-xray-fw status` output to every poll
+        # reply as r.firewall, which nothing on the page consumed.
+        self.assertNotIn("r.firewall = fw", self.ctl)
+        self.assertIn("r.rules =", self.ctl)
+
+    def test_fw_status_still_returns_the_full_text_on_demand(self):
+        # The on-demand "Show the firewall rules" button still needs it.
+        self.assertIn("function handlers.fw_status()", RPCD)
+        handler = RPCD.split("function handlers.fw_status()", 1)[1].split("end", 1)[0]
+        self.assertIn("hh71vm-xray-fw status", handler)
+
+    def test_one_firewall_script_run_replaces_the_previous_two(self):
+        self.assertIn("hh71vm-xray-fw brief", self.ctl)
+        self.assertNotIn('sh("/usr/sbin/hh71vm-xray-fw ifaces', self.ctl)
+        brief = FW.split("do_brief()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("ifaces=$LAN_IFACES", brief)
+
+    def test_version_string_is_cached_instead_of_exec_d_every_poll(self):
+        self.assertIn("cached_version", self.ctl)
+        self.assertIn("nixio.fs.stat(bin", self.ctl)
+
+    def test_listening_ports_are_checked_from_one_proc_net_snapshot(self):
+        self.assertIn("function M.listening_many(ports)", LIB)
+        self.assertIn("X.listening_many(", self.ctl)
 
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "requires a POSIX shell")

@@ -132,6 +132,32 @@ class ToolchainPatcherTests(unittest.TestCase):
             self.assertIn("_ENOSYS", result.stdout)
 
 
+class RealityLeakFixTests(unittest.TestCase):
+    """RAM exhaustion fix, cause A: the reality dependency this Xray version bundles
+    has a confirmed upstream connection leak (XTLS/Xray-core#6684). Only the
+    dependency is bumped, not Xray itself or the Go toolchain."""
+
+    def test_the_reality_dependency_is_pinned_past_go_sum(self):
+        compile_recipe = MAKEFILE.split("define Build/Compile", 1)[1].split("endef", 1)[0]
+        self.assertIn("go get github.com/xtls/reality@v0.0.0-20260827183302-8530a57042be",
+                      compile_recipe)
+
+    def test_the_pin_is_verified_or_the_build_fails(self):
+        # Matches the "verify or fail loudly" pattern the Go-runtime patches already
+        # use in Build/Prepare: a silently-skipped pin is a binary that still leaks.
+        compile_recipe = MAKEFILE.split("define Build/Compile", 1)[1].split("endef", 1)[0]
+        self.assertIn("go list -m github.com/xtls/reality", compile_recipe)
+        self.assertIn("20260827183302-8530a57042be", compile_recipe)
+        self.assertIn("exit 1", compile_recipe)
+
+    def test_xray_itself_and_the_go_toolchain_are_not_touched_by_the_pin(self):
+        self.assertIn("PKG_VERSION:=26.3.27", MAKEFILE)
+        self.assertIn("GO_VERSION:=1.26.1", MAKEFILE)
+
+    def test_the_release_was_bumped(self):
+        self.assertIn("PKG_RELEASE:=2", MAKEFILE)
+
+
 class ShippedConfigurationTests(unittest.TestCase):
     def test_the_example_does_not_use_xtls_vision(self):
         # Measured 2026-09-03: with xtls-rprx-vision this board truncates downloads from
