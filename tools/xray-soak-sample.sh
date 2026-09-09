@@ -38,6 +38,10 @@ memavail_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
 # hex values xray-lib.lua and hh71vm-xray-fw already key off of (01 = ESTABLISHED and
 # so on, per the kernel's net/tcp_states.h); counted here, not looked up by name, so
 # this has no dependency on anything but /proc.
+#
+# fin_wait reports FIN_WAIT2 (05), not FIN_WAIT1 (04): FIN_WAIT2 is the state
+# XTLS/Xray-core#6684 gets stuck in when a peer goes silent instead of closing, so
+# it is the one worth graphing. FIN_WAIT1 is a normal, brief transit state.
 tcp_counts() {
 	awk '
 		NR > 1 {
@@ -46,7 +50,7 @@ tcp_counts() {
 		}
 		END {
 			printf "%d %d %d %d %d %d\n",
-				c["01"] + 0, c["06"] + 0, c["08"] + 0, c["02"] + 0, c["04"] + 0, c["05"] + 0
+				c["01"] + 0, c["06"] + 0, c["08"] + 0, c["02"] + 0, c["05"] + 0, c["09"] + 0
 		}
 	' "$1" 2>/dev/null
 }
