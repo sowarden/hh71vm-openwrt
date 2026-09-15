@@ -148,6 +148,43 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         self.assertIn("merge(available,cap,current)", helper)
         self.assertNotIn("B32/B38", backend + helper + view)
 
+    def test_modem_restart_is_wired_through_rpc_acl_and_confirmed_on_the_page(self):
+        # Experimental, requested by an owner report (2026-09-14): a modem stuck
+        # after an APN change only recovered with a full power cycle. Every layer
+        # this needs, from the AT command up to the confirmation dialog, has to
+        # agree that this is a full reset the user has to explicitly confirm.
+        daemon = (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/hh71vm-modemd").read_text()
+        rpcd = (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/libexec/rpcd/hh71vm-modem").read_text()
+        acl = (ROOT / "openwrt-feed/package/luci/applications/luci-app-hh71vm-modem/root/usr/share/rpcd/acl.d/luci-app-hh71vm-modem.json").read_text()
+        modem_js = (ROOT / "openwrt-feed/package/luci/applications/luci-app-hh71vm-modem/htdocs/luci-static/resources/hh71vm/modem.js").read_text()
+        overview = (ROOT / "openwrt-feed/package/luci/applications/luci-app-hh71vm-modem/htdocs/luci-static/resources/view/hh71vm/overview.js").read_text()
+
+        self.assertIn("function API.modem_restart(cli, args)", daemon)
+        restart = daemon.split("function API.modem_restart(cli, args)", 1)[1].split(
+            "\nlocal function data_act", 1)[0]
+        self.assertIn("args.confirm", restart, "the endpoint must require confirmation")
+        self.assertIn("AT+CFUN=1,1", restart)
+        self.assertIn("M.drop(", restart, "the channel must not be left half-reset")
+
+        self.assertIn("modem_restart", rpcd)
+        self.assertIn("modem_restart   = { confirm = true }", rpcd)
+        self.assertIn('"modem_restart"', acl)
+        # write, not read: it changes the modem's own state
+        write_acl = json.loads(acl)["luci-app-hh71vm-modem"]["write"]["ubus"]["hh71vm-modem"]
+        self.assertIn("modem_restart", write_acl)
+        read_acl = json.loads(acl)["luci-app-hh71vm-modem"]["read"]["ubus"]["hh71vm-modem"]
+        self.assertNotIn("modem_restart", read_acl)
+
+        self.assertIn("modemRestart:", modem_js)
+        self.assertIn("decl('modem_restart', ['confirm'])", modem_js)
+
+        self.assertIn("m.api.modemRestart(true)", overview)
+        restart_action = overview.split("m.api.modemRestart(true)", 1)[1]
+        # the fourth m.action() argument is the confirmation prompt; it has to
+        # actually ask before the button does anything irreversible-feeling
+        self.assertIn("Continue?", restart_action[:800])
+        self.assertIn("Experimental", restart_action[:800])
+
     def test_optional_packages_ship_the_same_backend_ui_version(self):
         backend = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/Makefile").read_text()
         frontend = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/Makefile").read_text()

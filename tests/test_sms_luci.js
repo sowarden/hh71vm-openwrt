@@ -58,7 +58,14 @@ const ui = {
 };
 const L = { resolveDefault: (promise, fallback) => Promise.resolve(promise).catch(() => fallback) };
 const translate = value => value;
-const windowStub = {};
+/* setTimeout/clearTimeout are recorded, never actually run: watchPending()'s
+   snapshot-only retry chain is exercised for its scheduling decision (does it ask
+   for a follow-up at all), not by waiting out a real six-second delay in a test. */
+let scheduled = [];
+const windowStub = {
+	setTimeout: fn => { scheduled.push(fn); return scheduled.length; },
+	clearTimeout: () => {}
+};
 const confirmStub = () => true;
 
 let calls = [];
@@ -216,6 +223,45 @@ async function main() {
 			store_counts: { ME: { used: 8, total: 100 }, SM: { used: 3, total: 10 } } } },
 			{ ok: true, stores: ['ME', 'SM'], messages: [] }]);
 		truthy(!textOf(notFull).includes('is full'), 'no full-store banner below capacity');
+	}
+
+	/* A message the modem has announced (+CMTI) but not yet made visible in a store
+	   read is a successful refresh with something still on its way, not a failure --
+	   reported 2026-09-14: an SMS arriving into an otherwise-empty inbox showed the
+	   red "Messages could not be refreshed" error, which stuck because the daemon
+	   used to treat this exact shape as a failed list. */
+	{
+		scheduled = [];
+		const pendingEmpty = page.render([{ sms: {
+			storage: 'SM', receive_storage: 'SM', unread: 0, count: 0,
+			read_stores: ['SM'], store_counts: { SM: { used: 1, total: 10 } } } },
+			{ ok: true, pending: 1, stores: ['SM'], messages: [] }]);
+		const pendingEmptyText = textOf(pendingEmpty);
+		truthy(pendingEmptyText.includes('is still being read from the modem'),
+		       'a pending notice is rendered while a message is still arriving');
+		truthy(!pendingEmptyText.includes('Messages could not be refreshed'),
+		       'no red refresh-failed error while merely pending, not actually failed');
+		truthy(!pendingEmptyText.includes('No messages are stored on the modem'),
+		       'the ordinary empty-inbox text does not contradict the pending notice');
+		truthy(pendingEmptyText.includes('Waiting for the incoming message to finish arriving'),
+		       'a dedicated waiting message replaces the ordinary empty state');
+		truthy(scheduled.length > 0, 'a follow-up snapshot check is scheduled while pending');
+
+		scheduled = [];
+		const pendingWithOne = page.render([{ sms: {
+			storage: 'SM', receive_storage: 'SM', unread: 1, count: 1,
+			read_stores: ['SM'], store_counts: { SM: { used: 2, total: 10 } } } },
+			{ ok: true, pending: 1, stores: ['SM'], messages: [
+				{ index: 0, indexes: [0], sender: 'S', text: 'already here', storage: 'SM',
+				  ts: '26/09/14,10:00:00+00', unread: true, parts: 1, status: 'REC UNREAD' }
+			] }]);
+		const pendingWithOneText = textOf(pendingWithOne);
+		truthy(pendingWithOneText.includes('is still being read from the modem'),
+		       'the pending notice still shows alongside a message already visible');
+		truthy(pendingWithOneText.includes('already here'),
+		       'the message that already arrived is still shown');
+		truthy(!pendingWithOneText.includes('Messages could not be refreshed'),
+		       'no red error while a second segment is still on its way');
 	}
 
 	/* The settings dialog has to name the store incoming messages are actually going

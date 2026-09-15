@@ -46,6 +46,7 @@
 					"net_register",
 					"net_mode_set",
 					"radio_set",
+					"modem_restart",
 					"data_connect",
 					"data_disconnect",
 					"ussd",

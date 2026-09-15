@@ -80,6 +80,25 @@ function loadPage() {
 	});
 }
 
+/* A snapshot-only refresh, for the few seconds after a +CMTI while the daemon is
+ * still waiting for the announced slot to become visible (list.pending > 0). Never
+ * AT+CMGL -- that would clear the very unread flag this page exists to show -- so
+ * this reads only what the daemon already has cached, the same cache the error
+ * fallback above reads from. */
+function snapshotOnly() {
+	return m.api.smsSnapshot().then(function (snap) {
+		snap = snap || {};
+		var list = {
+			ok: snap.ok !== false,
+			stale: snap.stale,
+			messages: Array.isArray(snap.messages) ? snap.messages : [],
+			generation: snap.generation,
+			pending: snap.pending || 0
+		};
+		return m.api.status().then(function (status) { return [status || {}, list]; });
+	});
+}
+
 return view.extend({
 	handleSave: null,
 	handleSaveApply: null,
@@ -94,9 +113,35 @@ return view.extend({
 		var body = E('div', {});
 		var self = this;
 
+		/* Up to three cache-only re-checks, ~6s apart, while a just-announced message
+		 * has not become visible yet (list.pending > 0) -- see snapshotOnly() above
+		 * for why this never re-issues AT+CMGL. `chain` invalidates any watch still
+		 * ticking from a load this one has superseded, so two never race to redraw
+		 * the page from stale data. */
+		var pendingChain = 0;
+		function watchPending(list) {
+			if (!(list.ok === true && (list.pending || 0) > 0)) return;
+			var myChain = ++pendingChain;
+			var attempts = 0;
+			function tick() {
+				if (myChain !== pendingChain) return;
+				attempts++;
+				snapshotOnly().then(function (d) {
+					if (myChain !== pendingChain) return;
+					draw(d[0], d[1]);
+					if (attempts < 3 && (d[1].pending || 0) > 0)
+						window.setTimeout(tick, 6000);
+				});
+			}
+			window.setTimeout(tick, 6000);
+		}
+
 		function reload() {
 			return loadPage().then(function (d) {
-				draw(d[0] || {}, d[1] || {});
+				var status = d[0] || {}, msgs = d[1] || {};
+				draw(status, msgs);
+				watchPending(msgs);
+				return d;
 			});
 		}
 
@@ -278,6 +323,13 @@ only if your operator told you to.'))])
 				E('p', {}, String(list.error || _('The message store could not be read.'))),
 				msgs.length ? E('p', {}, _('The last cached messages are shown below.')) : E([])
 			]));
+			/* A message the modem has announced (+CMTI) but not yet made visible in a
+			   store read -- the ordinary shape of a segment still arriving, not a
+			   failure. Said plainly instead of the row simply not being there yet. */
+			if (list.ok === true && (list.pending || 0) > 0) kids.push(E('div', {
+				'class': 'alert-message notice'
+			}, E('p', {}, _('A message has just arrived and is still being read from \
+the modem. The list below updates on its own in a few seconds.'))));
 			if ((list.decode_errors || 0) > 0) kids.push(E('div', {
 				'class': 'alert-message warning'
 			}, _('One or more stored messages could not be decoded. Other messages are still shown.')));
@@ -371,6 +423,14 @@ only if your operator told you to.'))])
 					E('p', { 'class': 'cbi-value-description' },
 					  _('No message rows can be shown until the message store refresh succeeds.'))
 				]));
+			} else if (!msgs.length && (list.pending || 0) > 0) {
+				/* The pending notice above already says a message is on its way; saying
+				   here that none are stored would flatly contradict it. */
+				kids.push(E('div', { 'class': 'cbi-section fade-in' }, [
+					E('h3', {}, _('Inbox')),
+					E('p', { 'class': 'cbi-value-description' },
+					  _('Waiting for the incoming message to finish arriving.'))
+				]));
 			} else if (!msgs.length) {
 				kids.push(E('div', { 'class': 'cbi-section fade-in' }, [
 					E('h3', {}, _('Inbox')),
@@ -388,6 +448,7 @@ only if your operator told you to.'))])
 		}
 
 		draw(st, list);
+		watchPending(list);
 		return body;
 	}
 });

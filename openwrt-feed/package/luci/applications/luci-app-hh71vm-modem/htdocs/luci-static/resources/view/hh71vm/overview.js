@@ -133,7 +133,17 @@ return view.extend({
 							ui.addNotification(null, E('p', {},
 								_('Reconnecting; this takes a few seconds.')), 'info');
 						});
-					})
+					}),
+					m.action(_('Restart modem'), 'negative', function () {
+						return m.checked(m.api.modemRestart(true)).then(function () {
+							ui.addNotification(null, E('p', {},
+								_('Restart requested. Mobile data, calls and SMS stop \
+working until the modem reconnects, which can take a few minutes.')), 'info');
+						});
+					}, _('Experimental, not yet verified on hardware. This asks the modem \
+itself to fully reset (AT+CFUN=1,1) -- not the OpenWrt side, which stays up throughout. \
+Mobile data, calls and SMS stop working until it reconnects, which can take a few \
+minutes. Continue?'))
 				])
 			]));
 

@@ -67,6 +67,7 @@ var api = {
 	netModeSet:      decl('net_mode_set', ['mode']),
 	netRegister:     decl('net_register', ['numeric', 'act', 'auto']),
 	radioSet:        decl('radio_set',    ['on']),
+	modemRestart:    decl('modem_restart', ['confirm']),
 	dataConnect:     decl('data_connect', ['cid']),
 	dataDisconnect:  decl('data_disconnect', ['cid']),
 	apnList:         decl('apn_list'),
