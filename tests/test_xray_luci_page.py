@@ -276,6 +276,64 @@ class BackendContractTests(unittest.TestCase):
         start = INIT.split("start_service() {", 1)[1].split("\n}", 1)[0]
         self.assertNotIn("autostart", start)
 
+    def test_boot_clears_a_stale_enabled_flag_when_autostart_is_off(self):
+        # `enabled` survives a reboot in the overlay (it is a plain UCI setting), so
+        # it can still read 1 from a session before this power cycle even though
+        # autostart being off means nothing on this boot is going to start Xray.
+        # Reported 2026-09-14: that alone used to be enough for the firewall
+        # include to install capture rules for a tunnel that was never coming up,
+        # breaking the LAN's own DNS and TCP after a plain power cycle.
+        boot = INIT.split("boot() {", 1)[1].split("\nservice_triggers", 1)[0]
+        self.assertIn('"$autostart" != 1', boot)
+        self.assertIn('"$enabled" = 1', boot)
+        self.assertIn("xray.main.enabled=0", boot)
+        # the unconditional autostart=1 path still has to exist, unchanged
+        self.assertIn("xray.main.enabled=1", boot)
+        self.assertIn('start "$@"', boot)
+
+    def test_start_service_does_not_install_capture_rules_directly(self):
+        # The process instance has only just been told to start; on this board
+        # that can take up to a couple of minutes before it opens a port at all,
+        # and redirecting the LAN into a tunnel that is not listening yet broke
+        # its DNS and TCP outright. hh71vm-xray-fw arm, as its own procd instance,
+        # is what waits and installs the rules once that becomes real.
+        start = INIT.split("start_service() {", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("hh71vm-xray-fw up", start)
+        self.assertIn("procd_open_instance fwarm", start)
+        self.assertIn("hh71vm-xray-fw arm", start)
+
+    def test_restore_and_arm_check_that_xray_is_actually_listening(self):
+        # ENABLED=1 only means the connection is meant to be up -- it survives a
+        # reboot, a crash, or a firmware upgrade that dropped the binary from the
+        # share. Both the firewall include's restore path and the boot-time arm
+        # path have to see the redirect port actually answer before installing
+        # anything, or the setting alone is exactly the stale state that broke
+        # DNS after a power cycle.
+        self.assertIn("port_listening() {", FW)
+        restore = FW.split("do_restore() {", 1)[1].split("\ndo_arm() {", 1)[0]
+        self.assertIn('port_listening "$REDIR_PORT"', restore)
+        arm = FW.split("do_arm() {", 1)[1].split('case "${1:-status}"', 1)[0]
+        self.assertIn('port_listening "$REDIR_PORT"', arm)
+        self.assertIn("do_up", arm)
+        self.assertRegex(FW, r"arm\)\s+do_arm ;;")
+
+    def test_the_watchdog_removes_capture_rules_when_xray_is_not_actually_up(self):
+        # The backstop for everything hh71vm-xray-fw arm does not cover: a crash
+        # mid-connection, a firmware upgrade that dropped the binary, the share
+        # going away and back. Rules with nothing listening behind them break the
+        # LAN's DNS and TCP outright instead of leaving it working unproxied.
+        wd = (XRAY / "files/hh71vm-xray-watchdog").read_text(encoding="utf-8")
+        code = wd.split("]]", 1)[1]
+        self.assertIn("local function check_capture", code)
+        self.assertIn("check_capture(s, pid)", code)
+        guard = code.split("local function check_capture", 1)[1].split(
+            "local function settle", 1)[0]
+        self.assertIn('brief:find("rules=1")', guard)
+        self.assertIn("X.listening(", guard)
+        self.assertIn("hh71vm-xray-fw down", guard)
+        self.assertIn("hh71vm-xray-fw up", guard)
+        self.assertIn(">= 90", guard)
+
     def test_the_watchdog_does_not_restart_its_own_service(self):
         # It runs as a second instance of the xray service; `/etc/init.d/xray restart`
         # would kill it in the middle of reconnecting. It kills the process instead and
@@ -567,6 +625,30 @@ class StatusPollEfficiencyTests(unittest.TestCase):
     def test_version_string_is_cached_instead_of_exec_d_every_poll(self):
         self.assertIn("cached_version", self.ctl)
         self.assertIn("nixio.fs.stat(bin", self.ctl)
+
+    def test_version_is_never_execd_while_xray_is_already_running(self):
+        # Running "$bin version" from a status poll while Xray is already resident
+        # is a second 34 MB Go process on a board with no swap - a plausible cause
+        # of a LuCI crash reported alongside "connect automatically on power on"
+        # (2026-09-14). hh71vm-xray writes the cache file itself, once, right
+        # before it execs the binary - the one moment that process is guaranteed
+        # not to be running yet - and the status poll trusts that outright instead
+        # of ever asking the binary itself while it is already running.
+        cached_version = self.ctl.split("local function cached_version(bin)", 1)[1] \
+            .split("\nlocal function service_status", 1)[0]
+        self.assertIn("if X.pid() then", cached_version)
+        self.assertIn('X.readfile("/var/run/xray.version")', cached_version)
+        pid_branch = cached_version.split("if X.pid() then", 1)[1].split(
+            "nixio.fs.stat(bin", 1)[0]
+        self.assertIn("return", pid_branch, "the pid branch must return, not fall through")
+
+        launcher = (XRAY / "files/hh71vm-xray").read_text(encoding="utf-8")
+        do_run = launcher.split("do_run() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('"$path" version', do_run)
+        self.assertIn("/var/run/xray.version", do_run)
+        # written before Xray itself runs, not after - the file has to be usable
+        # the very first time anything asks while Xray is up
+        self.assertLess(do_run.index('"$path" version'), do_run.index('exec "$path" run'))
 
     def test_listening_ports_are_checked_from_one_proc_net_snapshot(self):
         self.assertIn("function M.listening_many(ports)", LIB)

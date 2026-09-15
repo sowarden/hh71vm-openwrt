@@ -81,6 +81,37 @@ local last_pid = nil
 local down = false
 local mem_fails = 0
 local mem_guard_fired = 0
+local capture_bad_since = nil
+
+--- The capture rules and the process they redirect into can drift apart: a crash
+--- leaves the redirect and the dnsmasq override pointing at nothing (the LAN's TCP
+--- and DNS break instead of going out unproxied), or Xray comes back up after being
+--- down and nothing ever re-installs them. hh71vm-xray-fw arm handles the normal
+--- start; this is the backstop for everything after that -- a crash mid-connection,
+--- a firmware upgrade that dropped the binary from the share, the modem taking the
+--- share down and back. 90s of disagreement, not the first tick: a fresh restart
+--- (settle() below) and a normal reconnect both pass through "rules installed,
+--- not yet listening" for a few seconds and must not be treated as this case.
+local function check_capture(s, pid)
+	if (s.mode or "vpn") ~= "vpn" then capture_bad_since = nil; return end
+	local brief = X.popen("/usr/sbin/hh71vm-xray-fw brief 2>/dev/null")
+	local installed = brief:find("rules=1") and true or false
+	local healthy = pid ~= nil and X.listening(X.isnum(s.redirect_port, 1, 65535) or 1082)
+	if installed and not healthy then
+		capture_bad_since = capture_bad_since or os.time()
+		if os.time() - capture_bad_since >= 90 then
+			log("removing the capture rules: Xray has not been up and listening for 90s")
+			os.execute("/usr/sbin/hh71vm-xray-fw down >/dev/null 2>&1")
+			capture_bad_since = nil
+		end
+	elseif not installed and healthy then
+		log("Xray is up and listening but the capture rules are missing; installing them")
+		os.execute("/usr/sbin/hh71vm-xray-fw up >/dev/null 2>&1")
+		capture_bad_since = nil
+	else
+		capture_bad_since = nil
+	end
+end
 
 -- Xray needs about ten seconds to come up on this CPU, and procd starts this instance
 -- at the same moment as that one.  Without a settling period the first probe lands
@@ -109,6 +140,7 @@ while true do
 		check_logfile(s)
 
 		local pid = X.pid()
+		check_capture(s, pid)
 		if not pid then
 			-- procd's own business; wait for it rather than fighting over the pid
 			last_pid = nil

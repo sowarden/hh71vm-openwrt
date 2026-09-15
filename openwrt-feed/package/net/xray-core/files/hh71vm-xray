@@ -84,13 +84,31 @@ do_run() {
 		[ "$waited" -ge "$wait_secs" ] && {
 			echo "hh71vm-xray: binary still not found after ${wait_secs}s" >&2
 			echo "hh71vm-xray: install it with 'hh71vm-extern-pkg install xray-core'" >&2
+			# Nothing is going to start this boot. Capture rules for a tunnel
+			# that will never exist would only break the LAN's own DNS and
+			# TCP; hh71vm-xray-fw arm gives up on its own after a similar
+			# wait, but take the rules down explicitly too, on the same
+			# fail-open principle as the rest of this fix, in case something
+			# else (a stale ENABLED=1, a plain fw3 reload) installed them.
+			/usr/sbin/hh71vm-xray-fw down >/dev/null 2>&1
 			return 1
 		}
 		[ "$waited" = 0 ] && echo "hh71vm-xray: waiting for the binary to appear"
 		sleep 5
 		waited=$((waited + 5))
 	done
-	[ -f "$conffile" ] || { echo "hh71vm-xray: no config at $conffile" >&2; return 1; }
+	[ -f "$conffile" ] || {
+		echo "hh71vm-xray: no config at $conffile" >&2
+		/usr/sbin/hh71vm-xray-fw down >/dev/null 2>&1
+		return 1
+	}
+	# Written here, right before Xray itself runs, because this is the one moment
+	# it is guaranteed not to be resident yet. hh71vm-xrayctl's status poll trusts
+	# this file outright while Xray is running instead of exec-ing the binary
+	# itself to ask -- exec-ing a second 34 MB Go process alongside the one
+	# already running is most of what turned "connect automatically on power on"
+	# into a LuCI crash on this board's 128 MiB with no swap.
+	"$path" version 2>/dev/null | head -1 > /var/run/xray.version 2>/dev/null
 	# exec, so procd supervises xray itself rather than this shell.
 	XRAY_LOCATION_ASSET="$assets" exec "$path" run -c "$conffile"
 }

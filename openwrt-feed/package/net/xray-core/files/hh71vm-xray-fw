@@ -5,9 +5,13 @@
 # half-applied state cannot survive.
 #
 #   up       install the rules for the current settings
+#   arm      wait for Xray to actually open its redirect port, then `up` -- called
+#            once from start_service(), so the rules are not installed for a
+#            process that has only just been told to start
 #   down     remove every rule and chain we own
-#   restore  re-install them, but only if the service is meant to be up (this is what
-#            the firewall include calls, because fw3 deletes foreign chains on reload)
+#   restore  re-install them, but only if the service is meant to be up AND is
+#            actually listening (this is what the firewall include calls, because
+#            fw3 deletes foreign chains on reload)
 #   status   print what is actually in the kernel right now
 #
 # Loops are prevented twice over: Xray's own outbound sockets carry a mark that the
@@ -148,6 +152,26 @@ wireless_via() {
 have_tproxy() {
 	[ -n "$(ls /lib/modules/*/xt_TPROXY.ko 2>/dev/null)" ] && return 0
 	grep -q '^xt_TPROXY ' /proc/modules 2>/dev/null
+}
+
+# Is anything listening on this TCP port right now, on either address family?
+# Mirrors hh71vm.xray's M.listening() in xray-lib.lua: Go opens a dual-stack
+# wildcard socket, so an inbound bound to 0.0.0.0 shows up in /proc/net/tcp6 as
+# [::]:port and never appears in /proc/net/tcp at all.
+port_listening() {   # port_listening <port>
+	local want f
+	want=$(printf '%04X' "$1")
+	for f in /proc/net/tcp /proc/net/tcp6; do
+		[ -r "$f" ] || continue
+		awk -v want="$want" '
+			NR > 1 {
+				n = length($2)
+				if (substr($2, n - 3) == want && $4 == "0A") { found = 1; exit }
+			}
+			END { exit !found }
+		' "$f" && return 0
+	done
+	return 1
 }
 
 # ---------------------------------------------------------------------------- DNS
@@ -372,6 +396,19 @@ do_down() {
 	echo "vpn rules removed"
 }
 
+# Called by the firewall include on every fw3 reload (it deletes chains it does not
+# own) and by the iface hotplug when the way out moves. ENABLED=1 only means the
+# connection is *meant* to be up -- it is a UCI setting that survives a reboot, a
+# crashed process, a firmware upgrade that dropped xray-core from the /mnt/extern
+# share, or simply "the service has not started yet this boot". Trusting it alone
+# used to install the TCP redirect and the dnsmasq override for a tunnel that was
+# not actually there, which broke the LAN's DNS and TCP outright instead of leaving
+# it working unproxied -- measured 2026-09-14 (autostart off, Connect pressed in an
+# earlier session: ENABLED stayed 1 across a power cycle, Xray never started this
+# boot, and the plain fw3 reload at boot still ran this and broke DNS). Reinstall
+# only once the redirect port is actually being answered; hh71vm-xray-fw arm (from
+# start_service) and the watchdog's own capture check are what install the rules
+# the moment that becomes true, so nothing is lost by waiting for it here too.
 do_restore() {
 	load_settings
 	if [ "$ENABLED" != "1" ] || [ "$MODE" != "vpn" ]; then
@@ -380,7 +417,37 @@ do_restore() {
 		dns_release
 		return 0
 	fi
-	do_up >/dev/null
+	if port_listening "$REDIR_PORT"; then
+		do_up >/dev/null
+	else
+		dns_release
+	fi
+}
+
+# Called once from start_service(), as its own short-lived procd instance, right
+# after the Xray process instance is opened. Installing the capture rules the
+# moment the process is merely *started* raced the binary's own wait for the
+# /mnt/extern share (up to the `wait` setting, 120s by default) and then Xray's own
+# startup -- the same fail-open reasoning as do_restore above, just for the normal
+# boot/Connect path rather than a reload. Waits for the redirect port to actually
+# accept connections before calling `up`, and gives up quietly if that never
+# happens: no rules is the safe state here, not an error anyone has to clear.
+do_arm() {
+	load_settings
+	[ "$MODE" = "vpn" ] || { echo "mode is $MODE: nothing to arm"; return 0; }
+	local wait_for_share limit waited=0
+	config_get wait_for_share main wait 120
+	limit=$((wait_for_share + 60))
+	while [ "$waited" -lt "$limit" ]; do
+		if port_listening "$REDIR_PORT"; then
+			do_up
+			return 0
+		fi
+		sleep 3
+		waited=$((waited + 3))
+	done
+	logger -t hh71vm-xray-fw "Xray never opened its redirect port after ${limit}s; no capture rules installed"
+	return 1
 }
 
 do_status() {
@@ -438,10 +505,11 @@ do_brief() {
 
 case "${1:-status}" in
 	up)      do_up ;;
+	arm)     do_arm ;;
 	ifaces)  do_ifaces ;;
 	brief)   do_brief ;;
 	down)    do_down ;;
 	restore) do_restore ;;
 	status)  do_status ;;
-	*) echo "usage: $0 {up|down|restore|status|ifaces|brief}" >&2; exit 2 ;;
+	*) echo "usage: $0 {up|arm|down|restore|status|ifaces|brief}" >&2; exit 2 ;;
 esac

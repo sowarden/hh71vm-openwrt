@@ -110,6 +110,27 @@ package database. Reinstall it with the two commands above after each upgrade. W
 normal configuration-preserving upgrade, profiles and settings under `/etc` survive;
 `sysupgrade -n` discards them too.
 
+## Capture rules and reboots
+
+VPN-mode's LAN redirect and DNS override are only installed while Xray is actually up and
+listening — not merely while the connection is set to be up. This matters after a reboot:
+
+- **Connect** by itself is not the same as **connect automatically on router power on**.
+  Pressing Connect makes the tunnel come up now; only the separate "power on" switch makes
+  it come back after a reboot. Without that switch, a power cycle leaves the router working
+  unproxied rather than half-broken — no capture rules are installed for a tunnel that never
+  starts, and the page opens showing "Not connected" until Connect is pressed again.
+- Whenever Xray does start (at boot with that switch on, or from Connect), the rules are
+  installed the moment it actually opens its ports, not the instant the process is told to
+  start — starting can legitimately take a couple of minutes on this board while the
+  `/mnt/extern` share comes up. If it never manages to (binary missing, share never mounts),
+  no rules are installed and the LAN keeps its own DNS and TCP working, unproxied, instead of
+  the tunnel that never existed breaking them outright.
+- The watchdog (on by default) is what keeps this true after the fact too — reinstalling the
+  rules within about 90 seconds of Xray coming back, or removing them within about 90 seconds
+  of it going away. Turning the watchdog off gives up this safety net along with the RSS
+  guard and the reconnect-on-stall behaviour described above.
+
 ## If it does not connect
 
 The page tells you which step failed. The common ones:

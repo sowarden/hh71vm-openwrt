@@ -51,7 +51,21 @@ end
 --- on every ten-second status poll just to print one line was a third of what turned
 --- Xray's own RSS growth into uhttpd failing to fork a CGI process; keyed on the
 --- binary's own path, size and mtime, this makes an unchanged binary a file read.
+---
+--- While Xray is running, this never execs the binary at all, not even to build the
+--- cache key above: hh71vm-xray writes /var/run/xray.version itself, right before it
+--- execs this exact binary, which is the one moment that process is guaranteed not
+--- to be resident yet, and that file is trusted outright here. Running the binary
+--- from a status poll while it is already running means a second 34 MB Go process
+--- alongside the first, and on this board's 128 MiB with no swap that is most of
+--- what turned "connect automatically on power on" into a LuCI crash: the first
+--- poll after every boot used to hit a cold cache at the exact moment Xray itself
+--- was also starting.
 local function cached_version(bin)
+	if X.pid() then
+		local v = X.trim(X.readfile("/var/run/xray.version") or "")
+		return (v ~= "") and v or nil
+	end
 	local size = nixio.fs.stat(bin, "size")
 	local mtime = nixio.fs.stat(bin, "mtime")
 	local key = bin .. ":" .. tostring(size) .. ":" .. tostring(mtime)

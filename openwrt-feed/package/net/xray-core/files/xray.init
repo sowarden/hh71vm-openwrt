@@ -64,7 +64,17 @@ start_service() {
 	procd_close_instance
 
 	if [ "$mode" = "vpn" ]; then
-		/usr/sbin/hh71vm-xray-fw up >/dev/null 2>&1
+		# Not installed directly here: the process instance above has only just
+		# been told to start, and on this board it can legitimately take up to
+		# a couple of minutes (the /mnt/extern share, then Xray's own startup)
+		# before it actually opens a port. Redirecting the LAN into a tunnel
+		# that is not listening yet breaks its DNS and TCP outright instead of
+		# leaving it working unproxied -- see hh71vm-xray-fw arm, which waits
+		# for the redirect port and installs the rules the moment it is real,
+		# and gives up quietly, installing nothing, if it never is.
+		procd_open_instance fwarm
+		procd_set_param command /usr/sbin/hh71vm-xray-fw arm
+		procd_close_instance
 	fi
 
 	if [ "$wd" = 1 ]; then
@@ -81,9 +91,24 @@ stop_service() {
 
 boot() {
 	config_load xray
-	local autostart
+	local autostart enabled
 	config_get_bool autostart main autostart 0
-	[ "$autostart" = 1 ] || return 0
+	if [ "$autostart" != 1 ]; then
+		# `enabled` ("meant to be up now") is a UCI setting and survives every
+		# reboot, so it can still read 1 from a session before this power
+		# cycle even though nothing on this boot is going to start Xray. That
+		# alone used to be enough for the firewall include to install the
+		# capture rules for a tunnel that was never coming up this boot,
+		# breaking the LAN's DNS and TCP (see hh71vm-xray-fw's restore, fixed
+		# separately). Correct the record instead of starting the service:
+		# the router was not asked to connect at boot.
+		config_get_bool enabled main enabled 0
+		if [ "$enabled" = 1 ]; then
+			uci -q set xray.main.enabled=0
+			uci -q commit xray
+		fi
+		return 0
+	fi
 	uci -q set xray.main.enabled=1
 	uci -q commit xray
 	start "$@"
