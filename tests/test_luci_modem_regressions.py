@@ -149,10 +149,15 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         self.assertNotIn("B32/B38", backend + helper + view)
 
     def test_modem_restart_is_wired_through_rpc_acl_and_confirmed_on_the_page(self):
-        # Experimental, requested by an owner report (2026-09-14): a modem stuck
-        # after an APN change only recovered with a full power cycle. Every layer
-        # this needs, from the AT command up to the confirmation dialog, has to
-        # agree that this is a full reset the user has to explicitly confirm.
+        # Requested by an owner report (2026-09-14): a modem stuck after an APN
+        # change only recovered with a full power cycle. The first implementation
+        # (2026-09-14) sent AT+CFUN=1,1, a full Qualcomm baseband reset; confirmed
+        # live 2026-09-15 that this takes the whole Realtek board down, because the
+        # USB gadget that carries both the AT channel and eth2 belongs to the
+        # Qualcomm side. Fixed to bounce the radio instead (AT+CFUN=0, pause,
+        # AT+CFUN=1, full session re-setup) -- see hh71vm-modemd's own
+        # API.modem_restart docstring for the full account. Every layer this needs,
+        # from the AT commands up to the confirmation dialog, has to agree.
         daemon = (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/hh71vm-modemd").read_text()
         rpcd = (ROOT / "openwrt-feed/target/linux/rtkmipsel/base-files/usr/libexec/rpcd/hh71vm-modem").read_text()
         acl = (ROOT / "openwrt-feed/package/luci/applications/luci-app-hh71vm-modem/root/usr/share/rpcd/acl.d/luci-app-hh71vm-modem.json").read_text()
@@ -163,8 +168,14 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         restart = daemon.split("function API.modem_restart(cli, args)", 1)[1].split(
             "\nlocal function data_act", 1)[0]
         self.assertIn("args.confirm", restart, "the endpoint must require confirmation")
-        self.assertIn("AT+CFUN=1,1", restart)
-        self.assertIn("M.drop(", restart, "the channel must not be left half-reset")
+        self.assertIn("AT+CFUN=0", restart, "must park the radio first")
+        self.assertIn("AT+CFUN=1", restart, "must bring the radio back")
+        self.assertNotIn("AT+CFUN=1,1", restart,
+                          "a full baseband reset takes the whole board down -- confirmed live 2026-09-15")
+        self.assertIn("setup_request()", restart,
+                       "the radio coming back must re-run the full session setup")
+        self.assertNotIn("M.drop(", restart,
+                          "the control channel never drops during a radio bounce")
 
         self.assertIn("modem_restart", rpcd)
         self.assertIn("modem_restart   = { confirm = true }", rpcd)
@@ -181,9 +192,10 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         self.assertIn("m.api.modemRestart(true)", overview)
         restart_action = overview.split("m.api.modemRestart(true)", 1)[1]
         # the fourth m.action() argument is the confirmation prompt; it has to
-        # actually ask before the button does anything irreversible-feeling
+        # actually ask before the button does anything disruptive-feeling
         self.assertIn("Continue?", restart_action[:800])
-        self.assertIn("Experimental", restart_action[:800])
+        self.assertNotIn("AT+CFUN=1,1", restart_action[:800],
+                          "the confirmation dialog must not describe the old full-reset behavior")
 
     def test_optional_packages_ship_the_same_backend_ui_version(self):
         backend = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/Makefile").read_text()
