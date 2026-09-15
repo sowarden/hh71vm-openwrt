@@ -410,14 +410,40 @@ do
 end
 
 do
-	local M = sms.M
+	-- Giving up must let go, not stick: holding an exhausted +CMTI forever used to
+	-- poison every later refresh -- real messages and all -- with the same failure
+	-- permanently, because nothing ever removed it (reported 2026-09-14, an SMS
+	-- arriving into an empty inbox showed "Messages could not be refreshed" and
+	-- never recovered).
+	local M, SMS = sms.M, sms.SMS
 	M.sms_pending_entries, M.sms_pending, M.sms_sync_attempts = {}, 0, 0
 	M.sms_last_error = nil
 	sms.sms_pending_add("SM", 13)
 	for _ = 1, 4 do truthy(sms.sms_schedule_retry("still missing"), "bounded retry") end
 	equal(sms.sms_schedule_retry("still missing"), false, "retry exhaustion")
-	equal(M.sms_pending, 1, "exhausted notification remains visible")
-	equal(M.sms_last_error, "still missing", "retry exhaustion is explicit")
+	equal(M.sms_pending, 0, "an exhausted notification is dropped, not held forever")
+	equal(next(M.sms_pending_entries), nil, "the entry itself is gone too")
+	equal(M.sms_last_error, nil, "giving up is not a sticky error -- see the system log instead")
+
+	-- And a read straight after must not be poisoned by the entry it just gave up on.
+	SMS.loaded, SMS.seen = true, {}
+	M.state.sms = { storage = "SM", stores = { "SM" } }
+	M.sms_generation, M.sms_messages = 0, nil
+	local outcome
+	local job = sms.sms_list_job(function(ok, list, err)
+		outcome = { ok = ok, count = #list, err = err }
+	end)
+	for _, step in ipairs(job.steps) do
+		local cmd = step_cmd(step)
+		if cmd == 'AT+CPMS="SM"' then
+			step.parse({ "+CPMS: 1,100,0,100,0,10" }, true)
+		elseif cmd == "AT+CMGL=4" then
+			step.parse({ "+CMGL: 0,0,,44", pdu_a }, true)
+		end
+	end
+	job.cb(true, {}, nil)
+	equal(outcome.ok, true, "a read after giving up succeeds normally")
+	equal(M.sms_generation, 1, "and is not left permanently stuck at the old generation")
 end
 
 do
@@ -488,9 +514,15 @@ do
 	end, "ME")
 	run(delayed_job, { ME = { used = 0 } })
 	delayed_job.cb(true, {}, nil)
-	equal(outcome.ok, false, "CMTI before storage availability")
+	-- A store that answered cleanly, with the announced message simply not there
+	-- yet, is a successful refresh -- not a failure. Forcing this to look like one
+	-- used to raise "Messages could not be refreshed" on every arriving SMS
+	-- whenever the inbox was otherwise empty (reported 2026-09-14); M.sms_pending
+	-- is how the daemon (and, through the RPC reply, the page) is told a message
+	-- is still on its way instead.
+	equal(outcome.ok, true, "a clean read with nothing pending yet is still a success")
 	equal(M.sms_pending, 1, "delayed CMTI remains pending")
-	equal(M.sms_generation, 1, "delayed empty list preserves cache")
+	equal(M.sms_generation, 2, "a successful read still publishes while pending")
 
 	local arrived_job = sms.sms_list_job(function(ok, list)
 		outcome = { ok = ok, count = #list }
@@ -499,7 +531,7 @@ do
 	arrived_job.cb(true, {}, nil)
 	equal(outcome.ok, true, "delayed CMTI retry success")
 	equal(M.sms_pending, 0, "delayed CMTI reconciled")
-	equal(M.sms_generation, 2, "delayed retry generation")
+	equal(M.sms_generation, 3, "delayed retry generation")
 
 	local restart_job = sms.sms_list_job(function(ok, list)
 		outcome = { ok = ok, count = #list }
@@ -508,7 +540,7 @@ do
 	restart_job.cb(true, {}, nil)
 	equal(outcome.ok, true, "restart refresh")
 	equal(outcome.count, 1, "restart existing message")
-	equal(M.sms_generation, 3, "restart generation")
+	equal(M.sms_generation, 4, "restart generation")
 end
 
 do

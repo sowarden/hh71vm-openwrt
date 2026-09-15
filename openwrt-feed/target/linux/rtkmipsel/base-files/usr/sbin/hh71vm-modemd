@@ -984,7 +984,10 @@ local APN_STATE_FILE = "/etc/hh71vm-modem/apn.json"
 local apn_state
 local apn_state_loaded = false
 local apn_reconcile_tries = 0
-local APN_RECONCILE_MAX_TRIES = 5   -- stop hammering a write that keeps failing
+local apn_reconcile_last_apply = 0
+local apn_reconcile_pdp_logged = false
+local APN_RECONCILE_MAX_TRIES = 3        -- stop hammering a write that keeps failing
+local APN_RECONCILE_MIN_INTERVAL = 600   -- seconds between forced re-applies
 
 local function apn_state_get()
 	if apn_state_loaded then return apn_state end
@@ -1390,7 +1393,24 @@ local function sms_schedule_retry(reason)
 	M.sms_sync_attempts = (M.sms_sync_attempts or 0) + 1
 	local delay = SMS_SYNC_RETRY[M.sms_sync_attempts]
 	if not delay then
-		M.sms_last_error = reason or "announced SMS did not become available in storage"
+		-- Retries are exhausted: whatever +CMTI announced never became visible in a
+		-- CMGL that did read its store -- a lost segment, a store the daemon was
+		-- told not to read, a slot the modem never actually committed. Holding this
+		-- pending forever used to poison every later refresh, real messages and
+		-- all, with the same failure forever, because nothing ever removed it and
+		-- the page rendered that as "Messages could not be refreshed" on the very
+		-- next open (reported 2026-09-14, an SMS arriving into an empty inbox).
+		-- Let go instead of sticking: it stays visible in the system log for
+		-- anyone chasing a message that truly went missing, and every store this
+		-- job did manage to read has already been published as of right now.
+		for key, entry in pairs(M.sms_pending_entries or {}) do
+			log("sms: %s announced by +CMTI never became visible; giving up (%s)",
+			    sms_slot(entry.storage, entry.index), tostring(reason))
+			M.sms_pending_entries[key] = nil
+		end
+		sms_pending_count()
+		M.sms_sync_attempts = 0
+		M.sms_last_error = nil
 		return false
 	end
 	M.sms_sync_due = os.time() + delay
@@ -2040,10 +2060,37 @@ end
 --- (user/pass) cannot be read back over AT at all -- +CGAUTH answers ERROR on this
 --- firmware -- so only apn, pdp_type and the auth *type* are compared; a reverted
 --- password alone would not be caught here, which is a known gap, not an oversight.
+--- The SIM this router currently has, for apn_reconcile below. ICCID is preferred
+--- (unique per card); IMSI is the fallback for a firmware that answers one but not
+--- the other. Not-yet-read SIM info is not the same as "no SIM" -- it must not look
+--- like one more absent identity to a caller that only checks truthiness, so a slow
+--- poll that has not reached the static block yet simply reports unknown.
+local function current_sim_id()
+	local sim = S.sim or {}
+	local id = sim.iccid or sim.imsi
+	return (id and id ~= "") and id or nil
+end
+
+--- Heals a stale APN on the profile-owning cid: a core_app restart, a factory reset
+--- of the Qualcomm side, or the KCAP write failing at the moment of an otherwise-
+--- successful apn_set can all leave the live modem disagreeing with what was last
+--- saved. Runs from the slow poll, right after it has refreshed both $QCPDPP? and
+--- +CGDCONT? into S, so the comparison below is never stale by more than one poll
+--- interval. Credentials (user/pass) cannot be read back over AT at all -- +CGAUTH
+--- answers ERROR on this firmware -- so only apn, pdp_type and the auth *type* are
+--- compared; a reverted password alone would not be caught here, which is a known
+--- gap, not an oversight.
+---
+--- Two things this used to get wrong, both reported live by an owner running it on
+--- a different bench (2026-09-14): the saved profile is not tied to any SIM, so
+--- swapping in a different operator's card got the previous card's APN forced back
+--- onto it instead of being left alone; and a PDP-type-only difference -- which the
+--- network can cause legitimately by narrowing an attach context -- was corrected
+--- exactly like a real drift, on every poll that saw it, with no rate limit and no
+--- way to ever stop trying once APN_RECONCILE_MAX_TRIES was reached the first time.
 local function apn_reconcile()
 	local stored = apn_state_get()
 	if not stored then return end
-	if apn_reconcile_tries >= APN_RECONCILE_MAX_TRIES then return end
 
 	local cid_str = tostring(stored.cid)
 	local live
@@ -2052,16 +2099,57 @@ local function apn_reconcile()
 	end
 	if not live then return end   -- the context itself is gone; nothing sane to compare
 
+	local live_id = current_sim_id()
+	if live_id and not stored.sim_id then
+		-- An entry from before this fix, or one saved before the SIM had been read
+		-- yet, has no identity to compare against: the first card seen from here on
+		-- claims it, rather than leaving every future card free to be overwritten.
+		stored.sim_id = live_id
+		apn_state_set(stored)
+	elseif live_id and stored.sim_id and stored.sim_id ~= live_id then
+		if not S.apn_reconcile or S.apn_reconcile.state ~= "different_sim" then
+			log("apn: cid %d was saved for a different SIM; leaving this one alone",
+			    stored.cid)
+		end
+		S.apn_reconcile = { state = "different_sim", cid = stored.cid }
+		return
+	end
+
 	local live_auth = M.cgauth and M.cgauth[cid_str]
-	local mismatch = live.apn ~= stored.apn
-	                  or (live.pdp_type or ""):upper() ~= (stored.pdp_type or ""):upper()
-	                  or (live_auth or 0) ~= (stored.auth or 0)
-	if not mismatch then
+	local apn_match = (live.apn or ""):upper() == (stored.apn or ""):upper()
+	local auth_match = (live_auth or 0) == (stored.auth or 0)
+	local pdp_match = (live.pdp_type or ""):upper() == (stored.pdp_type or ""):upper()
+
+	if apn_match and auth_match then
 		apn_reconcile_tries = 0
+		S.apn_reconcile = nil
+		-- Not force-corrected: the network narrowing an attach context (IPV4V6 to
+		-- IPV4, for instance) is a legitimate answer, not the modem forgetting the
+		-- APN, and forcing it back was indistinguishable from the reconnect churn
+		-- this fix exists to stop causing. Only APN and auth type are enforced.
+		if not pdp_match and not apn_reconcile_pdp_logged then
+			apn_reconcile_pdp_logged = true
+			log("apn: cid %d PDP type is %s, saved as %s; leaving it -- only APN " ..
+			    "and auth are enforced", stored.cid, tostring(live.pdp_type),
+			    tostring(stored.pdp_type))
+		end
+		return
+	end
+	apn_reconcile_pdp_logged = false
+
+	if apn_reconcile_tries >= APN_RECONCILE_MAX_TRIES then
+		S.apn_reconcile = { state = "given_up", cid = stored.cid,
+		                     tries = apn_reconcile_tries }
+		return
+	end
+	if os.time() - apn_reconcile_last_apply < APN_RECONCILE_MIN_INTERVAL then
 		return
 	end
 
 	apn_reconcile_tries = apn_reconcile_tries + 1
+	apn_reconcile_last_apply = os.time()
+	S.apn_reconcile = { state = "reapplying", cid = stored.cid,
+	                     tries = apn_reconcile_tries, max = APN_RECONCILE_MAX_TRIES }
 	log("apn: cid %d drifted from the saved profile (modem now apn=%q auth=%s), " ..
 	    "re-applying (%d/%d)", stored.cid, live.apn, tostring(live_auth),
 	    apn_reconcile_tries, APN_RECONCILE_MAX_TRIES)
@@ -3133,22 +3221,21 @@ local function sms_list_job(done, requested_storage, budget)
 				:format(occupied)
 		end
 		if effective_ok then
-			local pending = sms_pending_reconcile(msgs, stores)
+			-- A CMGL that read its stores cleanly is a successful refresh even while
+			-- a just-announced message has not landed yet: that is the ordinary
+			-- shape of "the segment has not arrived", not a failure, and forcing it
+			-- to look like one used to raise "Messages could not be refreshed" on
+			-- every arriving SMS whenever the inbox was otherwise empty (reported
+			-- 2026-09-14). `pending` (below, and in the RPC reply) is how the page
+			-- is told a message is still on its way, instead of that.
+			sms_pending_reconcile(msgs, stores)
 			M.sms_last_error = nil
-			if pending > 0 then
-				local retrying = sms_schedule_retry(
-					"an announced SMS is not yet available in storage")
-				if #msgs == 0 or not retrying then
-					effective_ok = false
-					effective_err = M.sms_last_error or
-						"an announced SMS is not yet available in storage"
-				end
+			if sms_pending_count() > 0 then
+				sms_schedule_retry("an announced SMS is not yet available in storage")
 			end
-			if effective_ok then
-				S.sms.unread = SMS.merge(list)
-				M.sms_messages = list
-				M.sms_generation = (M.sms_generation or 0) + 1
-			end
+			S.sms.unread = SMS.merge(list)
+			M.sms_messages = list
+			M.sms_generation = (M.sms_generation or 0) + 1
 		elseif sms_pending_count() > 0 then
 			sms_schedule_retry(effective_err or "message-store refresh failed")
 		end
@@ -3643,6 +3730,11 @@ function API.apn_set(cli, args)
 				auth = has_auth and auth or (prev and prev.auth) or 0,
 				user = has_auth and user or (prev and prev.user) or "",
 				pass = has_auth and pass or (prev and prev.pass) or "",
+				-- A deliberate user save always claims this cid for whichever SIM is
+				-- in the slot right now, current or not: this is what lets the same
+				-- save recover from apn_reconcile having flagged a stale entry as
+				-- belonging to a different card, without a separate "reassign" action.
+				sim_id = current_sim_id() or (prev and prev.sim_id),
 			}
 			local _, werr = PROFILE.write(entry)
 			if werr then
@@ -3896,6 +3988,38 @@ function API.radio_set(cli, args)
 	}, function(ok, _, err)
 		M.publish()
 		return { ok = ok, error = err, radio = S.radio or {} }
+	end)
+end
+
+--- Ask the Qualcomm baseband itself to reset -- AT+CFUN=1,1 is full functionality
+--- with a silent reset, not the flight-mode toggle above. Several reports describe
+--- the modem misbehaving after a settings change (an APN edit is the one seen so
+--- far) until it is power-cycled, and a plain OpenWrt reboot only resets the
+--- Realtek side; the separate Qualcomm one has no confirmed reset path of its own
+--- (see docs/known-issues.md). This is the first thing to try short of asking for
+--- an actual power cycle, which nothing on this side can do.
+---
+--- [EXPERIMENTAL, UNVERIFIED ON HARDWARE]: written and reviewed offline while the
+--- test router was deliberately bricked for unrelated work. Whether AT+CFUN=1,1
+--- actually clears whatever a stuck APN or DNS session leaves behind on this exact
+--- baseband, whether it answers OK before or after the reset, and how long the
+--- control channel stays down are all unconfirmed. The modem is expected to drop
+--- the channel either way, so the reply does not depend on the AT step's own
+--- outcome: `confirm` is required instead, and M.drop()/M.next_try hand the actual
+--- recovery to the same backoff-and-reconnect state machine that already handles a
+--- channel going away for any other reason.
+function API.modem_restart(cli, args)
+	if not args.confirm then return reply(cli, { error = "confirm required" }) end
+	run_for(cli, "modem_restart", {
+		{ cmd = "AT+CFUN=1,1", timeout = 20, tolerate = true },
+	}, function(ok, _, err)
+		S.modem_restart = { requested = os.time(), acknowledged = ok and true or false }
+		M.publish()
+		-- Force the reconnect now instead of waiting for the silence watchdog to
+		-- notice: there is nothing left on this channel worth keeping either way.
+		M.drop("modem restart requested")
+		M.next_try = 0
+		return { ok = true, acknowledged = ok and true or false, error = err }
 	end)
 end
 

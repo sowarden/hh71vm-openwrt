@@ -64,6 +64,7 @@ local METHODS = {
 	net_register    = { numeric = "str", act = 0, auto = true },
 	net_mode_set    = { mode = 0 },
 	radio_set       = { on = true },
+	modem_restart   = { confirm = true },
 	data_connect    = { cid = 0 },
 	data_disconnect = { cid = 0 },
 	ussd            = { code = "str" },
