@@ -67,6 +67,33 @@ or no networking. Report marker differences.
 - OpenWrt and `modem-extra-tools` do not remove a carrier, SIM, subsidy, or network lock.
   IMEI restoration, TTL normalization, LTE band preferences, SIM PIN handling, and carrier
   unlocking are separate operations. This project has no verified carrier-unlock method.
+- **Restarting the modem from the Overview page is experimental and unverified on
+  hardware.** It sends `AT+CFUN=1,1`; whether that clears a stuck APN/DNS session on this
+  exact baseband, and how long the control channel takes to come back, have not been
+  observed yet. See [modem control](extra/modem-control.md#restart-the-modem-experimental).
+- **The APN reconciler now leaves a context alone once the SIM identity it was saved for no
+  longer matches the card in the slot**, and no longer force-corrects a PDP-type-only
+  difference (only APN and auth type are enforced). An entry saved before this change has no
+  identity yet and silently adopts whichever SIM is seen first; save the APN again through
+  the Profiles page after swapping SIMs if in doubt.
+
+## Xray VPN mode and the router's own DNS
+
+- **VPN-mode capture rules are only installed while Xray is actually up and listening**, not
+  merely while the connection is set to be up. A router that is not asked to connect
+  automatically at power-on (autostart off) keeps whatever it was doing before a reboot only
+  through the Connect button; the redirect and the DNS override are removed rather than
+  installed for a tunnel that never starts, which used to break the LAN's own DNS and TCP
+  after a power cycle. `hh71vm-xray-fw arm` (at start) and the watchdog's own capture check
+  (afterwards, every ~90s of disagreement) are what install and remove them as reality
+  changes; the watchdog needs to stay enabled (it is, by default) for the second half of
+  that.
+- **"Connect automatically on router power on" together with a status page opened before the
+  first status poll could exec a second 34 MB Xray process alongside the one already
+  running**, on a board with no swap -- a plausible mechanism for a LuCI crash reported
+  alongside this fix (`[UNVERIFIED]`, not reproduced independently). The version string LuCI
+  shows is now written once by the launcher itself, right before it execs Xray, instead of
+  ever being re-derived by running the binary while it is already resident.
 
 ## Wi-Fi encryption on older images
 

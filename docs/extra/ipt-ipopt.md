@@ -33,3 +33,6 @@ IPv6 Hop Limit rewriting in `modem-extra-tools` uses.
 The userspace half — the `iptables` extensions that let you write `-j TTL --ttl-set 64` —
 comes from `iptables-mod-ipopt` in the same feed. Both halves are needed; installing only the
 kernel modules leaves `iptables` unable to parse the rule.
+
+Writing TTL/HL rules by hand instead of through `modem-extra-tools`? Both packages are still
+required — see [Rules without this package](modem-extra-tools.md#rules-without-this-package).

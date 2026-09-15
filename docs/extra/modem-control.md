@@ -56,6 +56,20 @@ ubus call hh71vm-modem status
 ubus call hh71vm-modem sms_list
 ```
 
+## Restart the modem (experimental)
+
+**Overview → Control → Restart modem.** Some settings changes on the Qualcomm side (an APN
+edit is the one reported so far) leave the modem's data session unreliable until it is fully
+power-cycled; an ordinary OpenWrt reboot only resets the Realtek side and does not touch the
+separate Qualcomm one. This button sends `AT+CFUN=1,1`, which asks the modem itself for a
+full reset, as the first thing to try short of a real power cycle.
+
+`[UNVERIFIED ON HARDWARE]`, added and reviewed offline: whether this actually clears a stuck
+APN or DNS session on this exact baseband, and how long the control channel takes to come
+back, have not been observed yet. Mobile data, calls and SMS are unavailable for a few
+minutes while it reconnects; the confirmation dialog says so. If it does not help, the
+existing recommendation stands — a full power cycle (disconnect power, wait, reconnect).
+
 ## Notes
 
 - The daemon owns the modem channel. Do not open a second AT, telnet or QMI session to the

@@ -36,6 +36,24 @@ modem-extra-tools ttl disable
 The rewriting itself is done by the netfilter `TTL` and `HL` targets, which come from
 [`kmod-hh71vm-ipt-ipopt`](ipt-ipopt.md) and are installed automatically as a dependency.
 
+### Choosing the value
+
+The default of 65 assumes the Qualcomm side of this router decrements TTL by one hop on its
+way to the mobile interface, the same way a second router behind this one would -- so 65
+arrives at the operator already looking like 64, an ordinary single device. That assumption
+is `[UNPROVEN]` on this port: one report (2026-09-14) had 65 flagged by the operator and 64
+accepted, on the same router. If your operator flags 65, try 64 (`modem-extra-tools ttl set
+64`) before assuming the feature does not work at all; either value is a one-command change
+and neither has been shown to be correct in general.
+
+### Rules without this package
+
+TTL/Hop Limit rewriting through the ordinary OpenWrt firewall (`iptables -t mangle ...`
+directly, or a `firewall.user`/`nftables` rule) needs the same two pieces this package
+installs for you: `opkg install iptables-mod-ipopt kmod-hh71vm-ipt-ipopt`. Without them
+`iptables` cannot parse `-j TTL --ttl-set`, and the failure looks like a missing module or a
+plain syntax error rather than naming what to install.
+
 ## LTE band selection
 
 Restricting the modem to particular LTE bands is useful when the nearest cell on one band is
