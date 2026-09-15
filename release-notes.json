@@ -4,6 +4,6 @@
     "Fix Xray's VPN-mode capture rules breaking the LAN's DNS and TCP after a reboot when the tunnel was not actually running (autostart off, a missing binary, a crash); rules now install only while Xray is really up and listening.",
     "Fix the Messages page showing \"could not be refreshed\" when an SMS arrives into an otherwise empty inbox; a message still being read from the modem is now shown as arriving, not as a failure.",
     "Fix the APN reconciler forcing a previous SIM's APN onto a different SIM, and stop force-correcting a PDP type the network narrows on its own; only a genuine APN or auth mismatch is corrected, at most once every ten minutes.",
-    "Add an experimental \"Restart modem\" button (Overview > Control) that asks the modem itself to fully reset, for when a settings change such as an APN edit otherwise needs a full power cycle to clear."
+    "Add a \"Restart modem\" button (Overview > Control) that parks and re-enables the radio for about 10 seconds, for when a settings change such as an APN edit otherwise needs a full power cycle to clear."
   ]
 }
