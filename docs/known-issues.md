@@ -67,10 +67,13 @@ or no networking. Report marker differences.
 - OpenWrt and `modem-extra-tools` do not remove a carrier, SIM, subsidy, or network lock.
   IMEI restoration, TTL normalization, LTE band preferences, SIM PIN handling, and carrier
   unlocking are separate operations. This project has no verified carrier-unlock method.
-- **Restarting the modem from the Overview page is experimental and unverified on
-  hardware.** It sends `AT+CFUN=1,1`; whether that clears a stuck APN/DNS session on this
-  exact baseband, and how long the control channel takes to come back, have not been
-  observed yet. See [modem control](extra/modem-control.md#restart-the-modem-experimental).
+- **Restarting the modem from the Overview page parks and re-enables the radio
+  (`AT+CFUN=0` then `AT+CFUN=1`), confirmed live 2026-09-15.** An earlier version sent
+  `AT+CFUN=1,1` (a full Qualcomm baseband reset) instead; that took the whole board down,
+  because the USB gadget that carries both the AT channel and `eth2` belongs to the
+  Qualcomm side, and the Realtek kernel does not survive that `eth2` disconnect. There is
+  still no confirmed way to reset just the Qualcomm baseband on this hardware short of an
+  actual power cycle. See [modem control](extra/modem-control.md#restart-the-modem).
 - **The APN reconciler now leaves a context alone once the SIM identity it was saved for no
   longer matches the card in the slot**, and no longer force-corrects a PDP-type-only
   difference (only APN and auth type are enforced). An entry saved before this change has no

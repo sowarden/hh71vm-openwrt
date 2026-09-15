@@ -138,12 +138,12 @@ return view.extend({
 						return m.checked(m.api.modemRestart(true)).then(function () {
 							ui.addNotification(null, E('p', {},
 								_('Restart requested. Mobile data, calls and SMS stop \
-working until the modem reconnects, which can take a few minutes.')), 'info');
+working for about 10 seconds while the radio comes back and reconnects.')), 'info');
 						});
-					}, _('Experimental, not yet verified on hardware. This asks the modem \
-itself to fully reset (AT+CFUN=1,1) -- not the OpenWrt side, which stays up throughout. \
-Mobile data, calls and SMS stop working until it reconnects, which can take a few \
-minutes. Continue?'))
+					}, _('Parks the modem radio and brings it back, the same recovery \
+the router already runs on its own for a few known modem quirks. The OpenWrt side is \
+not touched and stays up throughout. Mobile data, calls and SMS stop working for about \
+10 seconds while the radio reconnects. Continue?'))
 				])
 			]));
 

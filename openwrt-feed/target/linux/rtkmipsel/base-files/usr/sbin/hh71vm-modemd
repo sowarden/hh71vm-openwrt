@@ -3991,34 +3991,43 @@ function API.radio_set(cli, args)
 	end)
 end
 
---- Ask the Qualcomm baseband itself to reset -- AT+CFUN=1,1 is full functionality
---- with a silent reset, not the flight-mode toggle above. Several reports describe
---- the modem misbehaving after a settings change (an APN edit is the one seen so
---- far) until it is power-cycled, and a plain OpenWrt reboot only resets the
---- Realtek side; the separate Qualcomm one has no confirmed reset path of its own
---- (see docs/known-issues.md). This is the first thing to try short of asking for
---- an actual power cycle, which nothing on this side can do.
+--- Restart the modem's radio without touching the Realtek side. Several reports
+--- describe the modem misbehaving after a settings change (an APN edit is the one
+--- seen so far) until it is power-cycled.
 ---
---- [EXPERIMENTAL, UNVERIFIED ON HARDWARE]: written and reviewed offline while the
---- test router was deliberately bricked for unrelated work. Whether AT+CFUN=1,1
---- actually clears whatever a stuck APN or DNS session leaves behind on this exact
---- baseband, whether it answers OK before or after the reset, and how long the
---- control channel stays down are all unconfirmed. The modem is expected to drop
---- the channel either way, so the reply does not depend on the AT step's own
---- outcome: `confirm` is required instead, and M.drop()/M.next_try hand the actual
---- recovery to the same backoff-and-reconnect state machine that already handles a
---- channel going away for any other reason.
+--- [CONFIRMED ON HARDWARE, 2026-09-15]: this used to send AT+CFUN=1,1 (a full
+--- Qualcomm baseband reset). That takes the whole board down: the USB gadget that
+--- carries both this AT channel and eth2 belongs to the Qualcomm side, so resetting
+--- the baseband tears the gadget down, and the Realtek kernel does not survive that
+--- eth2 disconnect -- confirmed live as a full ~90s reboot of the Realtek SoC, not a
+--- modem-only reset. There is no confirmed way to reset just the Qualcomm baseband
+--- on this hardware short of an actual power cycle (see docs/known-issues.md).
+---
+--- What this does instead is the flight-mode bounce M.check_session() already uses
+--- to recover from an empty SIM slot: AT+CFUN=0 parks the radio while the USB link
+--- stays up, a pause the radio genuinely needs, then AT+CFUN=1 brings it back and
+--- the whole session setup runs again. The control channel never drops, so unlike
+--- the old path this does not hand off to M.drop()/M.next_try. The reply is sent as
+--- soon as AT+CFUN=0 is acknowledged -- the CFUN=1 bring-up and re-setup keep running
+--- in the background well past the RPC's own timeout budget, the same way the caller
+--- already has to poll `status`/`refresh` to see any other background state change.
 function API.modem_restart(cli, args)
 	if not args.confirm then return reply(cli, { error = "confirm required" }) end
 	run_for(cli, "modem_restart", {
-		{ cmd = "AT+CFUN=1,1", timeout = 20, tolerate = true },
+		{ cmd = "AT+CFUN=0", timeout = 25, tolerate = true },
 	}, function(ok, _, err)
-		S.modem_restart = { requested = os.time(), acknowledged = ok and true or false }
-		M.publish()
-		-- Force the reconnect now instead of waiting for the silence watchdog to
-		-- notice: there is nothing left on this channel worth keeping either way.
-		M.drop("modem restart requested")
-		M.next_try = 0
+		M.after(8, function()
+			M.enqueue(request("modem-restart-on", {
+				{ cmd = "AT+CFUN=1", timeout = 25, tolerate = true },
+			}, function(ok2, _, err2)
+				S.modem_restart = { requested = os.time(), acknowledged = ok and ok2 and true or false }
+				M.enqueue(setup_request())
+				if M.bg_static then M.enqueue(M.bg_static()) end
+				M.bg_due_fast, M.bg_due_slow = 0, 0
+				M.sms_sync_due = os.time() + 8
+				M.publish()
+			end))
+		end)
 		return { ok = true, acknowledged = ok and true or false, error = err }
 	end)
 end

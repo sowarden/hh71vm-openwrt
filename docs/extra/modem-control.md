@@ -56,19 +56,26 @@ ubus call hh71vm-modem status
 ubus call hh71vm-modem sms_list
 ```
 
-## Restart the modem (experimental)
+## Restart the modem
 
 **Overview → Control → Restart modem.** Some settings changes on the Qualcomm side (an APN
-edit is the one reported so far) leave the modem's data session unreliable until it is fully
-power-cycled; an ordinary OpenWrt reboot only resets the Realtek side and does not touch the
-separate Qualcomm one. This button sends `AT+CFUN=1,1`, which asks the modem itself for a
-full reset, as the first thing to try short of a real power cycle.
+edit is the one reported so far) leave the modem's data session unreliable until the radio
+is power-cycled. This button parks the radio and brings it back — `AT+CFUN=0`, a pause the
+radio genuinely needs, then `AT+CFUN=1` and a full session re-setup — the same recovery
+`hh71vm-modemd` already runs on its own when it finds an empty SIM slot after boot. Mobile
+data, calls and SMS are unavailable for about 10 seconds while the radio reconnects; the
+confirmation dialog says so.
 
-`[UNVERIFIED ON HARDWARE]`, added and reviewed offline: whether this actually clears a stuck
-APN or DNS session on this exact baseband, and how long the control channel takes to come
-back, have not been observed yet. Mobile data, calls and SMS are unavailable for a few
-minutes while it reconnects; the confirmation dialog says so. If it does not help, the
-existing recommendation stands — a full power cycle (disconnect power, wait, reconnect).
+An earlier version of this button sent `AT+CFUN=1,1`, a full Qualcomm baseband reset, as an
+attempt to get closer to an actual power cycle. **Confirmed live 2026-09-15: this takes the
+whole board down**, not just the modem. The Qualcomm half provides the USB gadget that
+carries both the AT control channel used here and `eth2` (the Realtek side's link to the
+modem); resetting the baseband tears that gadget down mid-flight, and the Realtek kernel
+does not survive the `eth2` disconnect — the board comes back roughly 90 seconds later
+having done a full boot, `hh71vm-modemd` included. So there is still no confirmed way to
+reset just the Qualcomm baseband on this hardware short of an actual power cycle
+(disconnect power, wait, reconnect) — if the radio bounce above does not help, that is the
+next step, same as before.
 
 ## Notes
 
