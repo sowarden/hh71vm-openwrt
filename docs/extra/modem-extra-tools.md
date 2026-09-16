@@ -65,10 +65,19 @@ and neither has been shown to be correct in general.
 ### Rules without this package
 
 TTL/Hop Limit rewriting through the ordinary OpenWrt firewall (`iptables -t mangle ...`
-directly, or a `firewall.user`/`nftables` rule) needs the same two pieces this package
-installs for you: `opkg install iptables-mod-ipopt kmod-hh71vm-ipt-ipopt`. Without them
-`iptables` cannot parse `-j TTL --ttl-set`, and the failure looks like a missing module or a
-plain syntax error rather than naming what to install.
+directly, or a `firewall.user`/`nftables` rule) needs the netfilter targets and the matching
+`iptables` extensions. **Both now ship in the image** — `iptables-mod-ipopt` and
+`kmod-hh71vm-ipt-ipopt`, about 18 KB together — so a hand-written rule works out of the box:
+
+```sh
+iptables -t mangle -A POSTROUTING -o eth2 -j TTL --ttl-set 64
+```
+
+They used to be feed-only, pulled in as a dependency of this package. That left anyone who
+wrote their own rules *without* installing `modem-extra-tools` facing
+`iptables: unknown option "--ttl-set"`, which names neither the missing piece nor the fix.
+Nothing can install a package on demand when `iptables` meets a target it does not know, so
+the only way for the rule to work unprompted is for the targets to be present already.
 
 ## LTE band selection
 

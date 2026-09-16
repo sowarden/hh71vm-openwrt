@@ -39,7 +39,11 @@ class TtlFailureHandlingTests(unittest.TestCase):
         self.assertNotIn("missing module or incompatible userspace", ttl)
         self.assertIn("rejected the TTL/HL rules: ", ttl)
         self.assertIn("' 2>' .. c.quote(report)", ttl)
-        self.assertIn("install iptables-mod-ipopt and kmod-ipt-ipopt", ttl)
+        # Name the package that actually exists: kmod-ipt-ipopt is not built for this
+        # target (lock.json pins it "n"), so the old wording sent anyone who hit this
+        # to an opkg install that could only fail.
+        self.assertIn("kmod-hh71vm-ipt-ipopt", ttl)
+        self.assertNotIn("and kmod-ipt-ipopt;", ttl)
 
     def test_a_failed_rollback_switches_the_feature_off(self):
         ttl = TTL.read_text(encoding="utf-8")

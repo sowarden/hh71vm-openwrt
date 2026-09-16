@@ -67,7 +67,8 @@ local function apply_family(command, chain, version, s, device)
     local detail=(c.read(report) or ''):match('^[^\n]*') or ''
     error(command .. ' rejected the TTL/HL rules: ' ..
       (detail~='' and detail or 'no diagnostic') ..
-      ' (install iptables-mod-ipopt and kmod-ipt-ipopt from the release feed)',0)
+      ' (needs iptables-mod-ipopt and kmod-hh71vm-ipt-ipopt; both ship in the image' ..
+      ' since 2026-09-16 -- on an older one, opkg install them from the release feed)',0)
   end
   if not active then c.exec(command .. ' -t mangle -X ' .. chain .. ' 2>/dev/null') end
 end

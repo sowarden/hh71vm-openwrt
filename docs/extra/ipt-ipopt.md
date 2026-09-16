@@ -1,14 +1,15 @@
 # IP option netfilter modules
 
 `kmod-hh71vm-ipt-ipopt` provides the netfilter targets and matches that upstream OpenWrt
-ships as `kmod-ipt-ipopt`. It is an optional package in the signed feed and is installed
-automatically as a dependency of [`modem-extra-tools`](modem-extra-tools.md). You do not
-normally install it by hand.
+ships as `kmod-ipt-ipopt`. **It ships in the image**, together with its userspace half
+`iptables-mod-ipopt` — about 18 KB for the pair — so there is nothing to install and
+`iptables -j TTL --ttl-set` works on a stock flash.
 
-```sh
-opkg update
-opkg install kmod-hh71vm-ipt-ipopt
-```
+It was feed-only until 2026-09-16, reaching a router only as a dependency of
+[`modem-extra-tools`](modem-extra-tools.md). Anyone writing TTL rules by hand without that
+package got `iptables: unknown option "--ttl-set"` instead, and opkg has no way to install a
+package on demand when `iptables` meets a target it does not recognise — so being present
+already is the only thing that makes the rule work unprompted.
 
 It declares `PROVIDES:=kmod-ipt-ipopt`, so anything that depends on the upstream name is
 satisfied by it.
