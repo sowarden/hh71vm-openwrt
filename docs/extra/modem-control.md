@@ -66,6 +66,10 @@ radio genuinely needs, then `AT+CFUN=1` and a full session re-setup — the same
 data, calls and SMS are unavailable for about 10 seconds while the radio reconnects; the
 confirmation dialog says so.
 
+**Verified live 2026-09-16.** The router's own uptime ran straight through the bounce with no
+gap, the AT control channel never dropped, the session re-setup and the scheduled message-store
+resync both ran afterwards, and the modem came back to `cfun 1` with the data path up.
+
 An earlier version of this button sent `AT+CFUN=1,1`, a full Qualcomm baseband reset, as an
 attempt to get closer to an actual power cycle. **Confirmed live 2026-09-15: this takes the
 whole board down**, not just the modem. The Qualcomm half provides the USB gadget that
