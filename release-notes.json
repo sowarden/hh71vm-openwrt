@@ -1,13 +1,12 @@
 {
   "schema": 1,
   "changes": [
-    "Fix Xray's VPN-mode capture rules breaking the LAN's DNS and TCP after a reboot when the tunnel was not actually running (autostart off, a missing binary, a crash); rules now install only while Xray is really up and listening.",
-    "Fix the Messages page showing \"could not be refreshed\" when an SMS arrives into an otherwise empty inbox; a message still being read from the modem is now shown as arriving, not as a failure.",
-    "Fix the APN reconciler forcing a previous SIM's APN onto a different SIM, and stop force-correcting a PDP type the network narrows on its own; only a genuine APN or auth mismatch is corrected, at most once every ten minutes.",
-    "Add a \"Restart modem\" button (Overview > Control) that parks and re-enables the radio for about 10 seconds, for when a settings change such as an APN edit otherwise needs a full power cycle to clear.",
-    "Fix the TTL Fix losing its rules after a power cycle or a firewall reload while still reading as enabled, which left no internet until it was toggled off and on by hand; the rules are now reconciled once a minute.",
-    "Fix Xray's LAN redirect being left installed when the tunnel is not listening and an interface event runs the restore path, which broke the LAN's TCP while ping kept working.",
-    "Fix the Xray version cache never taking effect while the service is stopped, which re-ran the 34 MB binary on every status poll.",
-    "Ship the IP option netfilter targets in the image (iptables-mod-ipopt, kmod-hh71vm-ipt-ipopt, about 18 KB), so a hand-written `iptables -j TTL --ttl-set` rule works without installing anything first."
+    "Fix the TTL Fix quietly losing its rules after a power cycle or a firewall reload while still reading as enabled, which left no internet until it was switched off and on by hand.",
+    "The IP option netfilter targets now ship in the image, so a hand-written iptables -j TTL --ttl-set rule works without installing anything first.",
+    "Fix Xray's VPN rules breaking the LAN's DNS and TCP after a reboot when the tunnel was not actually running; they are now installed only while Xray is really up and listening.",
+    "Fix the Messages page showing \"could not be refreshed\" when an SMS arrives into an otherwise empty inbox; a message still being read is now shown as arriving, not as a failure.",
+    "Fix the APN reconciler forcing a previous SIM's APN onto a different SIM; only a genuine APN or auth mismatch is corrected now, and at most once every ten minutes.",
+    "Add a \"Restart modem\" button (Overview > Control) that parks and re-enables the radio for about 10 seconds, for when a settings change otherwise needs a full power cycle.",
+    "Xray's status page no longer re-runs the 34 MB binary just to read its version, which on this board could exhaust RAM alongside Xray's own startup."
   ]
 }
