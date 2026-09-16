@@ -22,8 +22,24 @@ IP time-to-live has already been decremented. Setting a fixed TTL on traffic lea
 mobile interface removes that signal.
 
 The setting is persistent: it is reapplied by a hotplug handler whenever the mobile interface
-comes up, it is preserved across `sysupgrade`, and it is removed cleanly when the package is
-removed.
+comes up, by the firewall include on every `fw3` reload, and by a reconciler that checks once
+a minute that the rules are still in the kernel. It is preserved across `sysupgrade`, and it
+is removed cleanly when the package is removed.
+
+The reconciler is what makes it reliable rather than merely persistent. The two event-driven
+paths can both miss: the mobile `wan` is `proto static` on `eth2`, so it comes up once per
+boot however often the data session behind it drops and returns, and any `fw3` reload after
+that flushes `mangle POSTROUTING` — taking the jump with it — and re-runs the include at a
+moment the WAN device may not yet resolve. Before the reconciler existed, either miss left
+the fix reading as enabled with no rule behind it, and the only way back was switching it off
+and on by hand.
+
+To check or force it:
+
+```sh
+modem-extra-tools ttl show       # ipv4_active / ipv6_active are the kernel's answer
+modem-extra-tools ttl reconcile  # reapply now if the rules are missing
+```
 
 ```sh
 modem-extra-tools ttl show

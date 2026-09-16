@@ -10,5 +10,17 @@ while :; do
             logger -t modem-extra-tools "$result"
         fi
     fi
+    # The TTL rules are installed by two one-shot events -- the fw3 include and `ifup`
+    # of the mobile WAN -- and both can miss: `wan` is proto static on eth2, so it comes
+    # up once per boot however often the data session behind it drops, and any later fw3
+    # reload flushes mangle POSTROUTING and re-runs the include at a moment the WAN
+    # device may not resolve. Without this the fix reads enabled with no rule behind it
+    # until the user toggles it by hand, which is the reported symptom. Quiet when there
+    # is nothing to do: reconcile only reports changed=true when it actually reapplied.
+    result=$(/usr/sbin/modem-extra-tools ttl reconcile --json 2>&1)
+    status=$?
+    if [ "$status" != 0 ] || printf '%s' "$result" | grep -q '"changed":true'; then
+        logger -t modem-extra-tools "$result"
+    fi
     sleep 60
 done

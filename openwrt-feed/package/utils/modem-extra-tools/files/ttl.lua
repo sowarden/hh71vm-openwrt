@@ -71,12 +71,43 @@ local function apply_family(command, chain, version, s, device)
   end
   if not active then c.exec(command .. ' -t mangle -X ' .. chain .. ' 2>/dev/null') end
 end
-function T.apply(s)
+-- Remove our own rules without touching the saved setting. Used when the mobile WAN
+-- has no L3 device yet: a rule pinned to a device that is not there is worse than no
+-- rule, and leaving whatever the previous device was named behind is worse still.
+local function take_down(s)
+  local off={}; for key,value in pairs(s) do off[key]=value end; off.enabled=false
+  apply_family('iptables','MET_TTL',4,off,nil)
+  apply_family('ip6tables','MET_HL',6,off,nil)
+end
+--- `deferrable` is for the callers that run on their own schedule rather than because
+--- the user asked for something right now -- the fw3 include and the reconciler. For
+--- them a mobile WAN with no L3 device is the ordinary state, not an error: at boot
+--- fw3 starts long before the Qualcomm side has enumerated its RNDIS gadget, and any
+--- fw3 reload afterwards (a firewall save, Xray installing or removing its own rules)
+--- re-runs the include at whatever moment it happens to land in.
+---
+--- It used to throw there, which left the rules simply absent with the saved setting
+--- still reading enabled -- the TTL Fix showing as on in LuCI while nothing was
+--- rewriting anything, until the user toggled it off and on again by hand. That is
+--- the reported symptom (2026-09-12..14: no internet after a power cycle, fixed by
+--- disabling and re-enabling the TTL Fix). Returns false instead, having taken our
+--- own rules down, and T.reconcile() puts them back when the device appears.
+function T.apply(s,deferrable)
   T.validate(s)
   if s.enabled then c.need(not T.offload(),'disable firewall flow offloading before enabling TTL Fix') end
-  local device=s.enabled and T.device(s.wan_network) or nil
+  local device=nil
+  if s.enabled then
+    local found,result=pcall(T.device,s.wan_network)
+    if not found then
+      if not deferrable then error(tostring(result),0) end
+      take_down(s)
+      return false,tostring(result)
+    end
+    device=result
+  end
   apply_family('iptables','MET_TTL',4,s,device)
   apply_family('ip6tables','MET_HL',6,s,device)
+  return true
 end
 function T.save(s)
   local u=uci.cursor()
@@ -94,7 +125,12 @@ function T.change(s)
   if s.enabled then c.need(not T.offload(),'disable firewall flow offloading before enabling TTL Fix') end
   local ok,err=pcall(function() T.apply(s); T.save(s) end)
   if not ok then
-    local restored=pcall(function() T.apply(old); T.save(old) end)
+    -- Roll back deferrably: if the previous settings had the fix on and the mobile WAN
+    -- is simply not up at this instant, that is not a reason to rewrite the user's
+    -- choice. Keep it saved, leave no rules behind, and let T.reconcile() install them
+    -- when the device appears -- switching the feature off here used to turn a
+    -- momentary "WAN is down" into a silently disabled TTL Fix.
+    local restored=pcall(function() T.apply(old,true); T.save(old) end)
     if restored then error(tostring(err) .. '; previous settings restored',0) end
     -- Rolling back into a state the board cannot reapply turns one failure into a permanent
     -- one: every later save, and every firewall reload, retries the same broken rules and
@@ -106,20 +142,46 @@ function T.change(s)
   end
   return T.status()
 end
+local function family_active(command,chain,target,value,device)
+  if not device then return false end
+  local jump=output(command .. ' -t mangle -S POSTROUTING 2>/dev/null')
+  local rules=output(command .. ' -t mangle -S ' .. chain .. ' 2>/dev/null')
+  return jump:find('-A POSTROUTING -j ' .. chain .. '\n',1,true)~=nil
+    and rules:find('-A ' .. chain .. ' -o ' .. device .. ' -j ' .. target .. value .. '\n',1,true)~=nil
+end
 function T.status()
   local s=T.config(); s.ok=true
   s.flow_offload_detected=T.offload()
   local ok,device=pcall(T.device,s.wan_network)
-  if ok then s.wan_device=device else s.warning=device end
-  local function active(command,chain,target,value)
-    if not ok then return false end
-    local jump=output(command .. ' -t mangle -S POSTROUTING 2>/dev/null')
-    local rules=output(command .. ' -t mangle -S ' .. chain .. ' 2>/dev/null')
-    return jump:find('-A POSTROUTING -j ' .. chain .. '\n',1,true)~=nil
-      and rules:find('-A ' .. chain .. ' -o ' .. device .. ' -j ' .. target .. value .. '\n',1,true)~=nil
-  end
-  s.ipv4_active=active('iptables','MET_TTL','TTL --ttl-set ',s.ipv4_value)
-  s.ipv6_active=active('ip6tables','MET_HL','HL --hl-set ',s.ipv6_value)
+  if ok then s.wan_device=device else s.warning=device; device=nil end
+  s.ipv4_active=family_active('iptables','MET_TTL','TTL --ttl-set ',s.ipv4_value,device)
+  s.ipv6_active=family_active('ip6tables','MET_HL','HL --hl-set ',s.ipv6_value,device)
   return s
+end
+--- Put the rules back if the saved setting says they should be there and they are not.
+---
+--- Nothing else on this board converges them. The rules are installed from exactly two
+--- events -- the fw3 include, and `ifup` of the mobile WAN -- and both are one-shots
+--- that can miss: `wan` is `proto static` on eth2, so netifd raises it once when the
+--- RNDIS gadget enumerates and never again, however often the data session behind it
+--- drops and returns; and any fw3 reload after that point flushes mangle POSTROUTING,
+--- taking our jump with it, and re-runs the include at a moment the WAN device may not
+--- be resolvable. Either miss left the TTL Fix reading enabled with no rule behind it
+--- until the user toggled it by hand. Called once a minute from `maintain`.
+---
+--- Deliberately cheap when there is nothing to do: two `-S` reads per family and no
+--- iptables-save, so the offload scan only happens on the path that actually applies.
+function T.reconcile()
+  local s=T.config()
+  if not s.enabled then return {ok=true,enabled=false,changed=false} end
+  local found,device=pcall(T.device,s.wan_network)
+  if found and family_active('iptables','MET_TTL','TTL --ttl-set ',s.ipv4_value,device)
+    and (not s.ipv6_enabled
+      or family_active('ip6tables','MET_HL','HL --hl-set ',s.ipv6_value,device)) then
+    return {ok=true,enabled=true,changed=false}
+  end
+  local applied,why=T.apply(s,true)
+  return {ok=true,enabled=true,changed=applied and true or false,
+    deferred=(not applied) or nil,reason=why}
 end
 return T

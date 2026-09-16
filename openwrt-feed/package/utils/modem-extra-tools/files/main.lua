@@ -21,7 +21,15 @@ local function main()
       if command=='firewall' then
         c.need(not sub or sub=='disable','unexpected firewall argument')
         if sub=='disable' then state.enabled=false end
-        t.apply(state); return {ok=true}
+        -- Deferrable: fw3 runs this include at boot, long before the Qualcomm side has
+        -- enumerated its RNDIS gadget, and again on every later reload whenever one
+        -- happens to land. A WAN with no L3 device yet is not a failure here.
+        local applied,why=t.apply(state,true)
+        return {ok=true,applied=applied and true or false,
+          deferred=(not applied) or nil,reason=why}
+      end
+      if sub=='reconcile' then
+        c.need(#arguments==2,'usage: ttl reconcile'); return t.reconcile()
       end
       if sub=='disable' then
         c.need(#arguments==2,'usage: ttl disable'); state.enabled=false
@@ -57,7 +65,7 @@ local function main()
     c.need(#arguments<=2 and not imei_confirmation,'unexpected IMEI argument')
     return require('imei').execute(sub)
   end
-  error('Usage:\n  modem-extra-tools status [--json]\n  modem-extra-tools ttl show|disable\n  modem-extra-tools ttl set IPV4 [IPV6|off] [MOBILE_WAN_NETWORK]\n  modem-extra-tools bands show|backup\n  modem-extra-tools bands set 3,7\n  modem-extra-tools bands restore|undo|recover\n  modem-extra-tools imei show|recover\n  modem-extra-tools imei restore 15_DIGIT_ORIGINAL_IMEI --confirm-original-imei',0)
+  error('Usage:\n  modem-extra-tools status [--json]\n  modem-extra-tools ttl show|disable|reconcile\n  modem-extra-tools ttl set IPV4 [IPV6|off] [MOBILE_WAN_NETWORK]\n  modem-extra-tools bands show|backup\n  modem-extra-tools bands set 3,7\n  modem-extra-tools bands restore|undo|recover\n  modem-extra-tools imei show|recover\n  modem-extra-tools imei restore 15_DIGIT_ORIGINAL_IMEI --confirm-original-imei',0)
 end
 local ok,result=pcall(main)
 if not ok then result={ok=false,error=tostring(result)} end

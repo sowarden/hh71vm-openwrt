@@ -101,6 +101,80 @@ test(T.validate({ipv4_value=65,ipv6_value=66,wan_network='wan_6'}).ipv4_value==6
 for _,name in ipairs({'wan;reboot','wan.x','',string.rep('x',33)}) do
   test(not pcall(T.validate,{ipv4_value=65,ipv6_value=65,wan_network=name}),'reject WAN name')
 end
+
+-- TTL rule convergence. Reported 2026-09-12..14: after a power cycle there was no
+-- internet until the TTL Fix was switched off and back on by hand -- the saved setting
+-- read enabled while nothing was rewriting anything. The rules are installed only by
+-- the fw3 include and by `ifup` of the mobile WAN, and both can run while that WAN has
+-- no L3 device yet, which used to throw and leave exactly that state. What is asserted
+-- here is the decision, not an iptables simulation: a scheduled caller defers instead
+-- of failing, never rewrites the user's setting, and reconcile is what converges.
+local jsonc,uci_mock=require 'luci.jsonc',require 'uci'
+local ttl_uci,wan_up,ttl_applied={},true,0
+jsonc.parse=function(text) return text~='' and {l3_device='eth2'} or nil end
+uci_mock.cursor=function() return {
+  get=function(_,_,section,key)
+    if section~='ttl' then return nil end
+    if not key then return 'ttl' end
+    return ttl_uci[key]
+  end,
+  set=function(_,_,_,key,value) ttl_uci[key]=value; return true end,
+  section=function(_,_,_,name) return name end,
+  commit=function() return true end,
+  foreach=function() end,
+} end
+local real_popen,real_exec=io.popen,c.exec
+c.exec=function(command)
+  if command:find('-restore',1,true) then ttl_applied=ttl_applied+1 end
+  return true
+end
+io.popen=function(command)
+  local text=''
+  if command:find('ubus call',1,true) then text=wan_up and '{"l3_device":"eth2"}' or '' end
+  return {read=function() return text end,close=function() end}
+end
+local function ttl_reset(enabled)
+  ttl_uci={enabled=enabled and '1' or '0',ipv4_value='65',ipv6_enabled='0',
+    ipv6_value='65',wan_network='wan'}
+  wan_up=true; ttl_applied=0
+end
+
+ttl_reset(true); wan_up=false
+test(T.apply(T.config(),true)==false,'a scheduled apply defers a WAN with no L3 device')
+test(ttl_uci.enabled=='1','a deferred apply never rewrites the saved setting')
+rejects(function() T.apply(T.config()) end,'WAN network is down')
+
+ttl_reset(true); wan_up=false
+local deferred=T.reconcile()
+test(deferred.changed==false and deferred.deferred,'reconcile defers while the WAN is down')
+test(ttl_uci.enabled=='1','a deferred reconcile leaves the fix enabled')
+
+ttl_reset(true)
+test(T.reconcile().changed,'reconcile reinstalls rules a firewall reload took away')
+test(ttl_applied>0,'reconcile actually reached iptables-restore')
+
+ttl_reset(true)
+-- Nothing to do is the common case, once a minute: it must not rewrite the ruleset.
+io.popen=function(command)
+  local text=''
+  if command:find('ubus call',1,true) then text=wan_up and '{"l3_device":"eth2"}' or ''
+  elseif command:find('-S POSTROUTING',1,true) then text='-A POSTROUTING -j MET_TTL\n'
+  elseif command:find('-S MET_TTL',1,true) then text='-A MET_TTL -o eth2 -j TTL --ttl-set 65\n' end
+  return {read=function() return text end,close=function() end}
+end
+test(T.reconcile().changed==false and ttl_applied==0,'reconcile is a no-op when the rules are already there')
+
+ttl_reset(false)
+test(T.reconcile().enabled==false,'reconcile does nothing while the fix is off')
+
+-- The interactive path must keep the user's choice when the only fault is a WAN that
+-- is momentarily down: rolling back to "off" turned that into a silently disabled fix.
+ttl_reset(true); wan_up=false
+rejects(function() T.change({enabled=true,ipv4_value=64,ipv6_enabled=false,
+  ipv6_value=65,wan_network='wan'}) end,'WAN network is down')
+test(ttl_uci.enabled=='1','a failed change never switches the TTL Fix off by itself')
+
+io.popen=real_popen; c.exec=real_exec; uci_mock.cursor=nil
 test(B.cached().unread and opens==0 and #B.cached().supported_bands==0,'cached status does not invent capabilities')
 local shown=B.execute('show')
 test(shown.editable and writes==0,'band read is write-free')
