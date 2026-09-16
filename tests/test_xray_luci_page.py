@@ -317,6 +317,19 @@ class BackendContractTests(unittest.TestCase):
         self.assertIn("do_up", arm)
         self.assertRegex(FW, r"arm\)\s+do_arm ;;")
 
+    def test_restore_takes_the_capture_rules_down_when_xray_is_not_listening(self):
+        # restore runs from two callers, and only one of them is a fw3 reload that has
+        # already flushed our chains. The other is /etc/hotplug.d/iface/95-xray, where
+        # nothing has been flushed: releasing only the resolver there leaves the nat
+        # REDIRECT into a closed port installed, which is LAN TCP dead while ping still
+        # works -- the same fail-closed state the listening check exists to prevent.
+        restore = FW.split("do_restore() {", 1)[1].split("\ndo_arm() {", 1)[0]
+        not_listening = restore.split('port_listening "$REDIR_PORT"', 1)[1] \
+            .split("else", 1)[1]
+        self.assertIn("do_down_quiet", not_listening)
+        self.assertIn("hh71vm-xray-fw restore", (XRAY / "files/xray.hotplug")
+                      .read_text(encoding="utf-8"))
+
     def test_the_watchdog_removes_capture_rules_when_xray_is_not_actually_up(self):
         # The backstop for everything hh71vm-xray-fw arm does not cover: a crash
         # mid-connection, a firmware upgrade that dropped the binary, the share
@@ -637,7 +650,7 @@ class StatusPollEfficiencyTests(unittest.TestCase):
         cached_version = self.ctl.split("local function cached_version(bin)", 1)[1] \
             .split("\nlocal function service_status", 1)[0]
         self.assertIn("if X.pid() then", cached_version)
-        self.assertIn('X.readfile("/var/run/xray.version")', cached_version)
+        self.assertIn("X.readfile(VERSION_LIVE)", cached_version)
         pid_branch = cached_version.split("if X.pid() then", 1)[1].split(
             "nixio.fs.stat(bin", 1)[0]
         self.assertIn("return", pid_branch, "the pid branch must return, not fall through")
@@ -645,10 +658,27 @@ class StatusPollEfficiencyTests(unittest.TestCase):
         launcher = (XRAY / "files/hh71vm-xray").read_text(encoding="utf-8")
         do_run = launcher.split("do_run() {", 1)[1].split("\n}", 1)[0]
         self.assertIn('"$path" version', do_run)
-        self.assertIn("/var/run/xray.version", do_run)
+        live = re.search(r'^local VERSION_LIVE = "([^"]+)"', self.ctl, re.M)
+        self.assertTrue(live, "hh71vm-xrayctl must name the launcher's version file")
+        self.assertIn(live.group(1), do_run)
         # written before Xray itself runs, not after - the file has to be usable
         # the very first time anything asks while Xray is up
         self.assertLess(do_run.index('"$path" version'), do_run.index('exec "$path" run'))
+
+    def test_the_launcher_and_the_cold_cache_do_not_share_one_file(self):
+        # They write incompatible formats: the launcher a bare version line, the cold
+        # path "key\nversion" keyed on the binary's path, size and mtime. Pointed at
+        # one file they overwrite each other, so the cold cache can never hit and every
+        # status poll taken while Xray is stopped re-runs the 34 MB binary - which is
+        # the autostart-off case the exec was most expensive in, and the one the crash
+        # was reported from (2026-09-14).
+        live = re.search(r'^local VERSION_LIVE = "([^"]+)"', self.ctl, re.M)
+        cache = re.search(r'^local VERSION_CACHE = "([^"]+)"', self.ctl, re.M)
+        self.assertTrue(live and cache, "both version files must be named")
+        self.assertNotEqual(live.group(1), cache.group(1))
+        launcher = (XRAY / "files/hh71vm-xray").read_text(encoding="utf-8")
+        self.assertNotIn(cache.group(1), launcher,
+                         "the launcher must never write the keyed cold cache")
 
     def test_listening_ports_are_checked_from_one_proc_net_snapshot(self):
         self.assertIn("function M.listening_many(ports)", LIB)

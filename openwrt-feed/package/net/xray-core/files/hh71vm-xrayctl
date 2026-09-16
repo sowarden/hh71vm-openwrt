@@ -31,7 +31,15 @@ local nixio = require "nixio"
 local X = require "hh71vm.xray"
 
 local JOBFILE = "/var/run/xray.job.json"
-local VERSION_CACHE = "/var/run/xray.version"
+-- Two writers, two files, deliberately. VERSION_CACHE is this script's own cold cache
+-- and is keyed on the binary's path, size and mtime; VERSION_LIVE is written by
+-- hh71vm-xray as a bare version line, right before it execs the binary. Sharing one
+-- path between them defeated both: the launcher's bare line never matches the keyed
+-- format, so every poll taken while Xray was stopped re-ran the 34 MB binary and
+-- rewrote the file, which the next start then overwrote again -- the cold cache could
+-- never hit, which is the one case (autostart off) the exec was most expensive in.
+local VERSION_CACHE = "/var/run/xray.version.cache"
+local VERSION_LIVE = "/var/run/xray.version"
 
 local function out(t)
 	io.write(json.stringify(t), "\n")
@@ -63,7 +71,7 @@ end
 --- was also starting.
 local function cached_version(bin)
 	if X.pid() then
-		local v = X.trim(X.readfile("/var/run/xray.version") or "")
+		local v = X.trim(X.readfile(VERSION_LIVE) or "")
 		return (v ~= "") and v or nil
 	end
 	local size = nixio.fs.stat(bin, "size")

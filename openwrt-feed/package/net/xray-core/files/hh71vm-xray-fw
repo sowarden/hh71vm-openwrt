@@ -420,7 +420,14 @@ do_restore() {
 	if port_listening "$REDIR_PORT"; then
 		do_up >/dev/null
 	else
-		dns_release
+		# Not just dns_release: this runs from the iface hotplug too, and nothing has
+		# flushed anything on that path. Releasing only the resolver would leave the
+		# nat REDIRECT into a closed port installed -- the LAN's TCP dead while ping
+		# keeps working, which is the exact fail-closed behaviour this whole change
+		# exists to remove. Taking our own rules down is always the safe state: `arm`,
+		# the watchdog and the next reload all reinstall them the moment Xray is
+		# really listening.
+		do_down_quiet
 	fi
 }
 
