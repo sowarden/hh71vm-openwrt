@@ -20,6 +20,11 @@
 	var root = document.documentElement;
 	var HH = window.HH71 = {};
 
+	/* LuCI's own translation function (cbi.js, loaded on every page), so the theme's
+	   words follow the interface language like everything else.  Called as a literal
+	   _('...') so the i18n scanner finds the strings. */
+	var _ = (typeof window._ === 'function') ? window._ : function (s) { return s; };
+
 	var SVG = 'http://www.w3.org/2000/svg';
 
 	/* Feather-style 24x24 stroke icons.  Inline SVG rather than a font or images:
@@ -84,6 +89,8 @@
 
 	function setTheme(t, remember) {
 		root.setAttribute('data-theme', t);
+		var meta = document.querySelector('meta[name="theme-color"]');
+		if (meta) meta.setAttribute('content', t === 'dark' ? '#111720' : '#ffffff');
 		if (remember) { try { localStorage.setItem('hh71vm-theme', t); } catch (e) {} }
 		var b = document.getElementById('theme-toggle');
 		if (b) {
@@ -305,39 +312,41 @@
 		return ok;
 	};
 
-	var toastTimer = null;
-	HH.toast = function (msg) {
-		var e = document.querySelector('.toast');
-		if (!e) {
-			e = document.createElement('div');
-			e.className = 'toast';
-			e.setAttribute('role', 'status');
-			document.body.appendChild(e);
-		}
-		e.textContent = msg;
-		clearTimeout(toastTimer);
-		toastTimer = setTimeout(function () { e.remove(); }, 1800);
-	};
+	/* Copy feedback used to be a toast of its own -- the only message in the whole
+	   interface that did not look, sit or behave like every other result.  Go through
+	   LuCI's own notification API instead, exactly as the pages do, and hand it to
+	   collectNotifications() at once so it lands in the shared tray without waiting
+	   for the observer to notice the insertion. */
+	function notify(msg, kind) {
+		if (!window.L || !L.require) return;
+		L.require('ui').then(function (ui) {
+			ui.addNotification(null, el('p', {}, msg), kind);
+			collectNotifications();
+		});
+	}
 
 	HH.copyButton = function (getValue) {
-		var b = el('button', { 'type': 'button', 'class': 'copy-btn', 'title': 'Copy',
-		                       'aria-label': 'Copy' }, icon('copy'));
+		var b = el('button', { 'type': 'button', 'class': 'copy-btn', 'title': _('Copy'),
+		                       'aria-label': _('Copy') }, icon('copy'));
 		b.addEventListener('click', function (ev) {
 			ev.preventDefault();
 			ev.stopPropagation();
 			var v = getValue();
 			if (!v) return;
-			if (HH.copy(v)) {
-				b.classList.add('done');
-				b.textContent = '';
-				b.appendChild(icon('check'));
-				HH.toast('Copied: ' + (v.length > 42 ? v.slice(0, 42) + '…' : v));
-				setTimeout(function () {
-					b.classList.remove('done');
-					b.textContent = '';
-					b.appendChild(icon('copy'));
-				}, 1400);
+			/* the textarea path can fail silently; say so instead of doing nothing */
+			if (!HH.copy(v)) {
+				notify(_('Copy failed: select the text and copy it by hand'), 'warning');
+				return;
 			}
+			b.classList.add('done');
+			b.textContent = '';
+			b.appendChild(icon('check'));
+			notify(_('Copied: ') + (v.length > 42 ? v.slice(0, 42) + '…' : v), 'info');
+			setTimeout(function () {
+				b.classList.remove('done');
+				b.textContent = '';
+				b.appendChild(icon('copy'));
+			}, 1400);
 		});
 		return b;
 	};
@@ -395,6 +404,33 @@
 		}
 	}
 
+	/* ------------------------------------------ dropdowns in scroll boxes */
+
+	/* Below 980px every table sits in a scroll box, and below 720px so does every card.
+	   A box that scrolls on one axis clips on both, and LuCI's dropdown list is
+	   absolutely positioned inside it -- on a phone or a tablet the list was cut off at
+	   the edge of the card.  While a dropdown is open, the boxes around it stop
+	   clipping; they go back to scrolling when it closes. */
+	var UNCLIP = 'hh-unclip',
+	    CLIPPERS = '.hh-tablewrap, .cbi-section, .cbi-map, .panel, .hh-dash-col > .cbi-section > div';
+
+	function syncUnclip() {
+		var marked = document.querySelectorAll('.' + UNCLIP);
+		for (var i = 0; i < marked.length; i++)
+			if (!marked[i].querySelector('.cbi-dropdown[open]'))
+				marked[i].classList.remove(UNCLIP);
+		var open = document.querySelectorAll('#maincontent .cbi-dropdown[open]');
+		for (var j = 0; j < open.length; j++)
+			for (var p = open[j].parentElement; p && p.id !== 'maincontent'; p = p.parentElement)
+				if (p.matches && p.matches(CLIPPERS)) p.classList.add(UNCLIP);
+	}
+
+	function watchDropdowns() {
+		if (!window.MutationObserver) return;
+		new MutationObserver(syncUnclip).observe(document.body,
+			{ attributes: true, subtree: true, attributeFilter: ['open'] });
+	}
+
 	/* ------------------------------------------------------- tab strips */
 
 	/* Below the phone breakpoint a tab strip is one scrolling row rather than several
@@ -425,9 +461,21 @@
 	   leaves a success or failure several screens away from the action that caused
 	   it. Move only LuCI's dynamic, inline-flex notifications into a fixed tray;
 	   ordinary alert cards in page content keep their document position. */
+	/* A problem stays until it is dismissed: an error that fades after ten seconds
+	   ("Firmware upgrade failed", a rejected save) is easy to miss entirely.  Only
+	   confirmations time out. */
+	function isProblem(item) {
+		return item.classList.contains('error') || item.classList.contains('danger') ||
+		       item.classList.contains('warning');
+	}
+
 	function armNotification(item) {
 		if (item.getAttribute('data-hh-timer')) return;
 		item.setAttribute('data-hh-timer', '1');
+		if (isProblem(item)) {
+			item.setAttribute('role', 'alert');
+			return;
+		}
 
 		var remaining = 10000, started = 0, timer = null;
 		var hovered = false, focused = false, touched = false;
@@ -445,7 +493,11 @@
 		}
 		function dismiss() {
 			cleanup();
-			var button = item.querySelector('.btn');
+			/* ui.addNotification() puts the caller's content first and its own Dismiss
+			   button in the last child, so the first .btn in the item can be an action
+			   button of the message itself -- which must never be pressed by a timer. */
+			var last = item.lastElementChild,
+			    button = last ? last.querySelector('.btn') : null;
 			if (button) button.click();
 			else if (item.parentNode) item.parentNode.removeChild(item);
 		}
@@ -493,13 +545,39 @@
 				tray = document.getElementById('hh-notifications');
 				if (!tray) {
 					tray = el('div', { 'id': 'hh-notifications', 'role': 'region',
-					                       'aria-label': 'Notifications' });
+					                       'aria-live': 'polite',
+					                       'aria-label': _('Notifications') });
 					document.body.appendChild(tray);
 				}
 			}
 			tray.appendChild(list[i]);
 			armNotification(list[i]);
 		}
+	}
+
+	/* ------------------------------------------------------- dashboard */
+
+	/* The status dashboard's cards are dealt into two stacks once, in page order (first
+	   card left, second right, and so on), and stay there.  CSS multi-column flow
+	   rebalanced on every height change, and these cards change height on every poll,
+	   so a card could jump to the other column while it was being read.  Each card
+	   also keeps its page position as `order`, for the one-column layout. */
+	function dashboardColumns() {
+		if (document.body.getAttribute('data-page') !== 'admin-status-overview') return;
+		var view = document.getElementById('view');
+		if (!view || view.classList.contains('hh-dash')) return;
+		var cards = Array.prototype.filter.call(view.children, function (c) {
+			return c.classList.contains('cbi-section');
+		});
+		if (!cards.length) return;
+		var cols = [ el('div', { 'class': 'hh-dash-col' }), el('div', { 'class': 'hh-dash-col' }) ];
+		cards.forEach(function (c, i) {
+			c.style.order = String(i);
+			cols[i % 2].appendChild(c);
+		});
+		view.appendChild(cols[0]);
+		view.appendChild(cols[1]);
+		view.classList.add('hh-dash');
 	}
 
 	// Any element carrying data-copy gets a discreet button; the value copied is the
@@ -515,6 +593,7 @@
 				}));
 			})(list[i]);
 		}
+		dashboardColumns();
 		zoneDots(scope);
 		wrapTables(scope);
 		revealActiveTab(scope);
@@ -569,14 +648,17 @@
 		var out = [];
 
 		if (link.state !== 'ready') {
+			/* A short sentence in the bar on every page; the daemon's own wording
+			   ("bring-up deadline: 45s in stage clean") is kept for the tooltip. */
 			if (bar) out.push(chip([
 				el('span', { 'class': 'tech off' }, String(link.state || 'down').toUpperCase()),
-				el('b', {}, link.error || 'modem channel unavailable')
-			], 'warnpill'));
+				el('b', {}, link.state === 'connecting' ? _('Connecting to the modem…')
+				                                        : _('Modem not reachable'))
+			], 'warnpill', link.error || _('modem channel unavailable')));
 		} else if (radio.on === false) {
 			if (bar) out.push(chip([
-				el('span', { 'class': 'tech off' }, 'OFF'),
-				el('b', {}, 'Radio disabled')
+				el('span', { 'class': 'tech off' }, _('OFF')),
+				el('b', {}, _('Radio disabled'))
 			], 'warnpill'));
 		} else {
 			if (bar) {
@@ -591,15 +673,15 @@
 				var roaming = net.roaming && net.registered;
 				out.push(chip([
 					el('span', { 'class': 'tech' }, net.act_name || net.sysmode || '–'),
-					el('b', {}, net.operator || (net.registered ? '–' : 'not registered'))
-				].concat(roaming ? [el('span', { 'class': 'label warning' }, 'roaming')] : []),
+					el('b', {}, net.operator || (net.registered ? '–' : _('not registered')))
+				].concat(roaming ? [el('span', { 'class': 'label warning' }, _('roaming'))] : []),
 				'mi-net'));
 			}
 			if (sig.band)
-				out.push(chip([el('span', { 'class': 'mi-k' }, 'Band'),
+				out.push(chip([el('span', { 'class': 'mi-k' }, _('Band')),
 				               el('b', {}, String(sig.band))], 'mi-band'));
 			if (data.ipv4)
-				out.push(chip([el('span', { 'class': 'mi-k' }, 'IP'),
+				out.push(chip([el('span', { 'class': 'mi-k' }, _('IP')),
 				               el('b', {}, data.ipv4)], 'mi-ip'));
 		}
 
@@ -607,7 +689,7 @@
 			out.push(chip([
 				el('span', { 'class': 'mi-k' }, '↓'), el('b', {}, human(use.rx)),
 				el('span', { 'class': 'mi-k' }, '↑'), el('b', {}, human(use.tx))
-			], 'mi-usage', 'Traffic on the WAN interface since the counter was last reset'));
+			], 'mi-usage', _('Traffic on the WAN interface since the counter was last reset')));
 
 		if (bar) out.push(el('span', { 'class': 'sep', 'style': 'flex:1 1 auto' }));
 
@@ -615,17 +697,17 @@
 		   occupies several slots but is still one message. */
 		var unread = sms.unread || 0;
 		var count = (sms.count != null) ? sms.count : null;
-		var smsKids = [el('span', { 'class': 'mi-k' }, 'SMS')];
+		var smsKids = [el('span', { 'class': 'mi-k' }, _('SMS'))];
 		if (unread) smsKids.push(el('span', { 'class': 'badge-n' }, String(unread)));
 		else if (count != null) smsKids.push(el('b', {}, String(count)));
-		out.push(el('a', { 'class': 'mi mi-sms', 'href': HH.url('admin/modem/sms'),
-		                   'title': unread ? unread + ' unread' : 'Messages' }, smsKids));
+		out.push(el('a', { 'class': 'mi mi-sms' + (unread ? ' has-unread' : ''), 'href': HH.url('admin/modem/sms'),
+		                   'title': unread ? _('%d unread').replace('%d', unread) : _('Messages') }, smsKids));
 
 		/* A drawn chevron, not the text one: the glyph's ink sits below the middle of
 		   its own line box in most faces, so however the box is centred the mark still
 		   reads as sitting low. */
 		out.push(el('a', { 'class': 'mi mi-modem', 'href': HH.url('admin/modem') }, [
-			el('b', {}, 'Modem'), icon('caret', 'mi-arrow')
+			el('b', {}, _('Modem')), icon('caret', 'mi-arrow')
 		]));
 
 		return out;
@@ -666,7 +748,12 @@
 	function stripStale(on) {
 		['modem-strip', 'modem-drawer'].forEach(function (id) {
 			var box = document.getElementById(id);
-			if (box) box.classList.toggle('stale', !!on);
+			if (!box) return;
+			box.classList.toggle('stale', !!on);
+			/* dimming alone says nothing to a screen reader or to anyone who has not
+			   seen the bar at full strength */
+			if (on) box.setAttribute('title', _('Not updated: the modem status could not be read'));
+			else box.removeAttribute('title');
 		});
 	}
 
@@ -714,10 +801,29 @@
 			: document.documentElement.clientWidth <= NAV_BREAKPOINT;
 	}
 
+	function navFocusables() {
+		var side = document.getElementById('sidebar');
+		return side ? Array.prototype.filter.call(
+			side.querySelectorAll('a[href], button:not([disabled])'),
+			function (e) { return e.offsetParent !== null; }) : [];
+	}
+
+	/* The open drawer behaves as a dialog: focus moves into it, stays in it, and goes
+	   back to the menu button when it closes -- otherwise a keyboard user is left on a
+	   control hidden behind the scrim. */
 	function setNav(open) {
-		var btn = document.getElementById('nav-toggle');
+		var btn = document.getElementById('nav-toggle'),
+		    side = document.getElementById('sidebar'),
+		    wasOpen = document.body.classList.contains('nav-open');
 		document.body.classList.toggle('nav-open', !!open);
 		if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+		if (open && !wasOpen) {
+			var first = navFocusables()[0];
+			if (first) first.focus();
+		}
+		else if (!open && wasOpen && btn && side && side.contains(document.activeElement)) {
+			btn.focus();
+		}
 	}
 
 	function initNav() {
@@ -736,8 +842,25 @@
 		});
 
 		document.addEventListener('keydown', function (ev) {
-			if (ev.key === 'Escape' && document.body.classList.contains('nav-open'))
+			if (!document.body.classList.contains('nav-open') || !navIsDrawer()) return;
+			if (ev.key === 'Escape') {
 				setNav(false);
+				if (btn) btn.focus();
+				return;
+			}
+			if (ev.key !== 'Tab') return;
+			var items = navFocusables();
+			if (!items.length) return;
+			var first = items[0], last = items[items.length - 1],
+			    inside = items.indexOf(document.activeElement) >= 0;
+			if (!inside || (ev.shiftKey && document.activeElement === first)) {
+				ev.preventDefault();
+				(ev.shiftKey ? last : first).focus();
+			}
+			else if (!ev.shiftKey && document.activeElement === last) {
+				ev.preventDefault();
+				first.focus();
+			}
 		});
 
 		/* Rotating a phone to landscape can cross the breakpoint with the drawer
@@ -751,7 +874,19 @@
 
 	/* ------------------------------------------------------------- init */
 
+	/* A phone's 100vh includes the part of the page behind its browser toolbar, so a
+	   box sized with it runs under the toolbar.  --vh carries the height really
+	   visible; the stylesheet falls back to 1vh without it. */
+	function trackViewport() {
+		var set = function () {
+			root.style.setProperty('--vh', (window.innerHeight / 100) + 'px');
+		};
+		set();
+		window.addEventListener('resize', set);
+	}
+
 	function init() {
+		trackViewport();
 		setTheme(root.getAttribute('data-theme') || 'light', false);
 
 		var btn = document.getElementById('theme-toggle');
@@ -761,6 +896,7 @@
 
 		HH.decorate(document);
 		watchContent();
+		watchDropdowns();
 
 		/* The login page carries no session.  Any ubus call from here comes back
 		   -32002, and luci.js answers that with the global "Session expired" modal

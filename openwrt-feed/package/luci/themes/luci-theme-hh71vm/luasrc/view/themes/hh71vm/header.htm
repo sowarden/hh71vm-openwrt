@@ -36,20 +36,35 @@
 	-- free to keep yesterday's copy, and an edited page looks unchanged until a hard
 	-- reload.  luci.js does set env.resource_version -- to the LuCI package version,
 	-- which is the same string for every build we make, so it busts nothing.  Derive
-	-- one from our own files instead and overwrite it below.
+	-- one from the files instead and overwrite it below.
+	--
+	-- The override is global -- every view on every page gets this version -- so it has
+	-- to move when ANY view changes, not only ours: hashing just the hh71vm directories
+	-- left an updated Xray page, the dashboard's modem card and every stock view served
+	-- stale from the browser cache.  The opkg status file covers an installed or removed
+	-- package whose files all carry the image's fixed build timestamp.
 	local function appver()
 		local nfs = require "nixio.fs"
 		local newest, total = 0, 0
-		for _, base in ipairs({ "/www" .. resource .. "/hh71vm",
-		                        "/www" .. resource .. "/view/hh71vm" }) do
-			local iter = nfs.dir(base)
+		local function scan(dir, depth)
+			local iter = nfs.dir(dir)
 			for name in (iter or function() return nil end) do
-				local st = nfs.stat(base .. "/" .. name)
+				local path = dir .. "/" .. name
+				local st = nfs.stat(path)
 				if st and st.type == "reg" then
 					if st.mtime > newest then newest = st.mtime end
 					total = total + st.size
+				elseif st and st.type == "dir" and depth > 0 then
+					scan(path, depth - 1)
 				end
 			end
+		end
+		scan("/www" .. resource .. "/hh71vm", 0)
+		scan("/www" .. resource .. "/view", 3)
+		local status = nfs.stat("/usr/lib/opkg/status")
+		if status then
+			if status.mtime > newest then newest = status.mtime end
+			total = total + status.size
 		end
 		return (newest > 0) and (newest .. "-" .. total) or ver.luciversion
 	end
@@ -68,12 +83,14 @@
 <html lang="<%=luci.i18n.context.lang%>">
 	<head>
 		<meta charset="utf-8">
-		<title><%=striptags( (boardinfo.hostname or "?") .. ( (node and node.title) and ' - ' .. translate(node.title) or '')) %> - LuCI</title>
+		<title><%=pcdata(striptags( (boardinfo.hostname or "?") .. ( (node and node.title) and ' - ' .. translate(node.title) or ''))) %> - LuCI</title>
 		<%# width=device-width is what makes a phone lay the page out at its own width
 		    instead of pretending to be a 980px desktop and zooming out.  It only became
 		    safe once the sidebar turned into a drawer below 720px -- before that it
 		    would have left a 250px fixed sidebar on a 390px screen. %>
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<%# the phone browser's own toolbar follows the theme; hh71vm.js updates it %>
+		<meta name="theme-color" content="#ffffff">
 		<%# picked before the stylesheet paints, so the page never flashes the wrong theme %>
 		<script>(function(){try{var t=localStorage.getItem('hh71vm-theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 		<link rel="stylesheet" href="<%=media%>/cascade.css?v=<%=assetver(media .. "/cascade.css")%>">
@@ -87,6 +104,10 @@
 	</head>
 
 	<body class="lang_<%=luci.i18n.context.lang%><% if not authed then %> no-nav<% end %>" data-page="<%= pcdata(table.concat(disp.context.path or disp.context.requestpath, "-")) %>">
+
+		<%# The sidebar comes first in the document, so without this a keyboard user tabs
+		    through the whole menu on every page before reaching the page itself. %>
+		<a class="skip-link" href="#maincontent"><%:Skip to content%></a>
 
 		<aside id="sidebar">
 			<a class="sb-brand" href="<%=url('admin/status/overview')%>">
@@ -114,11 +135,12 @@
 			</div>
 		</aside>
 
-		<%# Only ever visible below the drawer breakpoint.  No `hidden` attribute: the
-		    stylesheet already keeps it out of the page and out of the accessibility
-		    tree -- display:none above the breakpoint, visibility:hidden while closed
-		    below it -- and an attribute on top of that would only fight the media
-		    query for who gets to set `display`. %>
+		<%# The scrim is only ever visible below the drawer breakpoint.  No `hidden`
+		    attribute: the stylesheet already keeps it out of the page and out of the
+		    accessibility tree -- display:none above the breakpoint, visibility:hidden while
+		    closed below it -- and an attribute on top of that would only fight the media
+		    query for who gets to set `display`.  The closed drawer itself is hidden the same
+		    way, so its links cannot be reached by keyboard while it is off-screen. %>
 		<div id="nav-scrim"></div>
 
 		<header id="topbar">
@@ -136,7 +158,7 @@
 			</div>
 		</header>
 
-		<main id="maincontent">
+		<main id="maincontent" tabindex="-1">
 			<%- if luci.sys.process.info("uid") == 0 and luci.sys.user.getuser("root") and not luci.sys.user.getpasswd("root") then -%>
 				<div class="alert-message warning">
 					<h4><%:No password set!%></h4>

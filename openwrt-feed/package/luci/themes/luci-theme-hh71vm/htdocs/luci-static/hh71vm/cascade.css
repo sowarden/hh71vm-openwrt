@@ -16,7 +16,7 @@
 	   the same scheme as the page -- one line, and the built-in chrome stops
 	   fighting the theme */
 	color-scheme: light;
-	accent-color: #4263eb;
+	accent-color: #3b5bdb;
 
 	/* surfaces, from the page backdrop up to the topmost card */
 	--bg:            #f4f6f9;
@@ -28,19 +28,23 @@
 
 	--border:        #e2e7ee;
 	--border-strong: #cbd3de;
+	/* the edge of a form control has to be findable: 3:1 against the card (WCAG 1.4.11) */
+	--control-border: #858f9f;
 
+	/* Text tokens hold 4.5:1 on every light surface they are used on, including
+	   --surface-2 table headers and the --bg footer. */
 	--text:          #121926;
 	--text-2:        #48546a;
-	--muted:         #6b7688;
-	--faint:         #97a1b0;
+	--muted:         #5f6a7c;
+	--faint:         #657084;
 
-	--accent:        #4263eb;
-	--accent-hover:  #3b56cc;
+	--accent:        #3b5bdb;
+	--accent-hover:  #3450c4;
 	--accent-ink:    #ffffff;
 	--accent-soft:   #edf1ff;
 	--accent-line:   #c9d5ff;
 
-	--ok:            #2b8a3e;
+	--ok:            #237032;
 	--ok-soft:       #eafbee;
 	--ok-line:       #b7ebc2;
 	--warn:          #a15c00;
@@ -52,7 +56,7 @@
 
 	/* signal and traffic accents, used by the modem widgets */
 	--sig-good:      #2f9e5e;
-	--sig-mid:       #d08700;
+	--sig-mid:       #a86a00;
 	--sig-bad:       #d64545;
 	--rx:            #3c8ce7;
 	--tx:            #8a63d2;
@@ -98,7 +102,8 @@
 	--text:          #e6edf5;
 	--text-2:        #b3bfcd;
 	--muted:         #8d99a9;
-	--faint:         #6d798a;
+	--faint:         #8793a3;
+	--control-border: #606c7c;
 
 	--accent:        #8fa5ff;
 	--accent-hover:  #a9baff;
@@ -140,6 +145,9 @@ html {
 	scrollbar-color: var(--border-strong) transparent;
 	/* keeps the layout from jumping sideways when a page grows past one screen */
 	scrollbar-gutter: stable;
+	/* anchor jumps and LuCI's scroll to an invalid field land below the fixed top bar,
+	   not underneath it */
+	scroll-padding-top: calc(var(--topbar-h) + 12px);
 }
 
 body {
@@ -215,6 +223,22 @@ img { max-width: 100%; }
 ::selection { background: var(--select); color: var(--select-ink); }
 
 /* Focus is never suppressed, only made to look deliberate. */
+
+/* Off-screen until focused: the first Tab on every page offers a way past the menu. */
+.skip-link {
+	position: fixed;
+	top: 8px;
+	left: 8px;
+	z-index: 2000;
+	padding: 8px 14px;
+	border-radius: var(--r-sm);
+	background: var(--accent);
+	color: var(--accent-ink);
+	font-weight: 600;
+	transform: translateY(-200%);
+}
+.skip-link:focus { transform: none; text-decoration: none; color: var(--accent-ink); }
+#maincontent:focus { outline: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 :focus:not(:focus-visible) { outline: none; }
 
@@ -282,8 +306,11 @@ footer a:hover { color: var(--accent); }
 footer .sep { flex: 1 1 auto; }
 footer .divider { color: var(--border-strong); }
 
-/* The login page has no menu: drop the chrome and centre the form. */
-body.no-nav #sidebar, body.no-nav #topbar { display: none; }
+/* The login page has no menu: drop the chrome and centre the form.  Only the theme
+   switch stays, top right, so the page can be read in the scheme the user wants. */
+body.no-nav #sidebar { display: none; }
+body.no-nav #topbar { left: 0; background: transparent; border-bottom: 0; }
+body.no-nav #topbar > :not(.tb-tools), body.no-nav #indicators { display: none; }
 body.no-nav #maincontent { margin-left: 0; padding: 60px 20px 0; }
 body.no-nav #maincontent > * { max-width: 460px; margin-left: auto; margin-right: auto; }
 /* The footer normally spans the content column and pushes "About this port" to the
@@ -667,31 +694,29 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 /* The status dashboard is a stack of independent cards; on a wide screen they
    belong side by side, otherwise the page is a thin ribbon of content in the middle
    of an empty screen.
-   Two fixed columns, and no card is allowed out of them.  The earlier version let
-   sections carrying a table span the full width, which is where the dashboard lost
-   its grid: a wide card, then a half-width one with an empty half beside it, then
-   another wide one.  Rows stretch, so the two cards of a row end on the same line
-   even when one of them has half as much to say. */
-body[data-page="admin-status-overview"] #view {
-	columns: 2;
-	column-gap: 18px;
+   Two independent stacks, so each card is exactly as tall as what is in it and the
+   next card in its column starts right below it (a grid row is as tall as its
+   tallest card).  The stacks are real elements, filled once by the theme runtime
+   (dashboardColumns in hh71vm.js), not CSS multi-column: that rebalanced on every
+   height change, and the dashboard's cards change height on every poll, so whole
+   cards jumped between the columns while they were being read. */
+body[data-page="admin-status-overview"] #view.hh-dash {
+	display: flex;
+	align-items: flex-start;
+	gap: 18px;
 }
-body[data-page="admin-status-overview"] #view > .cbi-section {
-	/* Each card is exactly as tall as what is in it, and the next card in the column
-	   starts right below it.  A grid cannot do that: its rows are as tall as the
-	   tallest card in the row, so a short card either stretched into empty space or
-	   left a hole under itself.  Multi-column flow gives two independent stacks --
-	   which is what a dashboard of unrelated cards actually is. */
-	break-inside: avoid;
-	-webkit-column-break-inside: avoid;
-	page-break-inside: avoid;
+.hh-dash-col { flex: 1 1 0; min-width: 0; }
+.hh-dash-col > .cbi-section {
 	margin: 0 0 18px;
 	min-width: 0;
 	/* the last card of a column must not hang a margin off the bottom */
 	display: flow-root;
 }
+/* One column: the stacks dissolve and every card takes its page position back
+   (the runtime stamps each card's `order`), so the reading order is the page order. */
 @media (max-width: 1100px) {
-	body[data-page="admin-status-overview"] #view { columns: 1; }
+	body[data-page="admin-status-overview"] #view.hh-dash { flex-direction: column; align-items: stretch; gap: 0; }
+	.hh-dash-col { display: contents; }
 }
 
 /* Inside a half-width card the interface boxes and the radio boxes stack; the
@@ -828,7 +853,7 @@ input:not([type]), textarea, select, .uneditable-input, .create-item-input {
 	padding: 6px 11px;
 	background: var(--surface);
 	color: var(--text);
-	border: 1px solid var(--border-strong);
+	border: 1px solid var(--control-border);
 	border-radius: var(--r-sm);
 	font-family: inherit;
 	font-size: 13.5px;
@@ -861,10 +886,13 @@ textarea {
 	resize: vertical;
 }
 
+/* The ring is a box-shadow, which forced-colors (Windows high contrast) mode removes;
+   the transparent outline is what that mode paints instead, so focus never vanishes. */
 input:focus, textarea:focus, select:focus {
 	border-color: var(--accent);
 	box-shadow: var(--ring);
-	outline: 0;
+	outline: 2px solid transparent;
+	outline-offset: 1px;
 }
 
 input[type="file"] { max-width: none; border: 0; padding: 0; min-height: 0; background: none; }
@@ -952,7 +980,7 @@ label { font-size: 13.5px; }
 	width: 100%;
 	min-height: 34px;
 	background: var(--surface);
-	border: 1px solid var(--border-strong);
+	border: 1px solid var(--control-border);
 	border-radius: var(--r-sm);
 	color: var(--text);
 	cursor: pointer;
@@ -1020,7 +1048,15 @@ label { font-size: 13.5px; }
 .cbi-dropdown[open] > ul.dropdown {
 	display: block;
 	position: absolute;
-	top: calc(100% + 4px); left: 0;
+	top: calc(100% + 4px);
+	/* On a touch device LuCI's openDropdown() pulls the list out to both viewport
+	   edges with inline `left`/`right`, so a 420px control got a full-viewport-width
+	   list that no longer looked attached to it -- measured 1438px against a 420px
+	   control.  Pin it back to the control.  On a pointer device LuCI sets neither
+	   property, so these are already the effective values and nothing changes.
+	   Not behind a touch media query on purpose: a touch-capable laptop reports
+	   `hover: hover` yet still takes LuCI's `'ontouchstart' in window` branch. */
+	left: 0 !important; right: auto !important;
 	min-width: 100%;
 	width: auto;
 	max-width: none;
@@ -1404,6 +1440,10 @@ tbody tr:hover > td { background: var(--surface-2); }
    into the scroll box that keeps a wide table from stretching the page. */
 .hh-tablewrap { max-width: 100%; }
 
+/* Set by the theme runtime on the scroll boxes around an open dropdown, so the list
+   can hang out of the card instead of being cut off at its edge (syncUnclip). */
+.hh-unclip { overflow: visible !important; }
+
 /* The dashboard is the one place where a card is half the page wide, and two of
    LuCI's status tables have a hard floor under their width that no amount of
    wrapping gets past: the associated-stations list carries a nowrap interface badge
@@ -1413,7 +1453,7 @@ tbody tr:hover > td { background: var(--surface-2); }
    table does not, and re-inserting it on every poll makes the card jump.
    Vertical overflow stays visible in practice: the container's height is auto, so
    scrollHeight never exceeds clientHeight. */
-body[data-page="admin-status-overview"] #view > .cbi-section > div { overflow-x: auto; }
+body[data-page="admin-status-overview"] .hh-dash-col > .cbi-section > div { overflow-x: auto; }
 
 /* Inside those cards a cell wraps between words and nowhere else.  `overflow-wrap:
    anywhere` lets a column shrink to a single character, and a six-column table in a
@@ -1593,7 +1633,6 @@ a.label:hover { text-decoration: none; filter: brightness(.97); }
    does not play once -- it replays every few seconds, and a 3px slide under a
    cursor that is not moving reads as the page trembling.  The class stays because
    LuCI sets it; it simply does nothing. */
-@keyframes hh-rise { from { transform: translateY(3px); } to { transform: none; } }
 .fade-out { opacity: 0; transition: opacity .25s; }
 
 .flash { animation: hh-flash 1s ease-out; }
@@ -1999,12 +2038,17 @@ img[src$="/icons/signal-none.png"] { content: url("data:image/svg+xml,<svg%20xml
 .copyable { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
 .copyable > span:first-child { overflow-wrap: break-word; min-width: 0; }
 .copy-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	border: 0;
 	background: none;
 	color: var(--faint);
 	cursor: pointer;
 	padding: 2px;
-	min-height: 0;
+	/* 24px is the smallest target WCAG 2.2 allows without extra spacing */
+	min-width: 24px;
+	min-height: 24px;
 	border-radius: var(--r-xs);
 	line-height: 0;
 	opacity: 0;
@@ -2014,19 +2058,9 @@ img[src$="/icons/signal-none.png"] { content: url("data:image/svg+xml,<svg%20xml
 .copyable:hover .copy-btn, .copy-btn:focus-visible, .tr:hover .copy-btn { opacity: 1; }
 .copy-btn:hover { background: var(--surface-2); color: var(--accent); }
 .copy-btn.done { opacity: 1; color: var(--ok); }
-
-.toast {
-	position: fixed;
-	right: 20px; bottom: 20px;
-	z-index: 1500;
-	background: var(--text);
-	color: var(--bg);
-	border-radius: var(--r);
-	padding: 10px 16px;
-	font-size: 13px;
-	font-weight: 500;
-	box-shadow: var(--shadow-lg);
-	animation: hh-rise .18s ease-out;
+/* A touch screen has no hover, so a button that only appears on hover never appears. */
+@media (hover: none) {
+	.copy-btn { opacity: .75; }
 }
 
 /* Action results must be visible where the user is, not at the document top. LuCI's
@@ -2040,7 +2074,9 @@ img[src$="/icons/signal-none.png"] { content: url("data:image/svg+xml,<svg%20xml
 	flex-direction: column;
 	gap: 10px;
 	width: min(430px, calc(100vw - 40px));
-	max-height: calc(100vh - 92px);
+	/* --vh is the visible height, set by the runtime: a phone's 100vh includes the
+	   area behind its browser toolbar, which hid the last notices and modal buttons */
+	max-height: calc(var(--vh, 1vh) * 100 - 92px);
 	overflow-y: auto;
 	pointer-events: none;
 }
@@ -2303,13 +2339,19 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 		flex: none;
 	}
 
+	/* Moved off-screen AND hidden: a drawer that is only translated away keeps every
+	   menu link in the tab order and in the accessibility tree while nobody can see
+	   it.  Visibility switches after the slide out, and at once on the way in. */
 	#sidebar {
 		transform: translateX(-100%);
-		transition: transform .18s ease-out;
+		visibility: hidden;
+		transition: transform .18s ease-out, visibility 0s linear .18s;
 		will-change: transform;
 	}
 	body.nav-open #sidebar {
 		transform: translateX(0);
+		visibility: visible;
+		transition: transform .18s ease-out, visibility 0s;
 		box-shadow: var(--shadow-lg);
 	}
 
@@ -2324,6 +2366,8 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 		transition: opacity .18s ease-out;
 	}
 	body.nav-open #nav-scrim { opacity: 1; visibility: visible; }
+	/* a drag on the scrim must not scroll the page underneath it */
+	#nav-scrim { touch-action: none; }
 	/* The drawer scrolls; the page behind it must not. */
 	body.nav-open { overflow: hidden; }
 
@@ -2369,6 +2413,9 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	.mstrip .mi-k { display: none; }   /* uppercase key labels are the first to go */
 	.mstrip > .mi:not(.mi-sig):not(.mi-net):not(.warnpill),
 	.mstrip > .sep { display: none; }
+	/* ...except a new message: the drawer is closed most of the time, and a badge that
+	   only exists inside it is a badge nobody sees. */
+	.mstrip > a.mi.mi-sms.has-unread:not(.warnpill) { display: inline-flex; }
 
 	#modem-drawer:not(:empty) { display: block; }
 	/* The 34px key column was sized for word labels ("Band", "IP"); the traffic row
@@ -2402,6 +2449,11 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	.icon-btn, .cbi-button, .btn, button {
 		min-height: 38px;
 	}
+	/* The group headers open the drawer's sections, so they are touch targets as much
+	   as the links under them; and the quiet row buttons of the message list and the AT
+	   console out-rank the rule above, so they are lifted here. */
+	.sb-nav .sb-head { min-height: 44px; }
+	.msg-acts .cbi-button, .at-bar .cbi-button { min-height: 36px; }
 	/* Below 980px a form row is already one column, but the field kept the intrinsic
 	   width of a text input -- about twenty characters -- so a full-width label sat
 	   over a field using a third of the row, and in a modal it looked like the dialog
@@ -2579,16 +2631,15 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 	.modal, #modal_overlay > .modal {
 		width: 100%;
 		min-width: 0;
-		max-height: calc(100vh - 32px);
+		max-height: calc(var(--vh, 1vh) * 100 - 32px);
 		overflow-y: auto;
 	}
 
-	.toast { right: 12px; left: 12px; bottom: 12px; text-align: center; }
 	#hh-notifications {
 		top: 64px;
 		right: 12px;
 		width: calc(100vw - 24px);
-		max-height: calc(100vh - 76px);
+		max-height: calc(var(--vh, 1vh) * 100 - 76px);
 	}
 }
 
@@ -2608,11 +2659,21 @@ input.at-cmd:focus, .at-line input[type="text"]:focus { border: 0; box-shadow: n
 		min-width: 0;
 		max-width: none;
 		margin: 0 !important;
+		/* A fixed column is narrower than the longest label, and buttons do not wrap
+		   by default, so the text ran into its own padding. */
+		white-space: normal;
 	}
 	#view .cbi-page-actions > :last-child:nth-child(odd),
 	body[data-page^="admin-modem"] #view .cbi-section > .mactions > :last-child:nth-child(odd) {
 		grid-column: 1 / -1;
 	}
+}
+
+/* Forced colors drop backgrounds and shadows, so anything that shows state only that
+   way gets a real outline, and controls that hide until hover stay visible. */
+@media (forced-colors: active) {
+	.cbi-dropdown[open], .at-term:focus-within, .sb-items li.active > a { outline: 2px solid; }
+	.copy-btn { opacity: 1; }
 }
 
 /* Everything above animates position, which is exactly what motion sensitivity is
