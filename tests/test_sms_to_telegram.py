@@ -15,8 +15,13 @@ LUCI = ROOT / "openwrt-feed/package/luci/applications/luci-app-sms-to-telegram"
 
 
 class SmsToTelegramIntegrationTests(unittest.TestCase):
+    def absent(self, needle, text, where):
+        """assertNotIn without printing the whole file when it fails."""
+        self.longMessage = False
+        self.assertNotIn(needle, text, "%s must not contain %r" % (where, needle))
+
     def read_view(self):
-        return (LUCI / "htdocs/luci-static/resources/view/sms-to-telegram/main-1-2-0.js").read_text(
+        return (LUCI / "htdocs/luci-static/resources/view/sms-to-telegram/main-1-3-0.js").read_text(
             encoding="utf-8"
         )
 
@@ -60,15 +65,22 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
         self.assertIn("(metadata.st_mode & 077) != 0", source)
         self.assertNotIn("no-check-certificate", source)
         runtime = (BACKEND / "files/runtime.lua").read_text(encoding="utf-8")
-        self.assertNotIn("--post-data", runtime)
-        self.assertNotIn("--post-file", runtime)
-        self.assertNotIn("parse_mode", runtime)
+        self.absent("--post-data", runtime, "runtime.lua")
+        self.absent("--post-file", runtime, "runtime.lua")
+        # parse_mode is a configured message format now.  It must be the engine's
+        # validated value and must be left out of the payload entirely for plain text.
+        send = runtime[runtime.index("send = function") : runtime.index("local function running")]
+        self.assertIn(
+            "if parse_mode and parse_mode ~= 'none' then payload.parse_mode = parse_mode end",
+            send,
+        )
 
     def test_secret_preserving_luci_and_minimal_rpc_surface(self):
         view = self.read_view()
         self.assertIn("'type': 'password'", view)
         self.assertIn("Leave this field blank to keep the currently configured token.", view)
         self.assertIn("configSet(this.form.token.value, this.form.chat.value", view)
+        self.assertIn("this.form.template.value, this.form.parseMode.value", view)
         self.assertNotIn("innerHTML", view)
         rpc = (BACKEND / "files/rpcd-sms-to-telegram").read_text(encoding="utf-8")
         self.assertEqual(
@@ -104,7 +116,7 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
         discovery = runtime[runtime.index("function R.discover_chat") : runtime.index("function R.run")]
         self.assertNotRegex(discovery, r"sender|message\.text|description|chat_id\s*=")
 
-    def test_page_is_a_seven_step_setup_flow_with_standard_actions(self):
+    def test_page_is_an_eight_step_setup_flow_with_standard_actions(self):
         view = self.read_view()
         for number, title in enumerate(
             (
@@ -113,6 +125,7 @@ class SmsToTelegramIntegrationTests(unittest.TestCase):
                 "Message the bot",
                 "Select a detected recipient",
                 "Confirm or edit the recipient",
+                "Message format",
                 "Optional SIM deletion",
                 "Apply configuration",
             ),

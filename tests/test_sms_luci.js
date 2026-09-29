@@ -20,10 +20,16 @@ String.prototype.format = function () {
 	return this.replace(/%[sd]/g, () => String(args[index++]));
 };
 
+/* Mirrors LuCI's dom.append(): an array member becomes a text node, but a lone string
+   child is written with innerHTML.  Every such string is recorded, so a test can prove
+   that message text never reaches the HTML parser. */
+let htmlChildren = [];
 function E(tag, attrs, children) {
 	if (Array.isArray(tag)) return { tag: 'fragment', attrs: {}, children: tag };
 	const node = { tag, attrs: attrs || {}, children: [] };
 	if (children != null) node.children = Array.isArray(children) ? children : [children];
+	if (children != null && !Array.isArray(children) && typeof children !== 'object')
+		htmlChildren.push(String(children));
 	node.appendChild = child => node.children.push(child);
 	return node;
 }
@@ -101,7 +107,8 @@ const modem = {
 	label: text => E('label', {}, text),
 	linkState: () => null,
 	smsTime: value => value,
-	copyText: () => true
+	copyText: () => true,
+	text: value => value == null ? [] : (typeof value === 'object' ? value : [String(value)])
 };
 
 const page = new Function('view', 'ui', 'dom', 'm', 'E', '_', 'L', 'window', 'confirm',
@@ -147,6 +154,17 @@ async function main() {
 	       'delete names the store, so a colliding slot number cannot hit the other one');
 	truthy(rendered.includes('SIM card (SM)') && rendered.includes('Modem (ME)'),
 	       'both stores are named while both are read');
+
+	/* Sender and body come from whoever sent the message, so they must render as
+	   text: any markup in them has to stay out of innerHTML. */
+	htmlChildren = [];
+	textOf(page.render([{ sms: { storage: 'SM', unread: 1, count: 1, read_stores: ['SM'] } },
+		{ ok: true, stores: ['SM'], messages: [
+			{ index: 1, indexes: [1], sender: '<b>MARKUP-SENDER</b>',
+			  text: '<i>MARKUP-BODY</i>', storage: 'SM',
+			  ts: '26/09/05,01:00:04+00', unread: true, parts: 1 } ] }]));
+	truthy(!htmlChildren.some(value => value.includes('MARKUP-')),
+	       'message sender and body never reach innerHTML');
 
 	/* A store left unread must be reported, not silently dropped: that silence is the
 	   defect this page is being changed for. */

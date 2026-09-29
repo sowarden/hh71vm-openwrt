@@ -177,6 +177,8 @@ do
 		'429 retry_after bounded')
 	equal(core.telegram_response(401, {}).error, 'invalid_token', '401 is invalid token')
 	equal(core.telegram_response(404, {}).error, 'invalid_token', '404 is invalid token')
+	equal(core.telegram_response(nil, nil).error, 'telegram_transport_failed',
+		'no status is a transport failure, not an HTTP error')
 end
 
 -- 10: blank token updates preserve the stored secret; status contains no secret fields.

@@ -8,8 +8,29 @@
 var statusCall = rpc.declare({ object: 'sms-to-telegram', method: 'status' });
 var configGet = rpc.declare({ object: 'sms-to-telegram', method: 'config_get' });
 var configSet = rpc.declare({ object: 'sms-to-telegram', method: 'config_set',
-	params: [ 'token', 'chat_id', 'remove_after_send', 'proxy_type', 'proxy_host',
-		'proxy_port', 'proxy_username', 'proxy_password', 'clear_proxy_password' ] });
+	params: [ 'token', 'chat_id', 'template', 'parse_mode', 'remove_after_send',
+		'proxy_type', 'proxy_host', 'proxy_port', 'proxy_username', 'proxy_password',
+		'clear_proxy_password' ] });
+
+/* What each %name% stands for.  The names themselves come from the backend, so the two
+   cannot drift apart; only the wording lives here. */
+var PLACEHOLDER_HELP = {
+	sender: _('Who sent the message: the number, or the name a service used.'),
+	receiver: _('This router\'s own SIM number, when the network reports one.'),
+	sms_text: _('The message text. The parts of a long SMS are already joined.'),
+	receive_time: _('When the message was sent, as the message itself records it.'),
+	router_time: _('The router\'s own clock at the moment it forwarded the message.'),
+	parts: _('How many parts a long SMS arrived in; 1 for an ordinary message.'),
+	incomplete: _('A note naming the missing parts. Empty when the message is whole.'),
+	storage: _('Which SIM store the message came from: ME or SM.'),
+	hostname: _('This router\'s hostname, useful when several routers share one chat.')
+};
+
+var PARSE_MODE_LABEL = {
+	HTML: _('HTML \u2014 recommended'),
+	MarkdownV2: _('MarkdownV2'),
+	none: _('Plain text \u2014 no formatting')
+};
 var discoverChat = rpc.declare({ object: 'sms-to-telegram', method: 'discover_chat',
 	params: [ 'token', 'proxy_type', 'proxy_host', 'proxy_port', 'proxy_username',
 		'proxy_password', 'clear_proxy_password' ] });
@@ -31,6 +52,8 @@ function message(code, retryAfter) {
 		invalid_proxy_host: _('Enter a valid proxy hostname or IP address without a URL scheme, path or spaces.'),
 		invalid_proxy_port: _('Enter a proxy port from 1 to 65535.'),
 		invalid_proxy_credentials: _('Proxy credentials must not contain control characters and may be at most 256 characters each.'),
+		invalid_template: _('The message template must contain some text, must be at most 2000 characters, and must not contain control characters.'),
+		invalid_parse_mode: _('Select HTML, MarkdownV2 or plain text for the message formatting.'),
 		no_private_chat: _('No recent private chats were found. Send your bot a new private message, then try detection again.'),
 		too_many_private_chats: _('Too many private chats were returned. Send the bot a fresh message from the intended account and try again later.'),
 		telegram_rate_limited: retryAfter ?
@@ -38,7 +61,7 @@ function message(code, retryAfter) {
 			_('Telegram rate-limited this request. Wait briefly, then try again.'),
 		telegram_http_error: _('Telegram returned an HTTP error. Check the token and try again later.'),
 		telegram_api_error: _('Telegram rejected the request. Check the token and try again.'),
-		telegram_transport_failed: _('The router could not reach Telegram before the request timed out. Check internet access and try again.'),
+		telegram_transport_failed: _('The router could not reach Telegram. Check internet access, and check that the clock is correct — this board has no battery-backed clock, and a wrong date makes the secure connection fail.'),
 		telegram_invalid_response: _('Telegram returned data that could not be handled safely. Send a fresh private message and try again.'),
 		config_write_failed: _('The configuration could not be saved.'),
 		modem_unavailable: _('The modem SMS service is temporarily unavailable.'),
@@ -50,16 +73,16 @@ function message(code, retryAfter) {
 }
 
 function notify(error) {
-	ui.addNotification(null, E('p', {}, message(String(error && (error.message || error.error) || error),
-		error && error.retryAfter)), 'error');
+	ui.addNotification(null, E('p', {}, [ message(String(error && (error.message || error.error) || error),
+		error && error.retryAfter) ]), 'error');
 }
 
 function field(label, input, description) {
 	return E('div', { 'class': 'cbi-value' }, [
-		E('div', { 'class': 'cbi-value-title' }, label),
+		E('div', { 'class': 'cbi-value-title' }, [ label ]),
 		E('div', { 'class': 'cbi-value-field' }, [
 			input,
-			E('div', { 'class': 'cbi-value-description' }, description)
+			E('div', { 'class': 'cbi-value-description' }, description != null ? [ description ] : [])
 		])
 	]);
 }
@@ -74,7 +97,7 @@ function statusPill(text, good) {
 	return E('span', {
 		'class': good ? 'label success' : 'label warning',
 		'style': 'display:inline-block;margin:0 .5em .35em 0'
-	}, text);
+	}, [ text ]);
 }
 
 function candidateLabel(candidate) {
@@ -112,6 +135,12 @@ return view.extend({
 			throw new Error('invalid_chat_id');
 		if ([ 'none', 'http', 'socks5' ].indexOf(proxyType) < 0)
 			throw new Error('invalid_proxy_type');
+		var template = this.form.template.value;
+		if (!/\S/.test(template) || template.length > 2000 ||
+		    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(template))
+			throw new Error('invalid_template');
+		if ([ 'none', 'HTML', 'MarkdownV2' ].indexOf(this.form.parseMode.value) < 0)
+			throw new Error('invalid_parse_mode');
 		if (proxyHost && !/^[A-Za-z0-9_.:%-]{1,253}$/.test(proxyHost))
 			throw new Error('invalid_proxy_host');
 		if (proxyType !== 'none' && !proxyHost)
@@ -146,6 +175,10 @@ return view.extend({
 			statusPill(_('Pending: %d').format(state.pending || 0), (state.pending || 0) === 0),
 			statusPill(_('Pending SIM deletion: %d').format(state.pending_delete || 0), (state.pending_delete || 0) === 0)
 		];
+		if (state.template_rejected)
+			children.push(E('div', { 'class': 'alert-message warning' }, [
+				_('Telegram would not accept the template\'s formatting, so the last message was sent as plain text. Check the markup below, or select plain text.')
+			]));
 		if (state.last_error)
 			children.push(E('div', { 'class': 'cbi-value-description' }, [
 				E('strong', {}, _('Last issue: ')), message(String(state.last_error))
@@ -160,7 +193,8 @@ return view.extend({
 		if (!this.form || this.busy) return Promise.resolve();
 		try { this.validate(); } catch (error) { notify(error); return Promise.resolve(); }
 		this.setBusy(true);
-		return configSet(this.form.token.value, this.form.chat.value, this.form.remove.checked,
+		return configSet(this.form.token.value, this.form.chat.value,
+			this.form.template.value, this.form.parseMode.value, this.form.remove.checked,
 			this.form.proxyType.value, this.form.proxyHost.value.trim(), this.form.proxyPort.value,
 			this.form.proxyUsername.value, this.form.proxyPassword.value,
 			this.form.clearProxyPassword.checked)
@@ -201,6 +235,8 @@ return view.extend({
 			self.form.token.placeholder = config.token_set ?
 				_('Configured — leave blank to keep the current token') : _('Paste the bot token');
 			self.form.chat.value = config.chat_id || '';
+			self.form.template.value = config.template || config.default_template || '';
+			self.form.parseMode.value = config.parse_mode || 'HTML';
 			self.form.remove.checked = config.remove_after_send === true;
 			self.form.proxyType.value = config.proxy_type || 'none';
 			self.form.proxyHost.value = config.proxy_host || '';
@@ -281,6 +317,32 @@ return view.extend({
 				_('Clear the saved proxy password') ]),
 				_('Select this only when the proxy no longer requires the stored password.'))
 		]);
+		var defaultTemplate = config.default_template || '';
+		var template = E('textarea', {
+			'rows': 8,
+			'spellcheck': 'false',
+			'style': 'width:42em;max-width:100%;font-family:monospace;overflow-wrap:anywhere',
+			'aria-label': _('Message template')
+		}, [ config.template || defaultTemplate ]);
+		var parseMode = E('select', { 'aria-label': _('Telegram formatting') },
+			[ 'HTML', 'MarkdownV2', 'none' ].map(function(mode) {
+				return E('option', {
+					'value': mode,
+					'selected': (config.parse_mode || 'HTML') === mode ? 'selected' : null
+				}, [ PARSE_MODE_LABEL[mode] ]);
+			}));
+		var restoreTemplate = E('button', {
+			'class': 'cbi-button', 'type': 'button',
+			'click': function() { template.value = defaultTemplate; }
+		}, [ _('Restore the default template') ]);
+		var placeholderRows = (config.placeholders || Object.keys(PLACEHOLDER_HELP))
+			.map(function(name) {
+				return E('tr', {}, [
+					E('td', { 'style': 'white-space:nowrap;padding-right:1em' },
+						[ E('code', {}, [ '%' + name + '%' ]) ]),
+					E('td', {}, [ PLACEHOLDER_HELP[name] || '' ])
+				]);
+			});
 		var remove = E('input', { 'type': 'checkbox', 'checked': config.remove_after_send ? 'checked' : null });
 		var candidates = E('div', { 'style': 'margin-top:.75em' });
 		var status = E('div', { 'class': 'alert-message', 'style': 'margin-bottom:1em' }, this.drawStatus(state));
@@ -320,7 +382,8 @@ return view.extend({
 		}, _('Detect Chat IDs'));
 
 		this.busy = false;
-		this.form = { token: token, chat: chat, remove: remove, candidates: candidates,
+		this.form = { token: token, chat: chat, template: template, parseMode: parseMode,
+			remove: remove, candidates: candidates,
 			status: status, detect: detect, proxyType: proxyType, proxyHost: proxyHost,
 			proxyPort: proxyPort, proxyUsername: proxyUsername, proxyPassword: proxyPassword,
 			clearProxyPassword: clearProxyPassword, proxyFields: proxyFields };
@@ -328,7 +391,7 @@ return view.extend({
 
 		dom.content(body, [
 			E('h2', {}, _('SMS to Telegram')),
-			E('p', {}, _('Forward SMS messages received by this router to one private Telegram chat. Complete the seven short steps below.')),
+			E('p', {}, _('Forward SMS messages received by this router to one private Telegram chat. Complete the eight short steps below.')),
 			status,
 			step(1, _('Create a Telegram bot'), [
 				E('ol', {}, [
@@ -361,17 +424,30 @@ return view.extend({
 				field(_('Destination Chat ID'), chat,
 					_('A positive numeric Telegram private chat ID. A normal @username, URL, zero or negative value cannot be used.'))
 			]),
-			step(6, _('Optional SIM deletion'), [
+			step(6, _('Message format'), [
+				E('p', {}, _('Choose what a forwarded message looks like. Everything you type is sent as it is; only the values put in its place are escaped, so a message containing < or * cannot break the formatting or forge any of it.')),
+				field(_('Telegram formatting'), parseMode,
+					_('HTML understands <b>, <i>, <u>, <s>, <code>, <pre>, <a href> and <tg-spoiler>. MarkdownV2 uses *bold*, _italic_, __underline__ and ~strikethrough~. Plain text sends no formatting at all.')),
+				field(_('Message template'), E('div', {}, [ template,
+					E('div', { 'style': 'margin-top:.5em' }, [ restoreTemplate ]) ]),
+					_('Each %name% below is replaced by its value. Anything else is left exactly as typed, so a mistyped name is easy to spot in the result.')),
+				E('details', {}, [
+					E('summary', {}, [ _('Available placeholders') ]),
+					E('table', { 'class': 'table', 'style': 'margin-top:.5em' }, placeholderRows)
+				]),
+				E('p', { 'class': 'cbi-value-description' }, _('If Telegram rejects the formatting, the message is still delivered once as plain text and this page says so, so a mistake in the template never stops messages arriving.'))
+			]),
+			step(7, _('Optional SIM deletion'), [
 				field(_('After successful delivery'), E('label', {}, [ remove, ' ',
 					_('Remove messages from the SIM after successful Telegram delivery') ]),
 					_('An SMS is removed only after Telegram returns HTTP 200 with JSON ok: true. A deletion failure retries deletion without sending the Telegram message again. When disabled, the SMS stays on the SIM and is not forwarded again.'))
 			]),
-			step(7, _('Apply configuration'), [
+			step(8, _('Apply configuration'), [
 				E('p', {}, _('Select Save & Apply below. The service will use the new configuration on its next polling cycle. If the token or destination is missing, forwarding remains not configured.'))
 			]),
 			E('details', { 'style': 'margin-top:1em' }, [
 				E('summary', {}, _('Technical details')),
-				E('p', {}, _('SMS text is sent without parse_mode. Proxy settings are passed only to this package\'s Telegram transport. Delivery and SIM deletion use persistent state and bounded retries. A network timeout can be ambiguous, so Telegram delivery may occasionally be duplicated, but a SIM message is never deleted before a confirmed Telegram response.'))
+				E('p', {}, _('The template is sent as the message body with the chosen parse_mode, and values put into it are escaped for that mode, so message text is never read as markup. Proxy settings are passed only to this package\'s Telegram transport. Delivery and SIM deletion use persistent state and bounded retries. A network timeout can be ambiguous, so Telegram delivery may occasionally be duplicated, but a SIM message is never deleted before a confirmed Telegram response.'))
 			])
 		]);
 		if (window.HH71) window.HH71.decorate(body);

@@ -6,7 +6,8 @@ local json, runtime = require 'luci.jsonc', require 'runtime'
 local methods = {
 	status = {},
 	config_get = {},
-	config_set = { token = 'str', chat_id = 'str', remove_after_send = true,
+	config_set = { token = 'str', chat_id = 'str', template = 'str', parse_mode = 'str',
+		remove_after_send = true,
 		proxy_type = 'str', proxy_host = 'str', proxy_port = 'str', proxy_username = 'str',
 		proxy_password = 'str', clear_proxy_password = true },
 	discover_chat = { token = 'str', proxy_type = 'str', proxy_host = 'str',

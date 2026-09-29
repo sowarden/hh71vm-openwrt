@@ -60,6 +60,8 @@ function R.read_config()
 	local result = {
 		token = cursor:get('sms-to-telegram', 'main', 'token') or '',
 		chat_id = cursor:get('sms-to-telegram', 'main', 'chat_id') or '',
+		template = cursor:get('sms-to-telegram', 'main', 'template') or core.DEFAULT_TEMPLATE,
+		parse_mode = cursor:get('sms-to-telegram', 'main', 'parse_mode') or core.DEFAULT_PARSE_MODE,
 		remove_after_send = cursor:get('sms-to-telegram', 'main', 'remove_after_send') == '1',
 		poll_interval = tonumber(cursor:get('sms-to-telegram', 'main', 'poll_interval')) or 15,
 		proxy_type = cursor:get('sms-to-telegram', 'main', 'proxy_type') or 'none',
@@ -80,6 +82,8 @@ function R.write_config(update)
 	cursor:set('sms-to-telegram', 'main', 'sms_to_telegram')
 	cursor:set('sms-to-telegram', 'main', 'token', merged.token)
 	cursor:set('sms-to-telegram', 'main', 'chat_id', merged.chat_id)
+	cursor:set('sms-to-telegram', 'main', 'template', merged.template)
+	cursor:set('sms-to-telegram', 'main', 'parse_mode', merged.parse_mode)
 	cursor:set('sms-to-telegram', 'main', 'remove_after_send', merged.remove_after_send and '1' or '0')
 	cursor:set('sms-to-telegram', 'main', 'proxy_type', merged.proxy_type)
 	cursor:set('sms-to-telegram', 'main', 'proxy_host', merged.proxy_host)
@@ -118,7 +122,14 @@ local function http_request(token, method, payload, proxy_config)
 	return core.telegram_response(status, parsed)
 end
 
+-- Every stored message is fingerprinted on every poll, and each digest costs a
+-- temporary file and a sha256sum fork.  A message's material never changes, so the
+-- answer is remembered for the life of the service (bounded, then started over).
+local fingerprints, fingerprint_count = {}, 0
+
 local function fingerprint(material)
+	local known = fingerprints[material]
+	if known then return known end
 	local path = temporary_file(material)
 	local pipe = io.popen('sha256sum ' .. quote(path) .. ' 2>/dev/null', 'r')
 	if not pipe then fs.unlink(path); error('fingerprint_failed', 0) end
@@ -126,6 +137,9 @@ local function fingerprint(material)
 	pipe:close()
 	fs.unlink(path)
 	if not digest or #digest ~= 64 then error('fingerprint_failed', 0) end
+	if fingerprint_count >= 256 then fingerprints, fingerprint_count = {}, 0 end
+	fingerprints[material] = digest
+	fingerprint_count = fingerprint_count + 1
 	return digest
 end
 
@@ -144,8 +158,20 @@ local function environment()
 			local result = modem_call('sms_list')
 			return { ok = result.ok == true, messages = result.messages or {} }
 		end,
-		send = function(token, chat_id, text, proxy)
-			return http_request(token, 'sendMessage', { chat_id = chat_id, text = text }, proxy)
+		-- Looked up only when the template asks for them (see Engine:extras).
+		receiver = function()
+			local result = modem_call('status')
+			local sim = type(result) == 'table' and type(result.sim) == 'table' and result.sim or {}
+			return type(sim.number) == 'string' and sim.number or ''
+		end,
+		hostname = function()
+			return uci.cursor():get('system', '@system[0]', 'hostname') or ''
+		end,
+		local_time = function() return os.date('%Y-%m-%d %H:%M:%S') end,
+		send = function(token, chat_id, text, proxy, parse_mode)
+			local payload = { chat_id = chat_id, text = text }
+			if parse_mode and parse_mode ~= 'none' then payload.parse_mode = parse_mode end
+			return http_request(token, 'sendMessage', payload, proxy)
 		end,
 	}
 end
@@ -163,6 +189,8 @@ end
 function R.config_get()
 	local config = R.read_config()
 	return { ok = true, token_set = core.valid_token(config.token), chat_id = config.chat_id,
+		template = config.template, parse_mode = config.parse_mode,
+		default_template = core.DEFAULT_TEMPLATE, placeholders = core.PLACEHOLDERS,
 		remove_after_send = config.remove_after_send, proxy_type = config.proxy_type,
 		proxy_host = config.proxy_host, proxy_port = config.proxy_port,
 		proxy_username = config.proxy_username, proxy_password_set = config.proxy_password ~= '' }

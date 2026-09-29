@@ -91,16 +91,138 @@ function M.message_storage(message)
 	return storage:match('^%u%u$') and storage or nil
 end
 
-function M.compose(message)
-	local sender = type(message.sender) == 'string' and message.sender or 'unknown'
-	local text = type(message.text) == 'string' and message.text or ''
-	local lines = { 'SMS from: ' .. sender }
-	if type(message.ts) == 'string' and message.ts ~= '' then
-		lines[#lines + 1] = 'Time: ' .. message.ts
+--- Segments still missing from a long message, as the daemon reports them.
+function M.missing_parts(message)
+	local missing = tonumber(message and message.missing)
+	return (missing and missing > 0) and math.floor(missing) or 0
+end
+
+--- Telegram's own markup dialects.  'none' sends the text with no parse_mode at all,
+--- which is what this package did before templates existed.
+M.PARSE_MODES = { none = true, HTML = true, MarkdownV2 = true }
+M.DEFAULT_PARSE_MODE = 'HTML'
+
+--- Every name the template may use.  An unknown %name% is left exactly as typed, so a
+--- literal percent sign in a template is never mangled and a typo is visible.
+M.PLACEHOLDERS = { 'sender', 'receiver', 'sms_text', 'receive_time', 'router_time',
+	'parts', 'incomplete', 'storage', 'hostname' }
+
+M.DEFAULT_TEMPLATE = table.concat({
+	'<b>SMS from %sender%</b>',
+	'%incomplete%',
+	'%receive_time%',
+	'',
+	'%sms_text%',
+}, '\n')
+
+M.TEMPLATE_MAX = 2000
+
+function M.valid_parse_mode(value)
+	return type(value) == 'string' and M.PARSE_MODES[value] == true
+end
+
+function M.valid_template(value)
+	if type(value) ~= 'string' or #value < 1 or #value > M.TEMPLATE_MAX then return false end
+	if value:find('[^\n\t\32-\255]') then return false end
+	return value:find('%S') ~= nil
+end
+
+--- A value dropped into a template is somebody else's text -- an SMS body, a sender ID
+--- the network chose -- so it is escaped for the markup dialect in use.  The template
+--- itself is not: its markup is what the user typed on purpose.
+function M.escape_value(value, parse_mode)
+	value = tostring(value or '')
+	if parse_mode == 'HTML' then
+		value = value:gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;')
+	elseif parse_mode == 'MarkdownV2' then
+		value = value:gsub('[_*%[%]()~`>#+%-=|{}.!\\]', '\\%0')
 	end
-	lines[#lines + 1] = ''
-	lines[#lines + 1] = text
-	return table.concat(lines, '\n')
+	return value
+end
+
+--- The modem reports 'YY/MM/DD,HH:MM:SS+ZZ'; show it the way the Messages page does.
+function M.format_ts(ts)
+	if type(ts) ~= 'string' or ts == '' then return '' end
+	local y, mo, d, h, mi, sec = ts:match('^(%d+)/(%d+)/(%d+),(%d+):(%d+):(%d+)')
+	if not y then return ts end
+	return ('20%s-%s-%s %s:%s:%s'):format(y, mo, d, h, mi, sec)
+end
+
+function M.incomplete_note(message)
+	local missing = M.missing_parts(message)
+	if missing <= 0 then return '' end
+	local parts = tonumber(message.parts) or 0
+	return parts > 0
+		and ('[incomplete: %d of %d parts arrived]'):format(parts - missing, parts)
+		or ('[incomplete: %d part(s) missing]'):format(missing)
+end
+
+--- `extra` carries the things that are not in the message itself: the router's own
+--- number, its hostname and its clock.  They are looked up only when the template asks
+--- for them, because the first two cost a call to the modem daemon.
+function M.placeholder_values(message, extra)
+	message, extra = message or {}, extra or {}
+	return {
+		sender = type(message.sender) == 'string' and message.sender or 'unknown',
+		receiver = extra.receiver and extra.receiver ~= '' and extra.receiver or 'unknown',
+		sms_text = type(message.text) == 'string' and message.text or '',
+		receive_time = M.format_ts(message.ts),
+		router_time = extra.router_time or '',
+		parts = tostring(tonumber(message.parts) or 1),
+		incomplete = M.incomplete_note(message),
+		storage = M.message_storage(message) or '',
+		hostname = extra.hostname or '',
+	}
+end
+
+--- A line that held nothing but placeholders and came out empty is dropped, so
+--- `%incomplete%` on its own line leaves no blank gap for an ordinary message.
+function M.render(template, values, parse_mode)
+	local out = {}
+	for line in (template .. '\n'):gmatch('([^\n]*)\n') do
+		local had = line:find('%%[a-z_]+%%') ~= nil
+		local only = had and line:gsub('%%[a-z_]+%%', ''):find('%S') == nil
+		-- gsub with a function uses the returned string verbatim, and keeps the match
+		-- when the function returns nil; an unknown name therefore stays as typed.
+		local rendered = line:gsub('%%([a-z_]+)%%', function(name)
+			if values[name] == nil then return nil end
+			return M.escape_value(values[name], parse_mode)
+		end)
+		if not (only and rendered:find('%S') == nil) then out[#out + 1] = rendered end
+	end
+	return (table.concat(out, '\n'):gsub('%s+$', ''))
+end
+
+function M.template_of(config)
+	config = config or {}
+	return M.valid_template(config.template) and config.template or M.DEFAULT_TEMPLATE
+end
+
+function M.parse_mode_of(config)
+	config = config or {}
+	return M.valid_parse_mode(config.parse_mode) and config.parse_mode or M.DEFAULT_PARSE_MODE
+end
+
+--- Which of the costly extras this template actually needs.
+function M.template_needs(config)
+	local template = M.template_of(config)
+	return {
+		receiver = template:find('%%receiver%%') ~= nil,
+		hostname = template:find('%%hostname%%') ~= nil,
+		router_time = template:find('%%router_time%%') ~= nil,
+	}
+end
+
+function M.compose(message, config, extra)
+	local mode = M.parse_mode_of(config)
+	local values = M.placeholder_values(message, extra)
+	local text = M.render(M.template_of(config), values, mode)
+	-- Telegram refuses an empty message, and the send would then be retried for ever.  A
+	-- template that renders to nothing falls back to the message itself, and a message
+	-- with no text at all -- which does happen -- falls back to saying so.
+	if text == '' then text = values.sms_text end
+	if text == '' then text = M.escape_value('(empty message)', mode) end
+	return text
 end
 
 function M.fingerprint_material(message)
@@ -120,9 +242,15 @@ function M.merge_config(current, update)
 	local proxy_password = current.proxy_password or ''
 	if update.clear_proxy_password == true then proxy_password = ''
 	elseif update.proxy_password ~= nil and update.proxy_password ~= '' then proxy_password = update.proxy_password end
+	local template = update.template ~= nil and update.template or current.template
+	if template == nil or template == '' then template = M.DEFAULT_TEMPLATE end
+	local parse_mode = update.parse_mode ~= nil and update.parse_mode or current.parse_mode
+	if parse_mode == nil or parse_mode == '' then parse_mode = M.DEFAULT_PARSE_MODE end
 	local merged = {
 		token = token,
 		chat_id = chat_id,
+		template = template,
+		parse_mode = parse_mode,
 		remove_after_send = remove == true,
 		proxy_type = update.proxy_type ~= nil and update.proxy_type or current.proxy_type or 'none',
 		proxy_host = update.proxy_host ~= nil and update.proxy_host or current.proxy_host or '',
@@ -132,6 +260,8 @@ function M.merge_config(current, update)
 	}
 	if token ~= '' and not M.valid_token(token) then return nil, 'invalid_token' end
 	if chat_id ~= '' and not M.valid_chat_id(chat_id) then return nil, 'invalid_chat_id' end
+	if not M.valid_template(merged.template) then return nil, 'invalid_template' end
+	if not M.valid_parse_mode(merged.parse_mode) then return nil, 'invalid_parse_mode' end
 	local proxy, err = M.proxy_config(merged)
 	if not proxy then return nil, err end
 	return merged
@@ -152,6 +282,7 @@ function M.safe_status(state, configured, running)
 		pending = counts.pending,
 		pending_delete = counts.pending_delete,
 		completed = counts.completed,
+		template_rejected = tonumber((state or {}).template_rejected) or 0,
 	}
 end
 
@@ -163,7 +294,16 @@ function M.telegram_response(status, parsed)
 		return { ok = false, error = 'telegram_rate_limited', retry_after = retry_after }
 	end
 	if status == 401 or status == 404 then return { ok = false, error = 'invalid_token' } end
-	if status ~= 200 then return { ok = false, error = 'telegram_http_error' } end
+	-- No status at all means the helper never got an HTTP answer: it prints nothing and
+	-- exits non-zero when curl fails, and Lua 5.1's pipe:close() reports success whatever
+	-- the child's exit code, so the empty output arrives here rather than being caught as
+	-- a transport error.  Calling that an HTTP error points the reader at the bot token,
+	-- when the cause is a connection that was never made -- usually no route to Telegram,
+	-- or a router clock still years behind, which makes the certificate invalid.
+	if not status then return { ok = false, error = 'telegram_transport_failed' } end
+	-- The status comes back too: a 400 with a parse_mode set means Telegram could not
+	-- parse the template's markup, which is worth handling differently from a 500.
+	if status ~= 200 then return { ok = false, error = 'telegram_http_error', http_status = status } end
 	if type(parsed) ~= 'table' then return { ok = false, error = 'telegram_invalid_response' } end
 	if parsed.ok ~= true then return { ok = false, error = 'telegram_api_error' } end
 	return { ok = true, result = parsed.result }
@@ -184,10 +324,14 @@ function Engine:save()
 	self.env.save_state(self.state)
 end
 
-function Engine:error(code)
+--- The state lives on the flash overlay, so it is written when something in it changes
+--- and not on every poll.  The same error repeating (the modem away for an hour, say)
+--- only moves last_error_time, which is kept in memory until the next real change.
+function Engine:error(code, changed)
+	local repeated = self.state.last_error == code
 	self.state.last_error = code
-	self.state.last_error_time = self.env.now()
-	self:save()
+	if not repeated then self.state.last_error_time = self.env.now() end
+	if changed or not repeated then self:save() end
 end
 
 function Engine:success()
@@ -224,7 +368,7 @@ function Engine:retry_delete(record)
 		record.delete_attempts = (tonumber(record.delete_attempts) or 0) + 1
 		record.next_delete_attempt = self.env.now() + retry_delay(record.delete_attempts)
 		record.updated = self.env.now()
-		self:error('sim_delete_failed')
+		self:error('sim_delete_failed', true)
 		return false
 	end
 	local readback = self.env.readback()
@@ -233,7 +377,7 @@ function Engine:retry_delete(record)
 		record.delete_attempts = (tonumber(record.delete_attempts) or 0) + 1
 		record.next_delete_attempt = self.env.now() + retry_delay(record.delete_attempts)
 		record.updated = self.env.now()
-		self:error('sim_delete_unconfirmed')
+		self:error('sim_delete_unconfirmed', true)
 		return false
 	end
 	record.state = 'completed'
@@ -249,7 +393,7 @@ function Engine:reconcile_missing_delete(fingerprint, record)
 		record.delete_attempts = (tonumber(record.delete_attempts) or 0) + 1
 		record.next_delete_attempt = self.env.now() + retry_delay(record.delete_attempts)
 		record.updated = self.env.now()
-		self:error('sim_delete_unconfirmed')
+		self:error('sim_delete_unconfirmed', true)
 		return false
 	end
 	for _, message in ipairs(readback.messages) do
@@ -267,6 +411,74 @@ function Engine:reconcile_missing_delete(fingerprint, record)
 	return true
 end
 
+--- A long message whose segments are still arriving is held back this long before it
+--- is forwarded as it is, marked incomplete.  Forwarding it at once sent the first part
+--- alone and then the whole message again once the rest arrived; with deletion on, the
+--- first slots were gone by then and the late parts went out as a fragment.
+M.INCOMPLETE_GRACE = 600
+--- A record whose message has left the modem is kept this long, then dropped, so the
+--- state file does not grow with every message ever received.
+M.FORGET_COMPLETED = 30 * 86400
+M.FORGET_PENDING = 86400
+
+--- Records whose message is no longer in the snapshot.  Returns true when anything was
+--- changed, so the caller saves once.  pending_delete records are never dropped here:
+--- reconcile_missing_delete owns them.
+function Engine:age_out(current)
+	local now, changed = self.env.now(), false
+	for fingerprint, record in pairs(self.state.records) do
+		if current[fingerprint] then
+			if record.gone_since then record.gone_since = nil; changed = true end
+		elseif record.state ~= 'pending_delete' then
+			if not record.gone_since then
+				record.gone_since = now
+				changed = true
+			else
+				local keep = record.state == 'completed' and M.FORGET_COMPLETED or M.FORGET_PENDING
+				if now - (tonumber(record.gone_since) or now) >= keep then
+					self.state.records[fingerprint] = nil
+					changed = true
+				end
+			end
+		end
+	end
+	return changed
+end
+
+--- The parts of a message that are not in the message: looked up once per poll, and
+--- only when the template uses them.
+function Engine:extras(config)
+	local needs, extra = M.template_needs(config), {}
+	if needs.receiver and self.env.receiver then extra.receiver = self.env.receiver() end
+	if needs.hostname and self.env.hostname then extra.hostname = self.env.hostname() end
+	if needs.router_time and self.env.local_time then extra.router_time = self.env.local_time() end
+	return extra
+end
+
+--- Send one message.  Telegram rejects the whole request with HTTP 400 when the
+--- template's markup does not parse, and retrying it would stop every SMS getting
+--- through until the template is fixed.  Deliver it once as plain text instead and
+--- record that it happened, so the page can say why the formatting is missing.
+function Engine:deliver(config, message)
+	local extra = self:extras(config)
+	local mode = M.parse_mode_of(config)
+	local proxy = M.proxy_config(config)
+	local result = self.env.send(config.token, config.chat_id,
+		M.compose(message, config, extra), proxy, mode)
+	if result and result.ok ~= true and mode ~= 'none' and tonumber(result.http_status) == 400 then
+		local plain = M.compose(message, { template = config.template, parse_mode = 'none' }, extra)
+		local retry = self.env.send(config.token, config.chat_id, plain, proxy, 'none')
+		if retry and retry.ok == true then
+			self.state.template_rejected = self.env.now()
+			return retry
+		end
+	end
+	if result and result.ok == true and self.state.template_rejected then
+		self.state.template_rejected = nil
+	end
+	return result
+end
+
 function Engine:step(config)
 	if not config or not M.valid_token(config.token) or not M.valid_chat_id(config.chat_id) then return false end
 	local snapshot = self.env.snapshot()
@@ -274,7 +486,7 @@ function Engine:step(config)
 		self:error('modem_unavailable')
 		return false
 	end
-	local messages, current = {}, {}
+	local messages, current, dirty = {}, {}, false
 	for _, message in ipairs(snapshot.messages) do
 		local material = M.fingerprint_material(message)
 		local indexes = M.message_indexes(message)
@@ -289,7 +501,7 @@ function Engine:step(config)
 						first_seen = self.env.now(), updated = self.env.now(), next_attempt = 0 }
 					self.state.records[fingerprint] = record
 					current[fingerprint].record = record
-					self:save()
+					dirty = true
 				end
 				-- A record written before stores were tracked has no storage; adopt the
 				-- one the daemon now reports so its delete cannot go to the wrong store.
@@ -300,6 +512,8 @@ function Engine:step(config)
 			end
 		end
 	end
+	if self:age_out(current) then dirty = true end
+	if dirty then self:save() end
 
 	for fingerprint, record in pairs(self.state.records) do
 		if record.state == 'pending_delete' and
@@ -311,14 +525,16 @@ function Engine:step(config)
 
 	for _, item in ipairs(messages) do
 		local record = item.record
-		if record.state == 'pending' and self.env.now() >= (tonumber(record.next_attempt) or 0) then
-			local result = self.env.send(config.token, config.chat_id, M.compose(item.message),
-				M.proxy_config(config))
+		local held = M.missing_parts(item.message) > 0 and
+			self.env.now() < (tonumber(record.first_seen) or 0) + M.INCOMPLETE_GRACE
+		if record.state == 'pending' and not held and
+		   self.env.now() >= (tonumber(record.next_attempt) or 0) then
+			local result = self:deliver(config, item.message)
 			if not result or result.ok ~= true then
 				record.attempts = (tonumber(record.attempts) or 0) + 1
 				record.next_attempt = self.env.now() + retry_delay(record.attempts, result and result.retry_after)
 				record.updated = self.env.now()
-				self:error(result and result.error or 'telegram_transport_failed')
+				self:error(result and result.error or 'telegram_transport_failed', true)
 				return false
 			end
 			record.telegram_confirmed = self.env.now()

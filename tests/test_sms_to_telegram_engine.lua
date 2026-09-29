@@ -117,4 +117,181 @@ do
 	equal(engine.state.last_error, nil, "unqualified delete is not an error")
 end
 
+--- A clock the test moves, a save counter, and a snapshot it can swap.
+local function timed(messages, config_ok)
+	local t = { now = 1000, saves = 0, sent = {}, modes = {}, answers = {},
+		store = messages, modem_ok = true }
+	local env = {
+		now = function() return t.now end,
+		save_state = function() t.saves = t.saves + 1 end,
+		fingerprint = function(material)
+			local sum = 0
+			for i = 1, #material do sum = (sum * 131 + material:byte(i)) % 4294967296 end
+			return ("%08x"):format(sum) .. ("0"):rep(56)
+		end,
+		snapshot = function()
+			if not t.modem_ok then return { ok = false } end
+			return { ok = true, messages = t.store }
+		end,
+		readback = function() return { ok = true, messages = t.store } end,
+		delete_sms = function() return { ok = true } end,
+		receiver = function() t.receiver_reads = (t.receiver_reads or 0) + 1; return "+380990000000" end,
+		hostname = function() return "hh71vm" end,
+		local_time = function() return "2026-09-29 02:00:00" end,
+		send = function(_, _, text, _, parse_mode)
+			t.sent[#t.sent + 1] = text
+			t.modes[#t.modes + 1] = parse_mode
+			local answer = t.answers[#t.sent]
+			return answer or { ok = true }
+		end,
+	}
+	return core.new_engine(env, nil), t
+end
+local KEEP = { token = CONFIG.token, chat_id = CONFIG.chat_id, remove_after_send = false }
+
+do
+	-- A long message whose later parts are still on their way is held, then sent
+	-- once, whole, when they arrive.
+	local engine, t = timed({
+		{ index = 1, indexes = { 1 }, storage = "SM", sender = "A", text = "part one ",
+		  ts = "26/09/07,01:00:00+00", unread = true, parts = 3, missing = 2 },
+	})
+	engine:step(KEEP)
+	equal(#t.sent, 0, "an incomplete message is not forwarded at once")
+	t.now = t.now + 30
+	t.store = { { index = 1, indexes = { 1, 2, 3 }, storage = "SM", sender = "A",
+	              text = "part one part two part three", ts = "26/09/07,01:00:00+00",
+	              unread = true, parts = 3 } }
+	engine:step(KEEP)
+	equal(#t.sent, 1, "the completed message is forwarded")
+	truthy(t.sent[1]:find("part three", 1, true), "it is forwarded whole")
+	truthy(not t.sent[1]:find("incomplete", 1, true), "and is not marked incomplete")
+	engine:step(KEEP)
+	equal(#t.sent, 1, "and only once")
+end
+
+do
+	-- A part that never arrives: after the grace period the message goes out marked.
+	local engine, t = timed({
+		{ index = 4, indexes = { 4 }, storage = "SM", sender = "B", text = "only half",
+		  ts = "26/09/07,01:00:05+00", unread = true, parts = 2, missing = 1 },
+	})
+	engine:step(KEEP)
+	equal(#t.sent, 0, "held while the grace period runs")
+	t.now = t.now + core.INCOMPLETE_GRACE + 1
+	engine:step(KEEP)
+	equal(#t.sent, 1, "forwarded once the grace period is over")
+	truthy(t.sent[1]:find("[incomplete: 1 of 2 parts arrived]", 1, true), "marked incomplete")
+end
+
+do
+	-- The same error on every poll must not rewrite the flash every poll.
+	local engine, t = timed({})
+	t.modem_ok = false
+	for _ = 1, 20 do engine:step(KEEP); t.now = t.now + 15 end
+	equal(t.saves, 1, "a repeating error is saved once")
+	equal(engine.state.last_error, "modem_unavailable", "the error is still reported")
+	t.modem_ok = true
+	engine:step(KEEP)
+	equal(t.saves, 1, "an idle poll with nothing to do writes nothing")
+end
+
+do
+	-- A forwarded message that has left the modem is forgotten after a while.
+	local engine, t = timed({
+		{ index = 7, indexes = { 7 }, storage = "SM", sender = "C", text = "old",
+		  ts = "26/09/07,01:00:09+00", unread = true },
+	})
+	engine:step(KEEP)
+	equal(#t.sent, 1, "forwarded")
+	t.store = {}
+	engine:step(KEEP)
+	local count = 0
+	for _ in pairs(engine.state.records) do count = count + 1 end
+	equal(count, 1, "kept while recently seen")
+	t.now = t.now + core.FORGET_COMPLETED + 1
+	engine:step(KEEP)
+	count = 0
+	for _ in pairs(engine.state.records) do count = count + 1 end
+	equal(count, 0, "dropped after the retention period")
+end
+
+do
+	-- The message template.  What the user types is markup on purpose; what the
+	-- network supplies is text and must never be able to act as markup.
+	local MSG = { index = 1, indexes = { 1 }, storage = "ME", sender = "+380501112233",
+		text = "balance is <low> & falling", ts = "26/09/29,01:23:45+08", unread = true }
+
+	equal(core.compose(MSG, nil),
+		"<b>SMS from +380501112233</b>\n2026-09-29 01:23:45\n\nbalance is &lt;low&gt; &amp; falling",
+		"the default template escapes the message for HTML and drops the empty line")
+
+	equal(core.compose({ sender = "A", text = "b", parts = 3, missing = 2 },
+		{ parse_mode = "none", template = "%incomplete%|%parts%|%sms_text%" }),
+		"[incomplete: 1 of 3 parts arrived]|3|b", "an incomplete long message says so")
+
+	equal(core.compose({ sender = "x*y", text = "a.b" },
+		{ parse_mode = "MarkdownV2", template = "*%sender%* %sms_text%" }),
+		"*x\\*y* a\\.b", "MarkdownV2 escapes the values but not the template")
+
+	equal(core.compose({ sender = "A", text = "t" },
+		{ parse_mode = "none", template = "%sendr% %sender% 100% off" }),
+		"%sendr% A 100% off", "an unknown name and a bare percent are left as typed")
+
+	equal(core.compose({ sender = "A", text = "fallback" },
+		{ parse_mode = "none", template = "%incomplete%" }),
+		"fallback", "a template that renders to nothing falls back to the message")
+
+	-- An SMS with no text at all would otherwise render empty, and Telegram refuses an
+	-- empty message, so the send would be retried for ever.
+	equal(core.compose({ sender = "A", text = "" },
+		{ parse_mode = "none", template = "%sms_text%" }),
+		"(empty message)", "an empty message still produces something to send")
+	equal(core.compose({ sender = "A", text = "" },
+		{ parse_mode = "MarkdownV2", template = "%sms_text%" }),
+		"\\(empty message\\)", "and it is escaped for the mode in use")
+
+	truthy(not core.valid_template(""), "an empty template is refused")
+	truthy(not core.valid_template("   "), "a whitespace-only template is refused")
+	truthy(not core.valid_template("a\1b"), "a control character is refused")
+	truthy(not core.valid_template(("a"):rep(core.TEMPLATE_MAX + 1)), "an oversized template is refused")
+	truthy(core.valid_template("ok\nstill ok"), "newlines are allowed")
+	truthy(core.valid_parse_mode("HTML") and core.valid_parse_mode("MarkdownV2") and
+		core.valid_parse_mode("none"), "the three modes are accepted")
+	truthy(not core.valid_parse_mode("Markdown"), "legacy Markdown is not offered")
+
+	-- The costly lookups happen only when the template names them.
+	local engine, t = timed({ core.copy(MSG) })
+	engine:step({ token = CONFIG.token, chat_id = CONFIG.chat_id,
+		template = "%sender%: %sms_text%", parse_mode = "none" })
+	equal(t.sent[1], "+380501112233: balance is <low> & falling", "plain text is sent unescaped")
+	equal(t.modes[1], "none", "the chosen mode reaches the transport")
+	equal(t.receiver_reads, nil, "the modem is not asked for a number the template never uses")
+
+	engine, t = timed({ core.copy(MSG) })
+	engine:step({ token = CONFIG.token, chat_id = CONFIG.chat_id,
+		template = "%receiver% %hostname% %router_time%", parse_mode = "none" })
+	equal(t.sent[1], "+380990000000 hh71vm 2026-09-29 02:00:00", "the router's own facts are filled in")
+	equal(t.receiver_reads, 1, "and the number is read once")
+
+	-- Telegram refuses the whole request when the markup does not parse.  The message
+	-- still has to arrive, or one bad template stops every SMS getting through.
+	engine, t = timed({ core.copy(MSG) })
+	t.answers[1] = { ok = false, error = "telegram_http_error", http_status = 400 }
+	engine:step({ token = CONFIG.token, chat_id = CONFIG.chat_id,
+		template = "<b>%sms_text%", parse_mode = "HTML" })
+	equal(#t.sent, 2, "the rejected message is sent a second time")
+	equal(t.modes[2], "none", "the retry carries no parse_mode")
+	equal(t.sent[2], "<b>balance is <low> & falling", "and is the unescaped plain text")
+	truthy(engine.state.template_rejected, "the page is told the formatting was refused")
+	equal(engine.state.last_error, nil, "but the delivery itself counts as a success")
+
+	-- A 500 is an ordinary transport failure and must still be retried, not downgraded.
+	engine, t = timed({ core.copy(MSG) })
+	t.answers[1] = { ok = false, error = "telegram_http_error", http_status = 500 }
+	engine:step({ token = CONFIG.token, chat_id = CONFIG.chat_id, parse_mode = "HTML" })
+	equal(#t.sent, 1, "a server error is not retried as plain text")
+	equal(engine.state.last_error, "telegram_http_error", "and is reported")
+end
+
 print(("sms-to-telegram engine tests: %d assertions passed"):format(assertions))
