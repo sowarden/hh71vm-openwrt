@@ -39,10 +39,12 @@ class FirmwareUpdaterTests(unittest.TestCase):
         self.write_manifest("current.json", CURRENT, ["Previous synthetic change."])
         (self.fixtures / "latest.sig").write_text("good\n")
         (self.fixtures / "current.sig").write_text("good\n")
-        (self.fixtures / "releases.json").write_text(json.dumps([
-            {"tag_name": CURRENT, "published_at": "2026-08-29T12:00:00Z", "prerelease": False},
-            {"tag_name": LATEST, "published_at": "2026-08-30T12:00:00Z", "prerelease": False},
-        ]))
+        (self.fixtures / "releases.atom").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<feed xmlns="http://www.w3.org/2005/Atom">\n'
+            f'  <entry><title>{LATEST}</title><updated>2026-08-30T12:00:00Z</updated></entry>\n'
+            f'  <entry><title>{CURRENT}</title><updated>2026-08-29T12:00:00Z</updated></entry>\n'
+            '</feed>\n')
         self.install_mocks()
 
     def tearDown(self):
@@ -96,6 +98,8 @@ import json, os, shutil, sys, time
 args=sys.argv[1:]; output=args[args.index('-O')+1]; url=args[-1]
 with open(os.environ['UPDATER_FETCH_LOG'], 'a', encoding='utf-8') as stream:
     stream.write(url + '\\n')
+for suffix in json.loads(os.environ.get('UPDATER_MOCK_HTTP_ERRORS', '[]')):
+    if url.endswith(suffix): sys.exit(8)
 for suffix in json.loads(os.environ.get('UPDATER_MOCK_FAILURES', '[]')):
     if url.endswith(suffix): sys.exit(1)
 timeout=int(args[args.index('-T')+1])
@@ -167,7 +171,7 @@ print(json.dumps(root))
         mapping = {
             "/releases/latest/download/release.json.sig": str(self.fixtures / "latest.sig"),
             "/releases/latest/download/release.json": str(self.fixtures / "latest.json"),
-            "api.github.com/repos/sowarden/hh71vm-openwrt/releases?": str(self.fixtures / "releases.json"),
+            "/releases.atom": str(self.fixtures / "releases.atom"),
             f"/download/{LATEST}/release.json.sig": str(self.fixtures / "latest.sig"),
             f"/download/{LATEST}/release.json": str(self.fixtures / "latest.json"),
             f"/download/{CURRENT}/release.json.sig": str(self.fixtures / "current.sig"),
@@ -209,6 +213,22 @@ print(json.dumps(root))
         self.assertEqual(status["latest_published_at"], "2026-08-30T12:00:00Z")
         self.assertNotIn("/releases/latest/download/", self.fetch_log.read_text())
         self.assertFalse(self.log.exists())
+
+    def test_plain_tag_in_feed_does_not_make_history_incomplete(self):
+        plain_tag = "hh71vm-cccccccccccc-r101-a1"
+        feed = self.fixtures / "releases.atom"
+        feed.write_text(feed.read_text().replace(
+            "</feed>",
+            f"<entry><title>{plain_tag}</title><updated>2026-08-29T16:00:00Z</updated></entry>\n</feed>"))
+        self.environment["UPDATER_MOCK_HTTP_ERRORS"] = json.dumps([
+            f"/download/{plain_tag}/release.json",
+            f"/download/{plain_tag}/release.json.sig",
+        ])
+        result = self.execute("--history-json", "--expected", LATEST)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = json.loads(result.stdout)
+        self.assertTrue(status["history_complete"])
+        self.assertEqual([item["tag"] for item in status["releases"]], [CURRENT])
 
     def test_history_downloads_each_descriptor_and_signature_in_parallel(self):
         self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({
@@ -281,7 +301,7 @@ print(json.dumps(root))
         self.replace_script("check_budget_seconds=15", "check_budget_seconds=4")
         self.replace_script("optional_request_timeout=5", "optional_request_timeout=2")
         self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({
-            "/repos/sowarden/hh71vm-openwrt/releases?per_page=5": 20,
+            "/releases.atom": 20,
         })
         started = time.monotonic()
         result = self.execute("--history-json", "--expected", LATEST)
@@ -292,9 +312,9 @@ print(json.dumps(root))
         self.assertFalse(status["history_complete"])
         self.assertEqual(status["releases"], [])
 
-    def test_unavailable_github_api_does_not_block_latest_result(self):
+    def test_unavailable_release_feed_does_not_block_latest_result(self):
         self.environment["UPDATER_MOCK_FAILURES"] = json.dumps([
-            "/repos/sowarden/hh71vm-openwrt/releases?per_page=5",
+            "/releases.atom",
         ])
         result = self.execute("--check-json")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -323,7 +343,7 @@ print(json.dumps(root))
         self.assertEqual(status["releases"], [])
 
     def test_malformed_history_is_ignored_without_weakening_latest(self):
-        (self.fixtures / "releases.json").write_text("{not json\n")
+        (self.fixtures / "releases.atom").write_text("not an Atom feed\n")
         result = self.execute("--history-json", "--expected", LATEST)
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
@@ -390,10 +410,8 @@ print(json.dumps(root))
         self.assertTrue(status["installed_newer"])
 
     def test_history_rejects_invalid_dates(self):
-        (self.fixtures / "releases.json").write_text(json.dumps([
-            {"tag_name": CURRENT, "published_at": "not-a-date", "prerelease": False},
-            {"tag_name": LATEST, "published_at": "2026-08-30T12:00:00Z", "prerelease": False},
-        ]))
+        feed = self.fixtures / "releases.atom"
+        feed.write_text(feed.read_text().replace("2026-08-29T12:00:00Z", "not-a-date"))
         result = self.execute("--history-json", "--expected", LATEST)
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
