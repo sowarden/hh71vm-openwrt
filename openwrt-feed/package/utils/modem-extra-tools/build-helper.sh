@@ -11,7 +11,7 @@ trap 'rm -f "$host_test"' EXIT HUP INT TERM
   -ffunction-sections -fdata-sections -Wall -Wextra -Werror -Wl,--gc-sections \
   -o "$host_test" src/hh71-imei.c
 "$host_test" selftest
-for helper in nas imei; do
+for helper in nas imei uim; do
   "$compiler" -Os -static -nostdlib -fno-builtin -fno-stack-protector \
     -ffunction-sections -fdata-sections -Wall -Wextra -Werror \
     -Wl,--gc-sections,-e,_start,--build-id=none \
@@ -20,8 +20,8 @@ for helper in nas imei; do
 done
 (
   cd src
-  sha256sum hh71-nas.c hh71-imei.c
+  sha256sum hh71-nas.c hh71-imei.c hh71-uim.c
   cd ../files
-  sha256sum hh71-nas-arm hh71-imei-arm
+  sha256sum hh71-nas-arm hh71-imei-arm hh71-uim-arm
 ) > files/helpers.sha256
 cat files/helpers.sha256

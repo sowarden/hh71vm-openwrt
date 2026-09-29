@@ -1,10 +1,11 @@
 #!/usr/bin/lua
 -- SPDX-License-Identifier: Apache-2.0
-package.path='/usr/libexec/modem-extra-tools/?.lua;' .. package.path
+package.path='/usr/libexec/modem-extra-tools/?.lua;/usr/libexec/hh71vm-simlock/?.lua;' .. package.path
 local json, c, n = require 'luci.jsonc', require 'common', require 'nixio'
 local methods={status={}, job={}, ttl_set={ipv4=0,ipv6=0,ipv6_enabled=true,network='str'},
   ttl_disable={}, bands_refresh={}, bands_set={bands={0}}, bands_restore={}, bands_recover={},
-  imei_refresh={}, imei_restore={imei='str',confirmation=true}, imei_recover={}}
+  imei_refresh={}, imei_restore={imei='str',confirmation=true}, imei_recover={},
+  simlock_status={}, simlock_lock={plmn='str',confirmation=true}}
 local function invoke(args)
   local pieces={}
   for i,v in ipairs(args) do pieces[i]=c.quote(v) end
@@ -32,7 +33,10 @@ local function start_job(args)
     local null=n.open('/dev/null','r+')
     n.dup(null,n.stdin); n.dup(null,n.stdout); n.dup(null,n.stderr); null:close()
     lock:close()
-    local ok,result=pcall(invoke,args)
+    local ok,result=pcall(function()
+      if type(args)=='function' then return args() end
+      return invoke(args)
+    end)
     if not ok then result={ok=false,error=tostring(result)} end
     result.id=id; result.state=result.ok and 'done' or 'failed'
     c.atomic(c.runtime .. '/job-result.json',result)
@@ -64,6 +68,16 @@ local function call(method,p)
   end
   if method=='imei_refresh' then return start_job({'imei','show'}) end
   if method=='imei_recover' then return start_job({'imei','recover'}) end
+  -- Unlocking lives in the base image, where a refused SIM can still reach it. What is
+  -- left here is creating a lock, which nobody needs in order to recover a router.
+  if method=='simlock_status' then return invoke({'simlock','status'}) end
+  -- A network code is not sensitive, so it may travel as an argument; the NCK may not.
+  if method=='simlock_lock' then
+    c.need(p.confirmation==true,'explicit carrier-lock confirmation is required')
+    c.need(type(p.plmn)=='string' and p.plmn:match('^%d%d%d%d%d%d?$'),
+      'a five or six digit network code is required')
+    return start_job({'simlock','lock',p.plmn,'--confirm-sim-lock'})
+  end
   if method=='imei_restore' then
     c.need(type(p.imei)=='string' and require('imei').valid(p.imei),'invalid IMEI')
     c.need(p.confirmation==true,'explicit original IMEI confirmation is required')

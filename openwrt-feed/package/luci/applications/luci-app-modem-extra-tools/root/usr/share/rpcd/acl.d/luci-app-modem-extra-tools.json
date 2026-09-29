@@ -1,16 +1,16 @@
 {
 	"luci-app-modem-extra-tools": {
-		"description": "Configure TTL, LTE bands and restore the original HH71VM IMEI",
+		"description": "Configure TTL, LTE bands, restore the original HH71VM IMEI, and inspect or create a carrier SIM lock (removal lives on the modem page)",
 		"read": {
 			"ubus": {
-				"modem-extra-tools": [ "status", "job" ]
+				"modem-extra-tools": [ "status", "job", "simlock_status" ]
 			}
 		},
 		"write": {
 			"ubus": {
 				"modem-extra-tools": [
 					"ttl_set", "ttl_disable", "bands_refresh", "bands_set", "bands_restore", "bands_recover",
-					"imei_refresh", "imei_restore", "imei_recover"
+					"imei_refresh", "imei_restore", "imei_recover", "simlock_lock"
 				]
 			}
 		}

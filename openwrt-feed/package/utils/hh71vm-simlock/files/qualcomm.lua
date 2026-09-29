@@ -1,5 +1,6 @@
 -- SPDX-License-Identifier: Apache-2.0
--- Private transport. No RPC/CLI method accepts shell text or arbitrary NV items.
+-- Private transport to the Qualcomm side. No RPC method accepts shell text: every
+-- command sent from here is a fixed string built in this package.
 local n = require 'nixio'
 local c = require 'common'
 local Q = {}; Q.__index = Q
@@ -75,9 +76,8 @@ end
 -- 'shell' opens the channel without uploading a helper: used by fixed read-only queries
 -- against Qualcomm-side configuration that no helper is needed for.
 function Q.open(helper_name)
-  helper_name=helper_name or 'nas'
-  c.need(helper_name=='nas' or helper_name=='imei' or helper_name=='uim' or helper_name=='shell',
-    'unknown internal Qualcomm helper')
+  helper_name=helper_name or 'shell'
+  c.need(helper_name=='uim' or helper_name=='shell','unknown internal Qualcomm helper')
   local self=setmetatable({sequence=0,directory='/tmp/modem-extra-' .. n.getpid()},Q)
   local success,result=pcall(function()
   self.socket=c.need(n.socket('inet','stream'),'cannot create modem socket')
@@ -93,7 +93,7 @@ function Q.open(helper_name)
   self:run('stty -echo 2>/dev/null; PS1=')
   self:run('umask 077; mkdir ' .. self.directory)
   if helper_name~='shell' then
-    local helper='/usr/libexec/modem-extra-tools/hh71-' .. helper_name .. '-arm'
+    local helper='/usr/libexec/hh71vm-simlock/hh71-' .. helper_name .. '-arm'
     self.helper=self:upload(helper_name,c.need(c.read(helper),'missing Qualcomm helper'),c.hash(helper))
     self:run('chmod 700 ' .. self.helper)
   end
@@ -106,8 +106,7 @@ function Q.open(helper_name)
   return result
 end
 function Q:close()
-  pcall(function() self:run('rm -f ' .. self.directory .. '/nas ' .. self.directory ..
-    '/imei ' .. self.directory .. '/uim; rmdir ' .. self.directory) end)
+  pcall(function() self:run('rm -f ' .. self.directory .. '/uim; rmdir ' .. self.directory) end)
   self.socket:close()
 end
 return Q

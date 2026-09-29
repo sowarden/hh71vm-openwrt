@@ -4,33 +4,33 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=modem-extra-tools
-PKG_VERSION:=1.1.2
+PKG_VERSION:=1.1.6
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=sowarden <sowarden@proton.me>
 
 include $(INCLUDE_DIR)/package.mk
 
-# The only ELF payload is the already-stripped ARM modem helper, not a MIPS ELF.
+# ELF payloads are already-stripped ARM modem helpers, not MIPS ELFs.
 RSTRIP:=:
 
 define Package/modem-extra-tools
   SECTION:=utils
   CATEGORY:=Utilities
-  TITLE:=Persistent TTL and LTE band controls for HH71VM
-  DEPENDS:=+lua +libuci-lua +luci-lib-nixio +luci-lib-jsonc +iptables +ip6tables \
-	+iptables-mod-ipopt +kmod-ipt-ipopt
+  TITLE:=TTL, LTE band and SIM lock controls for HH71VM
+  DEPENDS:=+lua +libuci-lua +luci-lib-nixio +luci-lib-jsonc +hh71vm-simlock \
+	+iptables +ip6tables +iptables-mod-ipopt +kmod-ipt-ipopt
 endef
 
 define Package/modem-extra-tools/description
-  Command-line and rpcd backend for persistent IPv4 TTL / IPv6 Hop Limit
-  rewriting and transactional LTE band selection on the Alcatel LINKHUB HH71VM
-  OpenWrt port.
+  Command-line and rpcd backend for TTL / Hop Limit rewriting, LTE band selection,
+  IMEI restoration and guarded SIM lock removal on the Alcatel LINKHUB HH71VM.
 endef
 
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	cp ./src/hh71-nas.c ./src/hh71-imei.c ./files/hh71-nas-arm ./files/hh71-imei-arm \
+	cp ./src/hh71-nas.c ./src/hh71-imei.c ./src/hh71-uim.c \
+		./files/hh71-nas-arm ./files/hh71-imei-arm ./files/hh71-uim-arm \
 		./files/helpers.sha256 $(PKG_BUILD_DIR)/
 endef
 
@@ -60,6 +60,7 @@ define Package/modem-extra-tools/install
 	$(INSTALL_BIN) ./files/maintain $(1)/usr/libexec/modem-extra-tools/maintain
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/hh71-nas-arm $(1)/usr/libexec/modem-extra-tools/hh71-nas-arm
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/hh71-imei-arm $(1)/usr/libexec/modem-extra-tools/hh71-imei-arm
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/hh71-uim-arm $(1)/usr/libexec/modem-extra-tools/hh71-uim-arm
 	$(INSTALL_DATA) ./files/*.lua $(1)/usr/libexec/modem-extra-tools/
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_BIN) ./files/rpcd-modem-extra-tools $(1)/usr/libexec/rpcd/modem-extra-tools

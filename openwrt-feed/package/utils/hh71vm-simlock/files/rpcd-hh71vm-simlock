@@ -1,0 +1,86 @@
+#!/usr/bin/lua
+-- SPDX-License-Identifier: Apache-2.0
+-- ubus surface for the carrier SIM lock, reachable from the modem pages of the web
+-- interface. Reads are synchronous; the two writes run as a background job because a
+-- single unlock takes longer than the ubus call ceiling once the readback settles.
+package.path='/usr/libexec/hh71vm-simlock/?.lua;' .. package.path
+local json, c, n = require 'luci.jsonc', require 'common', require 'nixio'
+local methods={status={}, job={}, imei={}, nck={imei='str'},
+  unlock={code='str',expected_state=0,confirmation=true},
+  erase={confirmation=true}, clear_rule={confirmation=true}}
+
+local function current_job()
+  local job=c.json(c.runtime .. '/job.json') or {ok=true,state='idle'}
+  if job.state=='running' then
+    local result=c.json(c.runtime .. '/job-result.json')
+    if result and result.id==job.id then return result end
+    if not n.kill(job.pid,0) then return {ok=false,state='failed',
+      error='the worker was interrupted; read the lock status before doing anything else'} end
+  end
+  return job
+end
+
+-- The code never reaches a command line or the job file: the worker runs the call in
+-- this process after the fork, and only its result is written out.
+local function start_job(work)
+  local lock=c.lock('job')
+  c.need(current_job().state~='running','another SIM lock operation is running')
+  local id=tostring(n.getpid()) .. '-' .. tostring(os.time())
+  local pid=c.need(n.fork(),'cannot start the worker')
+  if pid==0 then
+    n.setsid()
+    local null=n.open('/dev/null','r+')
+    n.dup(null,n.stdin); n.dup(null,n.stdout); n.dup(null,n.stderr); null:close()
+    lock:close()
+    local ok,result=pcall(work)
+    if not ok then result={ok=false,error=tostring(result)} end
+    result.id=id; result.state=result.ok and 'done' or 'failed'
+    c.atomic(c.runtime .. '/job-result.json',result)
+    os.exit(0)
+  end
+  local job={ok=true,state='running',id=id,pid=pid}
+  c.atomic(c.runtime .. '/job.json',job); lock:close(); return job
+end
+
+local function call(method,p)
+  local s=require 'simlock'
+  if method=='status' then return s.inspect() end
+  if method=='job' then return current_job() end
+  if method=='imei' then return s.live_imei() end
+  if method=='nck' then return s.generate(p.imei) end
+  if method=='unlock' then
+    c.need(type(p.expected_state)=='number' and p.expected_state==math.floor(p.expected_state),
+      'the expected lock state is required')
+    c.need(p.confirmation==true,'explicit unlock confirmation is required')
+    c.need(type(p.code)=='string' and p.code:match('^%d+$') and #p.code>=8 and #p.code<=16,
+      'the unlock code must be 8 to 16 digits')
+    return start_job(function() return s.unlock(p.code,p.expected_state,true) end)
+  end
+  if method=='erase' then
+    c.need(p.confirmation==true,'explicit unlock confirmation is required')
+    return start_job(function() return s.erase(true) end)
+  end
+  -- A removal whose readback was interrupted leaves the saved rule behind, because the
+  -- cleanup only runs on a verified result. This is how that leftover gets cleared later.
+  if method=='clear_rule' then
+    c.need(p.confirmation==true,'explicit confirmation is required')
+    return s.forget_saved_rule()
+  end
+end
+
+if arg[1]=='list' then
+  local result={}
+  for method,signature in pairs(methods) do
+    local body=json.stringify(signature); if body=='[]' then body='{}' end
+    result[#result+1]='"' .. method .. '":' .. body
+  end
+  print('{' .. table.concat(result,',') .. '}')
+else
+  local ok,result=pcall(function()
+    c.need(arg[1]=='call' and methods[arg[2]],'unknown method')
+    local p=json.parse(io.read('*a') or '') or {}
+    c.need(type(p)=='table','invalid RPC parameters')
+    return call(arg[2],p)
+  end)
+  print(json.stringify(ok and result or {ok=false,error=tostring(result)}))
+end
