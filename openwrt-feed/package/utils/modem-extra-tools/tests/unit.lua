@@ -528,7 +528,7 @@ test(generated.nck10=='6318552905' and generated.nck16=='6318552905478883',
 rejects(function() SL.generate('01234567890123') end,'exactly 15 decimal digits')
 test(SL.live_imei().imei=='012345678901234','fresh AT+GSN prefill uses the modem daemon')
 test(SL.tested_build(table.concat(build_hex,' ')),'tested MPSS build is recognized from DIAG hex')
-test(not SL.tested_build('7c 00'),'unrecognized MPSS cannot enable erase')
+test(not SL.tested_build('7c 00'),'unrecognized MPSS is not labeled tested')
 test(SL.parse_uim('slot=00 feature_count=00').feature_count==0,'empty UIM feature list')
 rejects(function() SL.parse_uim('slot=00 feature_count=01') end,'incomplete UIM feature list')
 
@@ -584,10 +584,10 @@ test(SL.erase_refusal({lock_state='challenged',tested_build=true})==nil,'a chall
 test(SL.erase_refusal({lock_state='allowed',tested_build=true})==nil,'an accepted card can still have its lock removed')
 test(SL.erase_refusal({lock_state='none',tested_build=true}):find('no carrier lock',1,true),
   'there is nothing to remove without a lock')
-test(SL.erase_refusal({lock_state='challenged',tested_build=false}):find('verified on',1,true),
-  'an unverified firmware build refuses keyless removal')
-test(SL.erase_refusal({lock_state='challenged'}):find('could not be confirmed',1,true),
-  'an unknown firmware build refuses keyless removal')
+test(SL.erase_refusal({lock_state='challenged',tested_build=false})==nil,
+  'an unverified build does not prevent keyless removal')
+test(SL.erase_refusal({lock_state='challenged'})==nil,
+  'an unknown build does not prevent keyless removal')
 
 test(SL.lock_refusal({lock_state='none',card={cpin='READY'},home_plmn='25506',lock_provisioned=false})==nil,
   'a free modem with a readable card can be locked')
@@ -781,8 +781,8 @@ test(second.tested_build==true,'a silent DIAG falls back to the build confirmed 
 test(second.can_erase,'a second removal is not blocked by DIAG going quiet')
 stored={}; rearm()
 local unknown_build=SL.inspect()
-test(unknown_build.tested_build==nil and not unknown_build.can_erase,
-  'without any confirmed build, keyless removal stays unavailable')
+test(unknown_build.tested_build==nil and unknown_build.can_erase,
+  'an unknown build is advisory and does not block a confirmed challenge')
 
 sim_reset(0,0)
 erase_fault='lost-reply'
