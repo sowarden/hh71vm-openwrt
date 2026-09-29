@@ -1,5 +1,6 @@
 """Targeted host regressions for rtl8192cd LuCI and IMEI state handling."""
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -8,6 +9,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LUCI_PATCH = ROOT / "openwrt-feed/patches/luci/100-rtl8192cd-encryption-capabilities.patch"
+MET_BACKEND_MAKEFILE = ROOT / "openwrt-feed/package/utils/modem-extra-tools/Makefile"
+MET_FRONTEND_MAKEFILE = (ROOT
+    / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/Makefile")
+
+
+def met_version():
+    return re.search(r"PKG_VERSION:=(\S+)", MET_BACKEND_MAKEFILE.read_text()).group(1)
+
+
+def met_view():
+    """The view file carries the package version in its name so browsers refetch it."""
+    return (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools"
+            / "htdocs/luci-static/resources/view/modem-extra-tools"
+            / ("main-%s.js" % met_version().replace(".", "-")))
 
 
 def added_javascript():
@@ -115,7 +130,7 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         self.assertIn("ubus call hh71vm-modem device_refresh", backend)
 
     def test_ui_distinguishes_readback_cache_and_network_activation(self):
-        view = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/htdocs/luci-static/resources/view/modem-extra-tools/main-1-1-2.js").read_text()
+        view = met_view().read_text()
         for marker in (
             "NV 550 readback completed",
             "Fully shut down the router",
@@ -130,7 +145,7 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
         self.assertNotIn("sessionStorage", view)
 
     def test_band_capability_mismatch_is_dynamic_and_explicit(self):
-        view = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/htdocs/luci-static/resources/view/modem-extra-tools/main-1-1-2.js").read_text()
+        view = met_view().read_text()
         backend = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/files/bands.lua").read_text()
         helper = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/src/hh71-nas.c").read_text()
         for marker in (
@@ -198,11 +213,11 @@ class ModemIdentityIntegrationTests(unittest.TestCase):
                           "the confirmation dialog must not describe the old full-reset behavior")
 
     def test_optional_packages_ship_the_same_backend_ui_version(self):
-        backend = (ROOT / "openwrt-feed/package/utils/modem-extra-tools/Makefile").read_text()
-        frontend = (ROOT / "openwrt-feed/package/luci/applications/luci-app-modem-extra-tools/Makefile").read_text()
+        frontend = MET_FRONTEND_MAKEFILE.read_text()
         config = (ROOT / "openwrt-feed/build.config").read_text()
-        self.assertIn("PKG_VERSION:=1.1.2", backend)
-        self.assertIn("PKG_VERSION:=1.1.2", frontend)
+        self.assertIn("PKG_VERSION:=%s" % met_version(), frontend)
+        self.assertTrue(met_view().is_file(),
+                        "the versioned view file must be named after PKG_VERSION")
         self.assertIn("CONFIG_PACKAGE_modem-extra-tools=m", config)
         self.assertIn("CONFIG_PACKAGE_luci-app-modem-extra-tools=m", config)
 

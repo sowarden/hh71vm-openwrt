@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# Keep LAN and Wi-Fi clients away from the Qualcomm half.
+#
+# 192.168.225.1 is the other half of this device, and nothing on it asks who is
+# connecting: telnet on 23 is a root shell with no password (the AT channel
+# hh71vm-modemd uses), core_app's JSON-RPC on 2016 has no authentication, and the
+# `shared_rom` SMB share is guest-writable.  Its Samba `hosts allow` checks only the
+# source address, and forwarded LAN traffic is masqueraded to this router's own
+# 192.168.225.111 -- so without this rule every LAN and Wi-Fi client passes it.
+# That share is also where /mnt/extern lives, and this router runs programs from it.
+#
+# Only forwarded traffic is rejected.  The router's own connections to the modem
+# (modemd, the LED helpers, the /mnt/extern mount, DNS) leave through OUTPUT, which a
+# forward rule never sees.
+#
+# Keyed by name and added only when absent, like 99-hh71vm-modem-firewall.  To reach
+# the stock web UI from a PC, disable the rule (`option enabled '0'`) rather than
+# deleting it: a deleted rule is added again after the next sysupgrade.
+
+RULE_NAME='Block-LAN-to-Qualcomm'
+
+if ! uci -q show firewall | grep -q "\.name='${RULE_NAME}'\$"; then
+	rule="$(uci -q add firewall rule)"
+	[ -n "$rule" ] || exit 0
+	uci -q set "firewall.${rule}.name=${RULE_NAME}"
+	uci -q set "firewall.${rule}.src=lan"
+	uci -q set "firewall.${rule}.dest=wan"
+	uci -q set "firewall.${rule}.dest_ip=192.168.225.1"
+	uci -q set "firewall.${rule}.proto=all"
+	uci -q set "firewall.${rule}.target=REJECT"
+	uci -q commit firewall
+fi
+
+exit 0

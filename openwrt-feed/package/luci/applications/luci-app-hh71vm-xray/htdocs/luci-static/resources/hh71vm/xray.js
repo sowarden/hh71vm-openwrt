@@ -384,6 +384,14 @@ function toUri(p) {
 
 /* --------------------------------------------------------------------- widgets */
 
+/* LuCI's E() writes a lone string child with innerHTML; only array members become
+ * text nodes.  Profile names, addresses and notes arrive in share links from anywhere,
+ * so every dynamic value goes through here.  Nodes and arrays pass through unchanged. */
+function text(v) {
+	if (v == null) return [];
+	return (typeof v === 'object') ? v : [ String(v) ];
+}
+
 function summary(p) {
 	var bits = [String(p.protocol || '').toUpperCase()];
 	if (p.tls === 'reality') bits.push('REALITY');
@@ -394,8 +402,8 @@ function summary(p) {
 }
 
 function section(title, children, descr) {
-	var kids = [E('h3', {}, title)];
-	if (descr) kids.push(E('div', { 'class': 'cbi-section-descr' }, descr));
+	var kids = [E('h3', {}, text(title))];
+	if (descr) kids.push(E('div', { 'class': 'cbi-section-descr' }, text(descr)));
 	return E('div', { 'class': 'cbi-section fade-in' }, kids.concat(children));
 }
 
@@ -408,32 +416,32 @@ function facts(rows) {
 		if (o.raw) cell = v;
 		else cell = (v == null || v === '') ? '–' : String(v);
 		out.push(E('div', { 'class': 'fact' }, [
-			E('div', { 'class': 'fact-k' }, r[0]),
-			E('div', { 'class': 'fact-v' + (o.mono ? ' mono' : '') }, cell)
+			E('div', { 'class': 'fact-k' }, text(r[0])),
+			E('div', { 'class': 'fact-v' + (o.mono ? ' mono' : '') }, text(cell))
 		]));
 	}
 	return E('div', { 'class': 'facts' }, out);
 }
 
-function label(text, kind) {
-	return E('span', { 'class': 'label ' + (kind || '') }, text);
+function label(value, kind) {
+	return E('span', { 'class': 'label ' + (kind || '') }, text(value));
 }
 
-function state(text, kind) {
-	return E('span', { 'class': 'dotlabel ' + (kind || 'off') }, text);
+function state(value, kind) {
+	return E('span', { 'class': 'dotlabel ' + (kind || 'off') }, text(value));
 }
 
-function action(text, kind, fn, confirmText) {
+function action(caption, kind, fn, confirmText) {
 	return E('button', {
 		'class': 'cbi-button cbi-button-' + (kind || 'neutral'),
 		'type': 'button',
 		'click': ui.createHandlerFn(this, function (ev) {
 			if (confirmText && !confirm(confirmText)) return;
 			return Promise.resolve(fn(ev)).catch(function (e) {
-				ui.addNotification(null, E('p', {}, String(e.message || e)), 'error');
+				ui.addNotification(null, E('p', {}, [ String(e.message || e) ]), 'error');
 			});
 		})
-	}, text);
+	}, text(caption));
 }
 
 /* The backend answers { error: "..." } rather than failing the RPC, so that the page
@@ -442,7 +450,7 @@ function checked(promise, okMsg) {
 	return Promise.resolve(promise).then(function (res) {
 		res = res || {};
 		if (res.error) throw new Error(res.error);
-		if (okMsg) ui.addNotification(null, E('p', {}, okMsg), 'info');
+		if (okMsg) ui.addNotification(null, E('p', {}, text(okMsg)), 'info');
 		return res;
 	});
 }
@@ -454,6 +462,7 @@ return baseclass.extend({
 	toUri: toUri,
 	emptyProfile: emptyProfile,
 	summary: summary,
+	text: text,
 	section: section,
 	facts: facts,
 	label: label,

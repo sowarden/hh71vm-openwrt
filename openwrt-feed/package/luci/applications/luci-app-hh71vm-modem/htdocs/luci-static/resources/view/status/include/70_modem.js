@@ -1,6 +1,7 @@
 'use strict';
 'require baseclass';
 'require rpc';
+'require ui';
 
 /* Modem block for the LuCI status dashboard.
  *
@@ -23,13 +24,48 @@ function bars(n) {
    of the way across the card.  It is not data, so it lives under the table. */
 function more(text) {
 	return E('div', { 'class': 'card-more' },
-	         E('a', { 'href': L.url('admin/modem/overview') }, text + ' »'));
+	         E('a', { 'href': L.url('admin/modem/overview') }, [ text + ' »' ]));
+}
+
+/* A lone string child of E() is parsed as HTML; the operator name comes from the
+   radio network, so every value here is passed as text. */
+function asText(v) {
+	if (v == null) return [];
+	return (typeof v === 'object') ? v : [ String(v) ];
 }
 
 function row(label, value) {
 	return E('div', { 'class': 'tr' }, [
-		E('div', { 'class': 'td left', 'style': 'width:33%' }, label),
-		E('div', { 'class': 'td left' }, value)
+		E('div', { 'class': 'td left', 'style': 'width:33%' }, asText(label)),
+		E('div', { 'class': 'td left' }, asText(value))
+	]);
+}
+
+/* A carrier-locked SIM is the one modem problem the dashboard must not state quietly:
+   nothing works, and the fix is on another page.  The notice goes through the ordinary
+   notification path, which the theme collects into its tray and dismisses on its own, so it
+   looks and behaves like every other message in the interface.  It fires once per visit so
+   it stays a pointer rather than a nag; the card keeps saying it for as long as it is true. */
+var noticeShown = false;
+
+function carrierLocked(sim) {
+	return String((sim || {}).status || '').toUpperCase().indexOf('PH-NET') === 0;
+}
+
+function lockNotice() {
+	if (!noticeShown) {
+		noticeShown = true;
+		ui.addNotification(null, E('p', {}, [
+			_('This SIM is blocked by a carrier lock.'), ' ',
+			E('a', { 'href': L.url('admin/modem/overview') }, _('Open Modem → Overview to unlock it.'))
+		]), 'warning');
+	}
+	return E([], [
+		E('div', { 'class': 'table' }, [
+			row(_('SIM'), E('span', { 'class': 'label warning' }, _('carrier locked'))),
+			row(_('Detail'), _('The modem refuses this SIM until the carrier lock is removed.'))
+		]),
+		more(_('Unlock the modem'))
 	]);
 }
 
@@ -50,9 +86,12 @@ return baseclass.extend({
 		if (link.state !== 'ready')
 			return E('div', { 'class': 'table' }, [
 				row(_('Control channel'),
-				    E('span', { 'class': 'label warning' }, link.state || 'down')),
+				    E('span', { 'class': 'label warning' }, [ String(link.state || 'down') ])),
 				row(_('Detail'), link.error || '–')
 			]);
+
+		if (carrierLocked(sim))
+			return lockNotice();
 
 		if (radio.on === false)
 			return E([], [
@@ -71,7 +110,7 @@ return baseclass.extend({
 			row(_('Technology'), '%s%s'.format(net.act_name || net.sysmode || '–',
 			    sig.band ? ', ' + _('band') + ' ' + sig.band : '')),
 			row(_('Signal'), E('span', { 'class': 'mtile-sig' },
-			    [bars(sig.bars || 0), E('span', {}, level)])),
+			    [bars(sig.bars || 0), E('span', {}, [ level ])])),
 			row(_('SIM'), sim.status || '–'),
 			row(_('Address'), data.ipv4 || '–'),
 			row(_('Traffic'), '%s %s / %s %s'.format(

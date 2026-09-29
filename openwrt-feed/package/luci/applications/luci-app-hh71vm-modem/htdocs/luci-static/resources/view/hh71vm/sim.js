@@ -18,9 +18,9 @@ function pinField(placeholder) {
 
 function row(title, field, descr) {
 	return E('div', { 'class': 'cbi-value' }, [
-		E('label', { 'class': 'cbi-value-title' }, title),
+		E('label', { 'class': 'cbi-value-title' }, m.text(title)),
 		E('div', { 'class': 'cbi-value-field' }, descr
-			? [field, E('div', { 'class': 'cbi-value-description' }, descr)]
+			? [field, E('div', { 'class': 'cbi-value-description' }, m.text(descr))]
 			: field)
 	]);
 }
@@ -46,7 +46,7 @@ return view.extend({
 		function dialog(title, fields, warnText, submit) {
 			ui.showModal(title, [
 				warnText ? E('div', { 'class': 'alert-message warning' },
-				             E('p', {}, warnText)) : E([])
+				             E('p', {}, m.text(warnText))) : E([])
 			].concat(fields).concat([
 				E('div', { 'class': 'cbi-page-actions' }, [
 					E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')),
@@ -56,7 +56,7 @@ return view.extend({
 								.then(function () { ui.hideModal(); return reload(); })
 								.catch(function (e) {
 									ui.addNotification(null,
-										E('p', {}, String(e.message || e)), 'error');
+										E('p', {}, [ String(e.message || e) ]), 'error');
 								});
 						}) }, _('Apply'))
 				])

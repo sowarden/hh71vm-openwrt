@@ -59,10 +59,10 @@ return view.extend({
 				])];
 				nets.forEach(function (n) {
 					rows.push(E('div', { 'class': 'tr' }, [
-						E('div', { 'class': 'td' }, n.long || n.short || '?'),
-						E('div', { 'class': 'td mono' }, n.numeric || '?'),
-						E('div', { 'class': 'td' }, n.act_name || '–'),
-						E('div', { 'class': 'td' }, STAT[n.stat] || String(n.stat)),
+						E('div', { 'class': 'td' }, m.text(n.long || n.short || '?')),
+						E('div', { 'class': 'td mono' }, m.text(n.numeric || '?')),
+						E('div', { 'class': 'td' }, m.text(n.act_name || '–')),
+						E('div', { 'class': 'td' }, m.text(STAT[n.stat] || String(n.stat))),
 						E('div', { 'class': 'td cbi-section-actions' }, n.stat === 3 ? E([]) :
 							m.action(_('Register'), 'action', function () {
 								return m.checked(
@@ -90,7 +90,7 @@ return view.extend({
 					if (res.state === 'failed' || res.error) {
 						results.className = '';
 						dom.content(results, E('p', { 'class': 'cbi-value-description' },
-							res.error || _('The scan failed.')));
+							m.text(res.error || _('The scan failed.'))));
 						return;
 					}
 					var nets = res.networks || [];
@@ -105,7 +105,7 @@ return view.extend({
 					if (stopped) return;
 					results.className = '';
 					dom.content(results, E('p', { 'class': 'cbi-value-description' },
-						String(e.message || e)));
+						[ String(e.message || e) ]));
 				});
 			}
 
@@ -114,7 +114,7 @@ return view.extend({
 			}).catch(function (e) {
 				results.className = '';
 				dom.content(results, E('p', { 'class': 'cbi-value-description' },
-					String(e.message || e)));
+					[ String(e.message || e) ]));
 			});
 		}
 
@@ -188,7 +188,7 @@ publishes them. Some codes cost money.'))])
 					'value': String(o.value),
 					'selected': (o.value === (mode.mode != null ? mode.mode : net.mode))
 						? 'selected' : null
-				}, o.name));
+				}, m.text(o.name)));
 			});
 			if (!modes.length)
 				sel.appendChild(E('option', {}, _('the modem reported no choices')));
@@ -246,7 +246,7 @@ the mobile data connection while it runs.'))
 			/* --- what the modem says it supports --- */
 			if (mode.bands && mode.bands.length)
 				kids.push(m.section(_('Band preferences reported by the modem'), [
-					E('div', { 'class': 'at-out' }, mode.bands.join('\n')),
+					E('div', { 'class': 'at-out' }, m.text(mode.bands.join('\n'))),
 					E('div', { 'class': 'cbi-value-description' },
 					  _('Read-only: this firmware exposes no command to change the band \
 list. The serving LTE band is shown under Registration.'))

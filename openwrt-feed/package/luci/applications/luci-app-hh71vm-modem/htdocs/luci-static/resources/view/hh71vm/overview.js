@@ -4,6 +4,7 @@
 'require poll';
 'require dom';
 'require hh71vm.modem as m';
+'require hh71vm.simlock as simlock';
 
 /* Modem overview: the whole radio state on one page.  Nothing is hidden behind a
  * "details" toggle -- the technical values are the point of the page.
@@ -11,9 +12,9 @@
 
 function tile(caption, value, sub, extra) {
 	return E('div', { 'class': 'mtile' }, [
-		E('div', { 'class': 'mtile-cap' }, caption),
-		E('div', { 'class': 'mtile-val' }, value),
-		E('div', { 'class': 'mtile-sub' }, sub || ' '),
+		E('div', { 'class': 'mtile-cap' }, m.text(caption)),
+		E('div', { 'class': 'mtile-val' }, m.text(value)),
+		E('div', { 'class': 'mtile-sub' }, m.text(sub || ' ')),
 		extra || E([])
 	]);
 }
@@ -27,7 +28,7 @@ function tiles(st) {
 
 	return E('div', { 'class': 'mtiles' }, [
 		tile(_('Signal'), E('span', { 'class': 'mtile-sig' }, [
-			m.signalBars(sig.bars), E('span', {}, lvl)
+			m.signalBars(sig.bars), E('span', {}, [ lvl ])
 		]), sig.rsrp != null ? 'RSRP · RSRQ ' + (sig.rsrq != null ? sig.rsrq + ' dB' : '–')
 		                     : _('RSSI')),
 		tile(_('Operator'), net.operator || _('not registered'),
@@ -69,10 +70,10 @@ function neighbourTable(list) {
 	for (var i = 0; i < neighbourRows; i++) {
 		var n = list[i];
 		rows.push(E('div', { 'class': 'tr' }, [
-			E('div', { 'class': 'td' }, n ? String(n.pci) : '–'),
-			E('div', { 'class': 'td' }, n ? String(n.earfcn) : '–'),
-			E('div', { 'class': 'td' }, (n && n.band) ? String(n.band) : '–'),
-			E('div', { 'class': 'td' }, n ? (n.rsrp + ' dBm') : '–')
+			E('div', { 'class': 'td' }, m.text(n ? String(n.pci) : '–')),
+			E('div', { 'class': 'td' }, m.text(n ? String(n.earfcn) : '–')),
+			E('div', { 'class': 'td' }, m.text((n && n.band) ? String(n.band) : '–')),
+			E('div', { 'class': 'td' }, m.text(n ? (n.rsrp + ' dBm') : '–'))
 		]));
 	}
 	return E('div', { 'class': 'table' }, rows);
@@ -92,6 +93,10 @@ return view.extend({
 		var self = this;
 
 		var body = E('div', { 'id': 'modem-overview' });
+		/* Built once and reused across every redraw: the section keeps its own read
+		   result and whatever the user has typed, which a fresh node would throw away
+		   every five seconds. */
+		var lockSection = simlock.widget();
 
 		function draw(st) {
 			var sig = st.signal || {}, net = st.net || {}, data = st.data || {},
@@ -103,6 +108,9 @@ return view.extend({
 			if (warn) kids.push(warn);
 
 			kids.push(tiles(st));
+
+			lockSection.hh71Notice(st);
+			kids.push(lockSection);
 
 			kids.push(E('div', { 'class': 'cbi-section fade-in' }, [
 				E('h3', {}, _('Control')),

@@ -43,21 +43,21 @@ return view.extend({
 			var pdp = E('select', {});
 			PDP_TYPES.forEach(function (t) {
 				pdp.appendChild(E('option', { 'value': t,
-					'selected': (entry.pdp_type === t) ? 'selected' : null }, t));
+					'selected': (entry.pdp_type === t) ? 'selected' : null }, m.text(t)));
 			});
 			var auth = E('select', {});
 			AUTH_TYPES.forEach(function (a) {
 				auth.appendChild(E('option', { 'value': String(a[0]),
-					'selected': (entry.auth === a[0]) ? 'selected' : null }, a[1]));
+					'selected': (entry.auth === a[0]) ? 'selected' : null }, m.text(a[1])));
 			});
 			var user = E('input', { 'type': 'text', 'value': '' });
 			var pass = E('input', { 'type': 'password', 'value': '' });
 
 			function row(title, field, descr) {
 				return E('div', { 'class': 'cbi-value' }, [
-					E('label', { 'class': 'cbi-value-title' }, title),
+					E('label', { 'class': 'cbi-value-title' }, m.text(title)),
 					E('div', { 'class': 'cbi-value-field' }, descr
-						? [field, E('div', { 'class': 'cbi-value-description' }, descr)]
+						? [field, E('div', { 'class': 'cbi-value-description' }, m.text(descr))]
 						: field)
 				]);
 			}
@@ -90,7 +90,7 @@ these two fields always start empty.')),
 								.then(function () { ui.hideModal(); return reload(); })
 								.catch(function (e) {
 									ui.addNotification(null,
-										E('p', {}, String(e.message || e)), 'error');
+										E('p', {}, [ String(e.message || e) ]), 'error');
 								});
 						}) }, _('Save'))
 				])
@@ -140,12 +140,12 @@ these two fields always start empty.')),
 					}, _('Clear profile %d?').format(e.cid)));
 
 				rows.push(E('div', { 'class': 'tr' }, [
-					E('div', { 'class': 'td mono' }, String(e.cid)),
+					E('div', { 'class': 'td mono' }, [ String(e.cid) ]),
 					E('div', { 'class': 'td' }, e.apn
 						? m.copyable(e.apn)
 						: E('em', { 'style': 'color:var(--muted)' }, _('(from the network)'))),
-					E('div', { 'class': 'td' }, e.pdp_type || '–'),
-					E('div', { 'class': 'td' }, e.auth_name || '–'),
+					E('div', { 'class': 'td' }, m.text(e.pdp_type || '–')),
+					E('div', { 'class': 'td' }, m.text(e.auth_name || '–')),
 					E('div', { 'class': 'td' }, e.active
 						? m.label(_('active'), 'success') : m.label(_('idle'))),
 					E('div', { 'class': 'td right' },

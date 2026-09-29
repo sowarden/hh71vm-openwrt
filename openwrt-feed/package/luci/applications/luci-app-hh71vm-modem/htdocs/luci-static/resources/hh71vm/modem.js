@@ -13,6 +13,13 @@ function decl(method, params) {
 	return rpc.declare({ object: 'hh71vm-modem', method: method, params: params });
 }
 
+/* The carrier lock lives in its own small backend rather than in the modem daemon: it
+ * has to talk to the Qualcomm side directly, and a router whose SIM is being refused
+ * must be able to recover without installing anything first. */
+function lockDecl(method, params) {
+	return rpc.declare({ object: 'hh71vm-simlock', method: method, params: params });
+}
+
 /* Slow calls need their own request, because rpc.js hard-codes a 20 second browser
  * timeout and several modem operations legitimately take longer.  Same envelope
  * rpc.js builds, only the deadline differs.
@@ -86,6 +93,17 @@ var api = {
 	phonebookList:   decl('phonebook_list', ['first', 'count']),
 	phonebookAdd:    decl('phonebook_add',  ['index', 'number', 'name']),
 	phonebookDelete: decl('phonebook_delete', ['index']),
+
+	/* Carrier (network) lock. simlockUnlock and simlockErase start a job and are polled
+	   through simlockJob, because a removal is only reported once the modem has settled
+	   and been read back, which outlives the ubus call ceiling. */
+	simlockStatus: lockDecl('status'),
+	simlockJob:    lockDecl('job'),
+	simlockImei:   lockDecl('imei'),
+	simlockNck:    lockDecl('nck',    ['imei']),
+	simlockUnlock: lockDecl('unlock', ['code', 'expected_state', 'confirmation']),
+	simlockErase:  lockDecl('erase',  ['confirmation']),
+	simlockClearRule: lockDecl('clear_rule', ['confirmation']),
 
 	/* the operator scan is a job: start it, then poll */
 	netScan:       decl('net_scan'),
@@ -176,10 +194,23 @@ function smsTime(ts) {
 
 /* ----------------------------------------------------------------- widgets */
 
+/* LuCI's E() writes a lone string child with innerHTML; only array members become
+ * text nodes.  Everything that can carry modem, network or SMS text goes through
+ * here, so it is always text.  Nodes and arrays pass through unchanged. */
+function text(v) {
+	if (v == null) return [];
+	return (typeof v === 'object') ? v : [ String(v) ];
+}
+
 function copyText(text) {
-	var ok = window.HH71 ? window.HH71.copy(String(text)) : false;
-	if (ok && window.HH71) window.HH71.toast('Copied: ' +
-		(text.length > 42 ? String(text).slice(0, 42) + '…' : text));
+	var v = String(text);
+	var ok = window.HH71 ? window.HH71.copy(v) : false;
+	if (ok)
+		ui.addNotification(null, E('p', {}, _('Copied: ') +
+			(v.length > 42 ? v.slice(0, 42) + '…' : v)), 'info');
+	else
+		ui.addNotification(null, E('p', {},
+			_('Copy failed: select the text and copy it by hand')), 'warning');
 	return ok;
 }
 
@@ -187,7 +218,7 @@ function copyText(text) {
  * same here as everywhere else in the interface. */
 function copyable(value, extraClass) {
 	if (value == null || value === '') return E('span', {}, '–');
-	var kids = [E('span', {}, String(value))];
+	var kids = [E('span', {}, [ String(value) ])];
 	if (window.HH71 && window.HH71.copyButton)
 		kids.push(window.HH71.copyButton(function () { return String(value); }));
 	return E('span', { 'class': 'copyable ' + (extraClass || '') }, kids);
@@ -206,16 +237,16 @@ function facts(rows) {
 		else if (o.copy && v != null && v !== '' && v !== '–') cell = copyable(v);
 		else cell = (v == null || v === '') ? '–' : String(v);
 		out.push(E('div', { 'class': 'fact' }, [
-			E('div', { 'class': 'fact-k' }, r[0]),
-			E('div', { 'class': 'fact-v' + (o.mono ? ' mono' : '') }, cell)
+			E('div', { 'class': 'fact-k' }, text(r[0])),
+			E('div', { 'class': 'fact-v' + (o.mono ? ' mono' : '') }, text(cell))
 		]));
 	}
 	return E('div', { 'class': 'facts' }, out);
 }
 
 function section(title, children, descr) {
-	var kids = [E('h3', {}, title)];
-	if (descr) kids.push(E('div', { 'class': 'cbi-section-descr' }, descr));
+	var kids = [E('h3', {}, text(title))];
+	if (descr) kids.push(E('div', { 'class': 'cbi-section-descr' }, text(descr)));
 	return E('div', { 'class': 'cbi-section fade-in' }, kids.concat(children));
 }
 
@@ -229,27 +260,27 @@ function signalBars(n) {
 	return e;
 }
 
-function label(text, kind) {
-	return E('span', { 'class': 'label ' + (kind || '') }, text);
+function label(value, kind) {
+	return E('span', { 'class': 'label ' + (kind || '') }, text(value));
 }
 
 /* State that does not lean on colour alone: a dot plus the word. */
-function state(text, kind) {
-	return E('span', { 'class': 'dotlabel ' + (kind || 'off') }, text);
+function state(value, kind) {
+	return E('span', { 'class': 'dotlabel ' + (kind || 'off') }, text(value));
 }
 
 /* Buttons that call the daemon: disable while in flight, report either way. */
-function action(text, kind, fn, confirmText) {
+function action(caption, kind, fn, confirmText) {
 	return E('button', {
 		'class': 'cbi-button cbi-button-' + (kind || 'neutral'),
 		'type': 'button',
 		'click': ui.createHandlerFn(this, function (ev) {
 			if (confirmText && !confirm(confirmText)) return;
 			return Promise.resolve(fn(ev)).catch(function (e) {
-				ui.addNotification(null, E('p', {}, String(e.message || e)), 'error');
+				ui.addNotification(null, E('p', {}, [ String(e.message || e) ]), 'error');
 			});
 		})
-	}, text);
+	}, text(caption));
 }
 
 /* Uniform error reporting: the daemon answers { ok: false, error: "..." } */
@@ -258,7 +289,7 @@ function checked(promise, okMsg) {
 		res = res || {};
 		if (res.error || res.ok === false)
 			throw new Error(res.error || res.detail || _('The modem rejected the request'));
-		if (okMsg) ui.addNotification(null, E('p', {}, okMsg), 'info');
+		if (okMsg) ui.addNotification(null, E('p', {}, text(okMsg)), 'info');
 		return res;
 	});
 }
@@ -270,7 +301,7 @@ function linkState(st) {
 		E('h4', {}, _('No connection to the modem')),
 		E('p', {}, [
 			_('The control channel to the Qualcomm side is'), ' ',
-			E('strong', {}, String(l.state || 'down')), '. ',
+			E('strong', {}, [ String(l.state || 'down') ]), '. ',
 			l.error ? String(l.error) : ''
 		]),
 		E('p', {}, _('Nothing on this page can be read or changed until it comes back.'))
@@ -284,6 +315,7 @@ return baseclass.extend({
 	duration: duration,
 	smsTime: smsTime,
 	copyText: copyText,
+	text: text,
 	copyable: copyable,
 	facts: facts,
 	section: section,

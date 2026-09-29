@@ -172,7 +172,7 @@ for it.').format(dst))) return;
 				                                    : _('Message stored on the SIM/modem.'))
 					.then(function () { ui.hideModal(); return reload(); })
 					.catch(function (e) {
-						ui.addNotification(null, E('p', {}, String(e.message || e)), 'error');
+						ui.addNotification(null, E('p', {}, [ String(e.message || e) ]), 'error');
 					});
 			}
 
@@ -232,7 +232,7 @@ for it.').format(dst))) return;
 incoming messages are stored. Modems disagree about where they put incoming messages, so \
 "Both stores" also reads both; the SIM card holds only 10-20 messages, the modem far more, \
 so it is preferred whenever it has room.')),
-							E('div', { 'class': 'cbi-value-description' }, receiveSentence(sms))])
+							E('div', { 'class': 'cbi-value-description' }, m.text(receiveSentence(sms)))])
 					]),
 					E('div', { 'class': 'cbi-value' }, [
 						E('label', { 'class': 'cbi-value-title' }, _('Service centre')),
@@ -258,7 +258,7 @@ only if your operator told you to.'))])
 									.then(reload)
 									.catch(function (e) {
 										ui.addNotification(null,
-											E('p', {}, String(e.message || e)), 'error');
+											E('p', {}, [ String(e.message || e) ]), 'error');
 									});
 							} }, _('Save'))
 					])
@@ -291,8 +291,8 @@ only if your operator told you to.'))])
 
 			return E('div', { 'class': 'msg' + (msg.unread ? ' unread' : '') }, [
 				E('div', { 'class': 'msg-head' }, [
-					E('span', { 'class': 'msg-from' }, msg.sender || '?'),
-					E('span', { 'class': 'msg-time' }, m.smsTime(msg.ts)),
+					E('span', { 'class': 'msg-from' }, m.text(msg.sender || '?')),
+					E('span', { 'class': 'msg-time' }, m.text(m.smsTime(msg.ts))),
 					(showStore && msg.storage) ? m.label(storeName(msg.storage)) : E([]),
 					msg.parts > 1 ? m.label(_('%d parts').format(msg.parts)) : E([]),
 					/* a segment can still be on its way, or one slot of several may
@@ -307,9 +307,9 @@ only if your operator told you to.'))])
 						? m.label(_('draft'), 'warning') : E([]),
 					acts
 				]),
-				E('div', { 'class': 'msg-body' }, msg.decode_error
+				E('div', { 'class': 'msg-body' }, m.text(msg.decode_error
 					? _('This stored message could not be decoded. It remains available for marking or deletion by slot.')
-					: (msg.text || ''))
+					: (msg.text || '')))
 			]);
 		}
 
@@ -320,7 +320,7 @@ only if your operator told you to.'))])
 			if (warn) kids.push(warn);
 			if (list.ok !== true) kids.push(E('div', { 'class': 'alert-message error' }, [
 				E('h4', {}, _('Messages could not be refreshed')),
-				E('p', {}, String(list.error || _('The message store could not be read.'))),
+				E('p', {}, [ String(list.error || _('The message store could not be read.')) ]),
 				msgs.length ? E('p', {}, _('The last cached messages are shown below.')) : E([])
 			]));
 			/* A message the modem has announced (+CMTI) but not yet made visible in a
@@ -339,7 +339,7 @@ the modem. The list below updates on its own in a few seconds.'))));
 				'class': 'alert-message warning'
 			}, [
 				E('h4', {}, _('Part of the message storage could not be read')),
-				E('p', {}, String(list.store_error)),
+				E('p', {}, [ String(list.store_error) ]),
 				E('p', {}, _('The messages below are only the ones that could be read.'))
 			]));
 
@@ -359,10 +359,10 @@ the modem. The list below updates on its own in a few seconds.'))));
 				return read.indexOf(id) < 0 && (counts[id].used || 0) > 0;
 			});
 			if (hidden.length) kids.push(E('div', { 'class': 'alert-message warning' }, [
-				E('p', {}, _('%s holds %d occupied slot(s) that are not shown, because message storage is set to %s.')
+				E('p', {}, m.text(_('%s holds %d occupied slot(s) that are not shown, because message storage is set to %s.')
 					.format(hidden.map(storeName).join(', '),
 					        hidden.reduce(function (n, id) { return n + counts[id].used; }, 0),
-					        read.map(storeName).join(', ') || _('a single store'))),
+					        read.map(storeName).join(', ') || _('a single store')))),
 				E('p', {}, _('Use "Settings" to read both stores.'))
 			]));
 
@@ -376,11 +376,11 @@ the modem. The list below updates on its own in a few seconds.'))));
 			if (full.length) kids.push(E('div', {
 				'class': 'alert-message ' + (sms.stores_full ? 'error' : 'warning')
 			}, [
-				E('p', {}, (full.length > 1
+				E('p', {}, m.text((full.length > 1
 					? _('%s are full.').format(full.map(storeName).join(', '))
 					: _('%s is full.').format(storeName(full[0]))) + ' ' +
-					_('A full store refuses new messages and can lose the remaining parts of a message already arriving.')),
-				E('p', {}, receiveSentence(sms))
+					_('A full store refuses new messages and can lose the remaining parts of a message already arriving.'))),
+				E('p', {}, m.text(receiveSentence(sms)))
 			]));
 
 			/* One bar per store that is being read: a single combined bar would hide a

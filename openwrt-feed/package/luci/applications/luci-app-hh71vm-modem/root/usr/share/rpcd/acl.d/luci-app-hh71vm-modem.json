@@ -1,6 +1,6 @@
 {
 	"luci-app-hh71vm-modem": {
-		"description": "Read modem status and control the modem of the HH71VM",
+		"description": "Read modem status, control the modem of the HH71VM and remove a carrier SIM lock",
 		"read": {
 			"ubus": {
 				"hh71vm-modem": [
@@ -22,7 +22,8 @@
 					"sms_settings",
 					"sms_read",
 					"phonebook_list"
-				]
+				],
+				"hh71vm-simlock": [ "status", "job", "imei", "nck" ]
 			}
 		},
 		"write": {
@@ -54,7 +55,8 @@
 					"phonebook_add",
 					"phonebook_delete",
 					"at"
-				]
+				],
+				"hh71vm-simlock": [ "unlock", "erase", "clear_rule" ]
 			}
 		}
 	}

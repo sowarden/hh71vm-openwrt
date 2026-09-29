@@ -34,9 +34,9 @@ return view.extend({
 
 			function row(t, f, d) {
 				return E('div', { 'class': 'cbi-value' }, [
-					E('label', { 'class': 'cbi-value-title' }, t),
+					E('label', { 'class': 'cbi-value-title' }, m.text(t)),
 					E('div', { 'class': 'cbi-value-field' },
-					  d ? [f, E('div', { 'class': 'cbi-value-description' }, d)] : f)
+					  d ? [f, E('div', { 'class': 'cbi-value-description' }, m.text(d))] : f)
 				]);
 			}
 
@@ -59,7 +59,7 @@ does not fit.')),
 								.then(function () { ui.hideModal(); return reload(); })
 								.catch(function (e) {
 									ui.addNotification(null,
-										E('p', {}, String(e.message || e)), 'error');
+										E('p', {}, [ String(e.message || e) ]), 'error');
 								});
 						}) }, _('Save'))
 				])
@@ -92,8 +92,8 @@ does not fit.')),
 
 			entries.forEach(function (e) {
 				rows.push(E('div', { 'class': 'tr' }, [
-					E('div', { 'class': 'td mono' }, String(e.index)),
-					E('div', { 'class': 'td' }, e.name || '–'),
+					E('div', { 'class': 'td mono' }, [ String(e.index) ]),
+					E('div', { 'class': 'td' }, m.text(e.name || '–')),
 					E('div', { 'class': 'td' }, m.copyable(e.number)),
 					E('div', { 'class': 'td right' },
 					  E('div', { 'class': 'mactions', 'style': 'justify-content:flex-end' }, [

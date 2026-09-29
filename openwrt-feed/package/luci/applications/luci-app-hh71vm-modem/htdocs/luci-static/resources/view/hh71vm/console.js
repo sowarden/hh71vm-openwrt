@@ -97,7 +97,7 @@ mobile data is unavailable. Run it?').format(cmds[i]))) return;
 			history.push(cmdText);
 			histPos = history.length;
 
-			append([E('div', {}, E('span', { 'class': 'cmd' }, '> ' + cmds.join(' ; ')))]);
+			append([E('div', {}, E('span', { 'class': 'cmd' }, [ '> ' + cmds.join(' ; ') ]))]);
 			var busy = E('div', { 'class': 'spinning' }, _('waiting for the modem…'));
 			append([busy]);
 			var done = function () { if (busy.parentNode) busy.parentNode.removeChild(busy); };
@@ -111,19 +111,19 @@ mobile data is unavailable. Run it?').format(cmds[i]))) return;
 				   did nothing. */
 				if (res.error && !(res.results && res.results.length))
 					return append([E('div', { 'class': 'err' },
-					                 _('no answer from the modem: %s').format(String(res.error)))]);
+					                 [ _('no answer from the modem: %s').format(String(res.error)) ])]);
 				(res.results || []).forEach(function (r) {
 					(r.lines || []).forEach(function (l) {
-						append([E('div', {}, l)]);
+						append([E('div', {}, [ String(l) ])]);
 					});
 					var final = r.final || '';
 					append([E('div', { 'class': final === 'OK' ? 'ok' : 'err' },
-					          final || '(no final result)')]);
+					          [ final || '(no final result)' ])]);
 				});
 				append([E('div', {}, ' ')]);
 			}).catch(function (e) {
 				done();
-				append([E('div', { 'class': 'err' }, String(e.message || e))]);
+				append([E('div', { 'class': 'err' }, [ String(e.message || e) ])]);
 			});
 		}
 
