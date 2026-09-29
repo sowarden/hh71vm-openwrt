@@ -21,7 +21,7 @@ Open **Modem** in the LuCI menu.
 
 | Page | What is on it |
 |---|---|
-| Overview | Signal, operator, registration, connection state, data counters |
+| Overview | Signal, operator, registration, connection state, data counters, carrier SIM lock state and its removal |
 | Messages | Read, delete and send SMS, including multipart messages |
 | Network | Operator selection, 2G/3G/4G mode selection, USSD requests |
 | Profiles | APN profiles: create, edit, choose the active one |

@@ -72,7 +72,19 @@ end
 if X.trim(s.api_token) == "" then
 	reply(403, { ok = false, error = "no API token is set" })
 end
-if token ~= s.api_token then
+-- Compared without an early exit, and a wrong token costs a second: the token is long
+-- enough that neither matters much, but both are free.
+local function same(a, b)
+	a, b = tostring(a), tostring(b)
+	local diff = (#a == #b) and 0 or 1
+	for i = 1, #b do
+		if a:byte(i) ~= b:byte(i) then diff = diff + 1 end
+	end
+	return diff == 0
+end
+
+if not same(token, s.api_token) then
+	pcall(function() require("nixio").nanosleep(1) end)
 	reply(403, { ok = false, error = "bad token" })
 end
 
@@ -99,7 +111,7 @@ elseif action == "activate" then
 	X.save_profiles(store)
 	-- If the connection is up, move it to the new profile rather than leaving the
 	-- page and the tunnel disagreeing about which server is in use.
-	if X.bool(s.enabled) then
+	if X.bool(s.enabled) and X.pid() then
 		os.execute("/usr/sbin/hh71vm-xrayctl connect --job >/dev/null 2>&1 &")
 		reply(200, { ok = true, active = p.id, reconnecting = true })
 	end

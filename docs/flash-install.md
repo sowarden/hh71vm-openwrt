@@ -227,7 +227,10 @@ The same signed update path is available in **System > Backup / Flash Firmware**
 Releases, and displays a signed changelog when one was published for a build. **Check Updates**
 does not download or install firmware. **Upgrade Firmware** repeats the release verification,
 downloads the selected immutable image, verifies its SHA-256 and platform compatibility, and asks
-for a final confirmation before installing it with settings preserved.
+for a final confirmation before installing it with settings preserved. The download runs on the
+router in the background, so a slow mobile link cannot cut it off; the page follows it and reports
+a failure instead of waiting for a reboot that is not coming. From SSH, `autosysupgrade --job-json`
+shows the same progress.
 
 For older images without this command, use the OpenWrt updater manually. No installation tool and
 no button press is needed. Download the latest

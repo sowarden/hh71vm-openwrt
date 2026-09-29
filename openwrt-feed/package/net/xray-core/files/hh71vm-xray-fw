@@ -197,13 +197,17 @@ port_listening() {   # port_listening <port>
 
 DNSMASQ_CONF=/tmp/dnsmasq.d/xray.conf
 
+# `up` runs on every fw3 reload and every interface event, and restarting dnsmasq each
+# time is a short DNS outage for the whole LAN.  It is restarted only when the override
+# actually changes.
 dns_capture() {
+	local want
 	mkdir -p /tmp/dnsmasq.d
-	cat > "$DNSMASQ_CONF" <<-EOF
-		# written by hh71vm-xray-fw; removed when the connection is switched off
-		no-resolv
-		server=127.0.0.1#${DNS_PORT}
-	EOF
+	want="# written by hh71vm-xray-fw; removed when the connection is switched off
+no-resolv
+server=127.0.0.1#${DNS_PORT}"
+	[ "$(cat "$DNSMASQ_CONF" 2>/dev/null)" = "$want" ] && return 0
+	printf '%s\n' "$want" > "$DNSMASQ_CONF"
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 }
 

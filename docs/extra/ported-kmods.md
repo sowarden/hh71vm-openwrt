@@ -27,6 +27,7 @@ Netfilter and routing:
 - `kmod-nf-nat`
 - `kmod-nf-reject`
 - `kmod-nf-reject6`
+- `kmod-hh71vm-ipt-ipopt` — see [IP option modules](ipt-ipopt.md)
 
 PPP:
 
@@ -56,8 +57,9 @@ Filesystem and crypto, for the [external storage](external-storage.md) mount:
 Install with `opkg` from the feed belonging to your exact firmware build; see
 [installing optional packages](../package-feed.md).
 
-- `kmod-hh71vm-ipt-ipopt` — see [IP option modules](ipt-ipopt.md)
 - `kmod-wireguard`
+- `kmod-tun`
+- `kmod-ipt-tproxy`
 - `kmod-fuse`
 - `kmod-fs-nfs`
 - `kmod-fs-nfs-v3`

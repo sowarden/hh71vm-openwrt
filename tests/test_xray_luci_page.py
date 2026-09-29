@@ -153,6 +153,12 @@ class PageRenderTests(unittest.TestCase):
         self.assertTrue(self.out["has_connect_button"])
         self.assertTrue(self.out["mentions_profiles"])
 
+    def test_profile_text_never_reaches_innerhtml(self):
+        # A share link's #name, note and host are someone else's text; LuCI parses a
+        # lone string child as HTML, so they have to arrive as text nodes.
+        self.assertIn("markup_reaches_html", self.out)
+        self.assertFalse(self.out["markup_reaches_html"])
+
     def test_every_dialog_opens(self):
         # A dialog that throws is invisible until someone clicks it on the device.
         for label, result in self.out["dialogs"]:

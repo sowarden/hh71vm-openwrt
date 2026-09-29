@@ -549,6 +549,20 @@ end
 --- Concatenation reference number: one byte common to parts of one message and
 --- different for adjacent messages. The phone groups parts by (sender, reference),
 --- so immediately reusing one could merge two different messages.
+--- Lua 5.1 starts every process from the same generator state unless it is seeded, so
+--- the first long message after each daemon start reused one reference.
+do
+	local seed = os.time()
+	local f = io.open("/dev/urandom", "rb")
+	if f then
+		local b = f:read(4)
+		f:close()
+		if b and #b == 4 then
+			seed = b:byte(1) + b:byte(2) * 256 + b:byte(3) * 65536 + (b:byte(4) % 128) * 16777216
+		end
+	end
+	math.randomseed(seed)
+end
 local sms_concat_ref = math.random(0, 255)
 local function next_concat_ref()
 	sms_concat_ref = (sms_concat_ref + 1) % 256
@@ -1009,6 +1023,8 @@ local function apn_state_set(entry)
 	fs.mkdirr((APN_STATE_FILE:match("^(.*)/[^/]*$")))
 	local f = io.open(APN_STATE_FILE .. ".tmp", "w")
 	if not f then return nil, "the APN could not be saved for restart-persistence" end
+	-- it carries the APN password: owner-only, before anything is written into it
+	fs.chmod(APN_STATE_FILE .. ".tmp", 600)
 	f:write(json.stringify(entry))
 	f:close()
 	fs.move(APN_STATE_FILE .. ".tmp", APN_STATE_FILE)
@@ -1978,7 +1994,7 @@ end
 --- that SMS silently stop arriving in the UI until a reboot.
 function M.parsers.cnmi(lines)
 	for _, l in ipairs(lines) do
-		local v = l:match("^%\+CNMI:%s*(.+)$")
+		local v = l:match("^%+CNMI:%s*(.+)$")
 		if v then
 			S.sms = S.sms or {}
 			S.sms.cnmi = trim(v)

@@ -117,6 +117,31 @@ be run by accident, and the intended use is restoring the value printed on your 
 after it has been lost — for example by a failed modem firmware operation. Check your local
 law before changing it to anything else.
 
+## Carrier SIM lock
+
+A carrier lock makes the modem refuse SIM cards from other networks. This page can create
+one: **Lock this router to one network** sets the lock to the network of the SIM that is in
+the router at that moment, and shows which network code that is before you commit to it.
+
+Removing a lock is deliberately **not** here. It lives on **Modem > Overview**, which is part
+of the base firmware, so a router that has started refusing its own SIM can still be
+recovered without installing any package first.
+
+The lock state is read from the modem itself rather than from the Qualcomm control service:
+that service lags a write by several seconds and does not report an armed lock at all. A
+wrong unlock code costs one of the ten attempts the modem allows, and the counter cannot be
+reset.
+
+Removal without a code is offered on every modem, not only on the Qualcomm firmware build it
+was tested against. That build is reported in the status and the page warns when it is not the
+tested one, or cannot be read at all; the operation is still worth trying, because it sends no
+unlock code and uses none of the ten attempts. If you run a different build, please report
+whether it worked, with your firmware version - that is the only way the list of builds known
+to work grows.
+
+Verified on the reference unit. Other carrier variants, and units locked by a carrier rather
+than by this firmware, are untested.
+
 ## Status
 
 ```sh

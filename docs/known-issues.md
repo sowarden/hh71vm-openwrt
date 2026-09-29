@@ -11,6 +11,18 @@ the behavior already observed on the reference device.
 - **No root password is set.** Set one at the first login. Until you do, SSH and LuCI must
   not be reachable from an untrusted network.
 - **Both Wi-Fi networks use the public key `hh71vm12345`.** Change both before use.
+- **The Qualcomm half (`192.168.225.1`) is not reachable from LAN or Wi-Fi clients.** Its
+  telnet, control and file-sharing services have no authentication of their own, so the
+  firewall rule `Block-LAN-to-Qualcomm` rejects forwarded traffic to it. The router's own
+  connections are unaffected. To open the stock web UI from a PC, disable that rule
+  temporarily instead of deleting it; a deleted rule is added back after `sysupgrade`.
+- **Xray's SOCKS and HTTP inbounds accept anyone who can reach the router.** While Xray is
+  running they listen on every interface (ports 1080 and 1081 by default) with no
+  authentication, and they exist in **VPN mode as well as proxy mode** - VPN mode uses them
+  for its own probe and API. The `wan` zone rejects input, so this is not reachable from the
+  internet unless you forward a port, but every LAN and Wi-Fi client can use the router as an
+  open proxy while Xray is up. This is deliberate, so a client left out of the VPN capture can
+  still reach the tunnel. Xray is not installed by default.
 - **Some vendor procfs controls still have overly broad permissions.** Reducing permissions
   on entries that can expose key material is outstanding.
 - **Logs can contain unique identifiers.** Redact MAC addresses, serial numbers, IMEI/IMSI,
@@ -64,9 +76,15 @@ or no networking. Report marker differences.
   shut down the router, disconnect power, and then power it on again. The implemented
   OpenWrt reboot path resets the Realtek SoC and has no confirmed Qualcomm reset step, so
   it is not a substitute for this power cycle.
-- OpenWrt and `modem-extra-tools` do not remove a carrier, SIM, subsidy, or network lock.
-  IMEI restoration, TTL normalization, LTE band preferences, SIM PIN handling, and carrier
-  unlocking are separate operations. This project has no verified carrier-unlock method.
+- **A carrier SIM lock can now be read, set and removed.** Modem > Overview reports whether
+  a lock is in force and carries the removal controls; Extra tools can lock the router to the
+  network of the SIM currently in it. The state is read from the modem itself, because the
+  Qualcomm control service lags a write by several seconds and does not report an armed lock
+  at all. A wrong unlock code costs one of the ten attempts the modem allows and the counter
+  cannot be reset, so a code that has already been sent is never resent automatically. This
+  was verified on the reference unit; other carrier variants, and units locked by a carrier
+  rather than by this firmware, are untested. IMEI restoration, TTL normalization, LTE band
+  preferences and SIM PIN handling remain separate operations.
 - **Restarting the modem from the Overview page parks and re-enables the radio
   (`AT+CFUN=0` then `AT+CFUN=1`), confirmed live 2026-09-15.** An earlier version sent
   `AT+CFUN=1,1` (a full Qualcomm baseband reset) instead; that took the whole board down,
@@ -193,9 +211,12 @@ Shipped early on purpose. Read [Xray VPN](extra/xray-vpn.md) before installing i
   storage. Split routing is therefore unavailable.
 - **The tunnel is CPU-bound at about 12 Mbit/s** with REALITY, about 27 for VMess over
   plain TCP. That is the processor, not the connection.
-- **VMess needs the clock.** The board has no working NTP. Connecting sets the clock from
-  the connection, but a router that has never connected and has a clock hours out will fail
-  VMess with `invalid user`, which names the wrong thing.
+- **The board has no battery-backed clock**, so every boot starts at a fixed date in the
+  past. `sysntpd` is enabled and corrects it within seconds *once the router has working
+  internet*, so this only bites before the first successful connection. Until then the date
+  is years out, which breaks anything that validates a TLS certificate (a certificate that is
+  not valid yet), and fails VMess with `invalid user`, a message that names the wrong thing.
+  Xray can also set the clock from its own connection.
 - **The tunnel over the mobile connection is untested.** Everything was measured with the
   router's uplink on a cable. Nothing in the design depends on which interface the default
   route uses, but that is not the same as having run it.

@@ -52,9 +52,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HH71VM_FEED_SIGNING_KEY: ${{ secrets.HH71VM_FEED_SIGNING_KEY }}
           HH71VM_FEED_PUBLIC_KEY: ${{ vars.HH71VM_FEED_PUBLIC_KEY }}
+          # Inputs reach the shell as data, never as script text.
+          RESUME_TAG: ${{ inputs.tag }}
+          RESUME_COMMIT: ${{ inputs.source-commit }}
+          RESUME_ARTIFACT_ID: ${{ inputs.artifact-id }}
+          RESUME_RUN_ID: ${{ inputs.source-run-id }}
         run: |
           python3 autobuild/publish.py resume candidate \
-            --tag "${{ inputs.tag }}" \
-            --commit "${{ inputs.source-commit }}" \
-            --artifact-id "${{ inputs.artifact-id }}" \
-            --source-run-id "${{ inputs.source-run-id }}"
+            --tag "$RESUME_TAG" \
+            --commit "$RESUME_COMMIT" \
+            --artifact-id "$RESUME_ARTIFACT_ID" \
+            --source-run-id "$RESUME_RUN_ID"

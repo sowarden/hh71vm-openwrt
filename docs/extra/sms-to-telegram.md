@@ -67,10 +67,55 @@ decoded text. Persistent state under `/etc/sms-to-telegram/` records these stage
 - confirmed, pending SIM deletion;
 - completed.
 
-The message sent to Telegram contains the sender, a timestamp when the modem supplied one,
-and the SMS text. No `parse_mode` is used, so SMS contents are not interpreted as Markdown
-or HTML. The HTTPS client verifies the normal CA chain and never enables an insecure
-certificate bypass.
+A long message whose later parts have not arrived yet is held for up to ten minutes, so it is
+forwarded once and whole. If a part never arrives, the message is forwarded as it is, marked
+`[incomplete: N of M parts arrived]`. The state file is written only when a record or the kind
+of error changes, not on every poll, and records of messages that have left the modem are
+dropped after 30 days.
+
+The HTTPS client verifies the normal CA chain and never enables an insecure certificate
+bypass. That makes it sensitive to the router's clock: this board has no battery-backed
+clock, so it boots years in the past, and until `sysntpd` has corrected it Telegram's
+certificate is "not valid yet" and every send fails. The page names the clock when a
+connection cannot be made, so this is not mistaken for a bad bot token.
+
+## Message format
+
+The message sent to Telegram is built from a template you can edit on the LuCI page, under
+**Step 6 — Message format**. The default is:
+
+```
+<b>SMS from %sender%</b>
+%incomplete%
+%receive_time%
+
+%sms_text%
+```
+
+Each `%name%` is replaced by its value. Anything else is left exactly as typed, so an unknown
+name or a bare `%` is never mangled. A line that held only placeholders and comes out empty is
+dropped, which is why `%incomplete%` leaves no blank gap for an ordinary message.
+
+| Placeholder | Value |
+|---|---|
+| `%sender%` | Sender number, or the name a service used. |
+| `%receiver%` | This router's own SIM number, when the network reports one. |
+| `%sms_text%` | The message text, with the parts of a long SMS already joined. |
+| `%receive_time%` | When the message was sent, as the message itself records it. |
+| `%router_time%` | The router's own clock when it forwarded the message. |
+| `%parts%` | How many parts a long SMS arrived in; `1` for an ordinary message. |
+| `%incomplete%` | A note naming the missing parts. Empty when the message is whole. |
+| `%storage%` | Which SIM store the message came from: `ME` or `SM`. |
+| `%hostname%` | This router's hostname. |
+
+`parse_mode` is `HTML` by default, and can be set to `MarkdownV2` or to plain text. **The
+template's own markup is sent as written; the values put into it are escaped for the chosen
+mode.** An SMS containing `<b>` or `*` is therefore shown literally and cannot forge
+formatting or break the message.
+
+If Telegram rejects the formatting, which it does for the whole request when the markup does
+not parse, the message is delivered once as plain text instead and the page reports it. A
+mistake in a template cannot stop messages arriving.
 
 HTTP 200 alone is not success: the response must be valid JSON with `ok: true`. Timeouts,
 transport failures, Bot API errors and rate limits leave the SIM message intact and schedule

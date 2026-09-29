@@ -142,9 +142,9 @@ var CSS = [
 
 function row(title, field, descr) {
 	return E('div', { 'class': 'cbi-value' }, [
-		E('label', { 'class': 'cbi-value-title' }, title),
+		E('label', { 'class': 'cbi-value-title' }, x.text(title)),
 		E('div', { 'class': 'cbi-value-field' }, descr
-			? [field, E('div', { 'class': 'cbi-value-description' }, descr)]
+			? [field, E('div', { 'class': 'cbi-value-description' }, x.text(descr))]
 			: field)
 	]);
 }
@@ -155,7 +155,7 @@ function select(options, value) {
 		var v = Array.isArray(o) ? o[0] : o, t = Array.isArray(o) ? o[1] : o;
 		s.appendChild(E('option', {
 			'value': v, 'selected': (String(value) === String(v)) ? 'selected' : null
-		}, t));
+		}, x.text(t)));
 	});
 	return s;
 }
@@ -185,13 +185,13 @@ function switchRow(labelText, descr, checked, onSet) {
 		Promise.resolve(onSet(box.checked))
 			.catch(function (e) {
 				box.checked = !box.checked;
-				ui.addNotification(null, E('p', {}, String(e.message || e)), 'error');
+				ui.addNotification(null, E('p', {}, [ String(e.message || e) ]), 'error');
 			})
 			.then(function () { busy.style.display = 'none'; });
 	});
 	return E('label', { 'class': 'xray-switch' }, [
-		box, E('span', {}, [E('strong', {}, labelText),
-		                    descr ? E('div', { 'class': 'cbi-value-description' }, descr) : '']),
+		box, E('span', {}, [E('strong', {}, x.text(labelText)),
+		                    descr ? E('div', { 'class': 'cbi-value-description' }, x.text(descr)) : '']),
 		busy
 	]);
 }
@@ -276,14 +276,14 @@ return view.extend({
 			(job.steps || []).forEach(function (s) {
 				kids.push(E('div', { 'class': 'xray-step ' + (s.ok ? 'ok' : 'bad') }, [
 					E('span', { 'class': 'xray-step-mark' }, s.ok ? '✓' : '✗'),
-					E('span', { 'class': 'xray-step-name' }, s.step),
-					E('span', { 'class': 'xray-step-text' }, s.text || s.error || '')
+					E('span', { 'class': 'xray-step-name' }, x.text(s.step)),
+					E('span', { 'class': 'xray-step-text' }, x.text(s.text || s.error || ''))
 				]));
 			});
 			if (job.state === 'running')
 				kids.push(E('div', { 'class': 'xray-step run' }, [
 					E('span', { 'class': 'xray-step-mark' }, '…'),
-					E('span', { 'class': 'xray-step-name' }, job.stage || _('working')),
+					E('span', { 'class': 'xray-step-name' }, x.text(job.stage || _('working'))),
 					E('span', { 'class': 'xray-step-text' }, _('in progress'))
 				]));
 			return E('div', { 'class': 'xray-steps' }, kids);
@@ -299,17 +299,17 @@ return view.extend({
 				]);
 			}
 			var e = job.explain || {};
-			var kids = [E('h4', {}, e.title || _('The connection failed'))];
+			var kids = [E('h4', {}, x.text(e.title || _('The connection failed')))];
 			if (job.stage)
-				kids.push(E('p', {}, E('em', {}, _('It failed at the "%s" step.').format(job.stage))));
-			if (e.detail) kids.push(E('p', {}, e.detail));
+				kids.push(E('p', {}, E('em', {}, [ _('It failed at the "%s" step.').format(job.stage) ])));
+			if (e.detail) kids.push(E('p', {}, x.text(e.detail)));
 			if (job.error && job.error !== e.detail)
-				kids.push(E('p', {}, E('code', {}, String(job.error))));
+				kids.push(E('p', {}, E('code', {}, [ String(job.error) ])));
 			if (e.hint) kids.push(E('p', {}, [E('strong', {}, _('What to do: ')), e.hint]));
 			if (job.log)
 				kids.push(E('details', {}, [
 					E('summary', {}, _('What Xray itself said')),
-					E('pre', { 'class': 'xray-log' }, String(job.log))
+					E('pre', { 'class': 'xray-log' }, [ String(job.log) ])
 				]));
 			return E('div', { 'class': 'alert-message warning' }, kids);
 		}
@@ -510,7 +510,7 @@ than it saves.')),
 								.then(function () { hideFormModal(); return reload(); })
 								.catch(function (e) {
 									ui.addNotification(null,
-										E('p', {}, String(e.message || e)), 'error');
+										E('p', {}, [ String(e.message || e) ]), 'error');
 								});
 						})
 					}, _('Save'))
@@ -541,7 +541,7 @@ from it and you can correct anything before saving.')),
 							catch (e) {
 								err.style.display = '';
 								dom.content(err, E('div', { 'class': 'alert-message warning' },
-								                   String(e.message || e)));
+								                   [ String(e.message || e) ]));
 								return;
 							}
 							hideFormModal();
@@ -558,8 +558,8 @@ from it and you can correct anything before saving.')),
 			try { uri = x.toUri(p); }
 			catch (e) { uri = String(e.message || e); }
 			var ta = E('textarea', { 'class': 'cbi-input-textarea', 'rows': 4,
-			                         'style': 'width:100%' }, uri);
-			showFormModal(_('Link for "%s"').format(p.name), [
+			                         'style': 'width:100%' }, [ uri ]);
+			showFormModal([ _('Link for "%s"').format(p.name) ], [
 				E('p', {}, _('This is the same profile written back out as a link, so it can \
 be moved to a phone or another router.')),
 				ta,
@@ -592,14 +592,14 @@ be moved to a phone or another router.')),
 			var capNow = E('div', { 'class': 'cbi-value-description xray-capture' }, [
 				E('div', {}, [
 					E('strong', {}, _('Capturing right now: ')),
-					E('code', {}, cap.ifaces || _('(nothing)')),
+					E('code', {}, x.text(cap.ifaces || _('(nothing)'))),
 					cap.wireless
-						? E('span', {}, ' — ' + _('Wi-Fi included, it is bridged into %s')
-						                        .format(String(cap.wireless).split(':')[0]))
+						? E('span', {}, [ ' — ' + _('Wi-Fi included, it is bridged into %s')
+						                        .format(String(cap.wireless).split(':')[0]) ])
 						: ''
 				]),
 				E('div', {}, [
-					_('The way out is currently '), E('code', {}, cap.uplink || _('(none)')),
+					_('The way out is currently '), E('code', {}, x.text(cap.uplink || _('(none)'))),
 					_('. That is the modem, or the combined port when a cable is plugged \
 into it — either way it is excluded, and the tunnel does not care which one it is.')
 				])
@@ -633,7 +633,7 @@ Only what you list is captured; everything else leaves the router unproxied.'));
 			f.api_enabled = checkbox(cfg.api_enabled === '1');
 
 			var tokenField = E('code', { 'class': 'xray-token' },
-			                   cfg.api_token || _('(none yet)'));
+			                   x.text(cfg.api_token || _('(none yet)')));
 
 			/* An API section that only says "there is an API" is no use: these are the
 			   real commands for this router, with this router's address and this
@@ -652,15 +652,15 @@ Only what you list is captured; everything else leaves the router unproxied.'));
 				];
 				var kids = rows.map(function (r) {
 					return E('div', { 'class': 'xray-example' }, [
-						E('div', { 'class': 'xray-example-what' }, r[0]),
-						E('code', {}, "curl -s '" + base + '?' + r[1] + '&token=' + t + "'")
+						E('div', { 'class': 'xray-example-what' }, x.text(r[0])),
+						E('code', {}, [ "curl -s '" + base + '?' + r[1] + '&token=' + t + "'" ])
 					]);
 				});
 				kids.push(E('div', { 'class': 'xray-example' }, [
 					E('div', { 'class': 'xray-example-what' },
 					  _('the token can go in a header instead, to keep it out of the log')),
-					E('code', {}, "curl -s -H 'X-Xray-Token: " + t + "' '" +
-					              base + "?action=status'")
+					E('code', {}, [ "curl -s -H 'X-Xray-Token: " + t + "' '" +
+					              base + "?action=status'" ])
 				]));
 				return kids;
 			}
@@ -767,7 +767,7 @@ as private as the LAN it crosses.')),
 						tokenField, ' ',
 						x.action(_('Generate a new one'), 'neutral', function () {
 							return x.checked(x.api.apiTokenNew(true)).then(function (r) {
-								dom.content(tokenField, r.token || '');
+								dom.content(tokenField, [ r.token || '' ]);
 								dom.content(examples, exampleLines(r.token || ''));
 							});
 						})
@@ -787,7 +787,7 @@ as private as the LAN it crosses.')),
 								})
 								.catch(function (e) {
 									ui.addNotification(null,
-										E('p', {}, String(e.message || e)), 'error');
+										E('p', {}, [ String(e.message || e) ]), 'error');
 								});
 						})
 					}, _('Save'))
@@ -815,7 +815,7 @@ as private as the LAN it crosses.')),
 			kids.push(E('div', { 'class': 'xray-hero' }, [
 				E('div', { 'class': 'xray-hero-state' }, [
 					badge, ' ', modeLabel,
-					E('div', { 'class': 'xray-hero-profile' }, active)
+					E('div', { 'class': 'xray-hero-profile' }, x.text(active))
 				]),
 				E('div', { 'class': 'xray-hero-actions' }, [
 					connected
@@ -823,10 +823,10 @@ as private as the LAN it crosses.')),
 						: x.action(_('Connect'), 'positive', connect),
 					x.action(_('Check now'), 'neutral', function () {
 						return x.api.probe().then(function (r) {
-							ui.addNotification(null, E('p', {}, r.ok
+							ui.addNotification(null, E('p', {}, [ r.ok
 								? _('The tunnel answered in %d ms (HTTP %d).')
 								  .format(r.ms || 0, r.status || 0)
-								: _('The check failed: %s').format(r.error || '?')),
+								: _('The check failed: %s').format(r.error || '?') ]),
 								r.ok ? 'info' : 'warning');
 						});
 					}),
@@ -912,18 +912,18 @@ port still open, nothing getting through.').format(cfg.watchdog_period || '60'),
 							return reload();
 						})
 						.catch(function (e) {
-							ui.addNotification(null, E('p', {}, String(e.message || e)), 'error');
+							ui.addNotification(null, E('p', {}, [ String(e.message || e) ]), 'error');
 						});
 				});
 
 				rows.push(E('div', { 'class': 'tr' }, [
 					E('div', { 'class': 'td xcol-act' }, radio),
 					E('div', { 'class': 'td' }, [
-						E('strong', {}, p.name || p.id),
-						p.note ? E('div', { 'class': 'cbi-value-description' }, p.note) : ''
+						E('strong', {}, x.text(p.name || p.id)),
+						p.note ? E('div', { 'class': 'cbi-value-description' }, x.text(p.note)) : ''
 					]),
-					E('div', { 'class': 'td mono' }, String(p.address || '') + ':' + String(p.port || '')),
-					E('div', { 'class': 'td' }, x.summary(p)),
+					E('div', { 'class': 'td mono' }, [ String(p.address || '') + ':' + String(p.port || '') ]),
+					E('div', { 'class': 'td' }, x.text(x.summary(p))),
 					E('div', { 'class': 'td right' },
 					  E('div', { 'class': 'mactions', 'style': 'justify-content:flex-end' }, [
 						x.action(_('Edit'), 'edit', function () { profileDialog(p); }),
@@ -998,20 +998,20 @@ the new profile immediately.'));
 				E('div', { 'class': 'mactions' }, [
 					x.action(_('Show the log'), 'neutral', function () {
 						return x.api.log(80).then(function (r) {
-							dom.content(logBox, String((r || {}).log || _('(empty)')));
+							dom.content(logBox, [ String((r || {}).log || _('(empty)')) ]);
 						});
 					}),
 					x.action(_('Validate the configuration'), 'neutral', function () {
 						return x.api.test().then(function (r) {
-							ui.addNotification(null, E('p', {}, r.ok
+							ui.addNotification(null, E('p', {}, [ r.ok
 								? _('The generated configuration is valid.')
-								: _('Xray rejected the configuration: %s').format(r.output || '')),
+								: _('Xray rejected the configuration: %s').format(r.output || '') ]),
 								r.ok ? 'info' : 'warning');
 						});
 					}),
 					x.action(_('Show the firewall rules'), 'neutral', function () {
 						return x.api.fwStatus(true).then(function (r) {
-							dom.content(logBox, String((r || {}).output || ''));
+							dom.content(logBox, [ String((r || {}).output || '') ]);
 						});
 					})
 				]),

@@ -58,8 +58,17 @@ function text(node, out) {
 	return out;
 }
 
+/* LuCI's dom.append() writes a lone string child with innerHTML (only array members
+   become text nodes), so every such string is recorded here: a profile's name, note
+   and address come from share links and must never be among them. */
+const htmlChildren = [];
+function recordHtml(v) {
+	if (v != null && !Array.isArray(v) && typeof v !== 'object') htmlChildren.push(String(v));
+}
+
 function E(tag, attrs, kids) {
 	if (attrs && typeof attrs !== 'object') { kids = attrs; attrs = null; }
+	recordHtml(kids);
 	const n = new Node(tag);
 	for (const k in (attrs || {})) {
 		const v = attrs[k];
@@ -92,12 +101,13 @@ const stubs = {
 	baseclass: { extend: (o) => o },
 	dom: {
 		content(node, kids) {
+			recordHtml(kids);
 			node.children = [];
 			(Array.isArray(kids) ? kids : [kids]).forEach((k) => node.appendChild(k));
 		}
 	},
 	ui: {
-		showModal(title, kids) { modals.push({ title, kids }); return kids; },
+		showModal(title, kids) { recordHtml(title); modals.push({ title, kids }); return kids; },
 		hideModal() {},
 		addNotification(_t, msg, kind) { notifications.push({ kind, text: text(msg).join(' ') }); },
 		createHandlerFn(ctx, fn) { return fn; }
@@ -153,7 +163,10 @@ const store = {
 		  publicKey: 'k', shortId: 's', spiderX: '/', fingerprint: 'chrome' },
 		{ id: 'p2', name: 'ws server', protocol: 'vmess', address: 'example.com',
 		  port: 443, uuid: 'cb53631d-0323-4fe9-9448-b0ec534c43f1', transport: 'ws',
-		  tls: 'tls', path: '/x', host: 'example.com', security: 'auto' }
+		  tls: 'tls', path: '/x', host: 'example.com', security: 'auto' },
+		{ id: 'p3', name: '<b>MARKUP-NAME</b>', note: '<i>MARKUP-NOTE</i>',
+		  protocol: 'trojan', address: '<u>MARKUP-HOST</u>', port: 443,
+		  password: 'x', transport: 'tcp', tls: 'tls' }
 	]
 };
 const settings = {
@@ -210,5 +223,6 @@ process.stdout.write(JSON.stringify({
 	settings_offers_automatic_capture: modals.filter((m) => m.title === 'Settings')
 		.map((m) => text(m.kids).join(' '))
 		.some((t) => /Automatic/.test(t) && /Capturing right now/.test(t)),
+	markup_reaches_html: htmlChildren.some((s) => s.includes('MARKUP-')),
 	text_length: rendered.length
 }, null, 1));

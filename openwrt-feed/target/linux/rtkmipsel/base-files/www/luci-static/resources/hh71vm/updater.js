@@ -56,7 +56,7 @@ return baseclass.extend({
 		return E('div', { 'class': 'cbi-section' }, [
 			E('h4', {}, [ release.tag, ' — ', formatDate(release.published_at) ]),
 			changes.length
-				? E('ul', {}, changes.map(function(change) { return E('li', {}, change); }))
+				? E('ul', {}, changes.map(function(change) { return E('li', {}, [ String(change) ]); }))
 				: E('p', {}, _('No signed changelog was published for this build.'))
 		]);
 	},
@@ -70,7 +70,7 @@ return baseclass.extend({
 		    result;
 
 		if (state.error)
-			result = E('p', { 'class': 'alert-message warning' }, state.error);
+			result = E('p', { 'class': 'alert-message warning' }, [ String(state.error) ]);
 		else if (state.installed_newer)
 			result = E('p', { 'class': 'alert-message warning' }, _('The installed build is newer than the latest public release. Automatic downgrade is disabled.'));
 		else if (state.checked && state.update_available)
@@ -163,7 +163,7 @@ return baseclass.extend({
 
 		ui.showModal(_('Upgrade Firmware?'), [
 			E('p', {}, _('The router will download the exact build shown below, verify its signature, SHA-256 checksum, and platform compatibility, then install it while preserving settings.')),
-			E('p', {}, [ E('strong', {}, this.state.latest) ]),
+			E('p', {}, [ E('strong', {}, [ String(this.state.latest) ]) ]),
 			E('p', { 'class': 'alert-message warning' }, _('Do not disconnect power during the upgrade. The router will be unavailable for approximately 5–7 minutes.')),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
@@ -175,24 +175,75 @@ return baseclass.extend({
 		]);
 	},
 
+	/* The download can take minutes over a mobile uplink, far longer than one RPC may
+	   run (LuCI gives up after 20 s and rpcd kills the call after 60 s), so the upgrade
+	   runs as a background job on the router and this page follows it.  Reconnect
+	   polling starts only once the job says it is flashing, or once the router stops
+	   answering after that point; a failure is shown instead of a reboot spinner. */
 	handleUpgradeConfirm: function() {
-		var expected = this.state.latest;
+		var expected = this.state.latest,
+		    status = E('p', { 'class': 'spinning' }, [ _('Starting the upgrade…') ]),
+		    deadline = Date.now() + 15 * 60 * 1000,
+		    misses = 0, reached = false;
+
 		ui.showModal(_('Flashing…'), [
-			E('p', { 'class': 'spinning' }, _('The signed image is being downloaded, verified, and installed. DO NOT POWER OFF THE DEVICE.'))
+			status,
+			E('p', { 'class': 'alert-message warning' }, _('DO NOT POWER OFF THE DEVICE.'))
 		]);
 
-		/* Start reconnect polling only after sysupgrade terminates the RPC connection. */
-		return fs.exec('/usr/sbin/autosysupgrade', [ '--yes', '--expected', expected ])
+		function fail(message) {
+			ui.hideModal();
+			ui.addNotification(null, E('p', {}, [ message || _('Firmware upgrade failed.') ]), 'error');
+		}
+
+		function reconnect() {
+			dom.content(status, [ _('Installing the firmware. The router restarts by itself when it is done.') ]);
+			ui.awaitReconnect(window.location.host);
+		}
+
+		function poll() {
+			return fs.exec('/usr/sbin/autosysupgrade', [ '--job-json' ])
+				.then(parseReply)
+				.then(function(job) {
+					misses = 0;
+					if (job.expected && job.expected !== expected)
+						return fail(_('Another firmware upgrade is already in progress.'));
+					switch (job.state) {
+					case 'failed':
+						return fail(job.error);
+					case 'flashing':
+						return reconnect();
+					case 'verifying':
+						reached = true;
+						dom.content(status, [ _('Verifying the downloaded image…') ]);
+						break;
+					case 'downloading':
+						dom.content(status, [ _('Downloading the signed image…') ]);
+						break;
+					default:
+						dom.content(status, [ _('Checking the signed release…') ]);
+					}
+					if (Date.now() > deadline)
+						return fail(_('The upgrade made no progress. Nothing was flashed; check the router log.'));
+					window.setTimeout(poll, 2000);
+				})
+				.catch(function() {
+					/* Once the image is verified, silence means sysupgrade has taken the
+					   router down -- which is what should happen next. */
+					if (reached || ++misses >= 3)
+						return reconnect();
+					window.setTimeout(poll, 2000);
+				});
+		}
+
+		return fs.exec('/usr/sbin/autosysupgrade', [ '--start-job', '--expected', expected ])
 			.then(function(reply) {
-				if (reply.code !== 0) {
-					ui.hideModal();
-					ui.addNotification(null, E('p', {}, (reply.stderr || _('Firmware upgrade failed.')).trim()));
-					return;
-				}
-				ui.awaitReconnect(window.location.host);
+				if (!reply || reply.code !== 0)
+					return fail(((reply && reply.stderr) || '').replace(/^autosysupgrade: /, '').trim());
+				window.setTimeout(poll, 1000);
 			})
 			.catch(function() {
-				ui.awaitReconnect(window.location.host);
+				fail(_('The upgrade could not be started.'));
 			});
 	},
 

@@ -37,6 +37,8 @@ The build is based on OpenWrt 19.07 and Linux 4.14.275. The target architecture 
 - UCI/netifd integration for both Wi-Fi radios;
 - Qualcomm RNDIS WAN and modem-control integration;
 - LuCI modem pages, HH71VM theme, and iwinfo compatibility patches;
+- the carrier SIM lock backend, the optional modem tools, the SMS-to-Telegram
+  forwarder, and the experimental Xray packages;
 - image construction scripts and the captured build configuration.
 
 ## Vendor-source provenance
@@ -142,16 +144,22 @@ dependency, so a `kmod-*.ipk` from another build must not be mixed with this ima
 publishes the complete dependency closure, signed index, and `packages-bundle.zip` in the
 same immutable Release as the images.
 
-The optional modem controls are selected as modules in `build.config`, so a normal build also
-produces their backend, LuCI application, and kernel-dependent netfilter package. Their source
+The optional modem controls, the SMS forwarder and Xray are selected as modules (`=m`) in
+`build.config`, so a normal build also produces their backends and LuCI applications as
+`.ipk` files. Two of this port's packages are selected `=y` instead and land inside the image:
+`hh71vm-ipt-ipopt` (since 2026-09-16, so a hand-written `iptables -j TTL` rule works without
+installing anything) and `hh71vm-simlock` (pulled in by the modem application). The source
 directories are:
 
 ```text
-package/utils/modem-extra-tools/
-package/luci/applications/luci-app-modem-extra-tools/
-package/utils/hh71vm-ipt-ipopt/
-package/utils/sms-to-telegram/
-package/luci/applications/luci-app-sms-to-telegram/
+package/utils/modem-extra-tools/               module
+package/luci/applications/luci-app-modem-extra-tools/   module
+package/utils/sms-to-telegram/                 module
+package/luci/applications/luci-app-sms-to-telegram/     module
+package/net/xray-core/                         module, experimental
+package/luci/applications/luci-app-hh71vm-xray/         module, experimental
+package/utils/hh71vm-ipt-ipopt/                in the image
+package/utils/hh71vm-simlock/                  in the image
 ```
 
 The unified workflow builds these packages from source in the same buildroot as the image.

@@ -14,24 +14,25 @@
 START=95
 STOP=10
 
-PREFIX=/mnt/extern/opkg
-
-extern_rc_d() {
+# Where the share is mounted is configurable, so the scripts, their links and their
+# binaries are all looked up under the same configured prefix.
+extern_prefix() {
 	target=$(uci -q get hh71vm-extern.extern.target || echo /mnt/extern)
-	echo "$target/opkg/etc/rc.d"
+	echo "$target/opkg"
 }
 
 for_each_service() {
 	action="$1"
-	rc_d=$(extern_rc_d)
+	prefix=$(extern_prefix)
+	rc_d="$prefix/etc/rc.d"
 	[ -d "$rc_d" ] || return 0
 	for link in "$rc_d"/S*; do
 		[ -e "$link" ] || continue
-		script="${PREFIX}/etc/init.d/$(basename "$link" | sed 's/^S[0-9]*//')"
+		script="${prefix}/etc/init.d/$(basename "$link" | sed 's/^S[0-9]*//')"
 		[ -x "$script" ] || continue
 		echo "hh71vm-extern-services: $action $script"
-		PATH="${PREFIX}/usr/sbin:${PREFIX}/usr/bin:$PATH" \
-		LD_LIBRARY_PATH="${PREFIX}/usr/lib:${PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+		PATH="${prefix}/usr/sbin:${prefix}/usr/bin:$PATH" \
+		LD_LIBRARY_PATH="${prefix}/usr/lib:${prefix}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 			"$script" "$action"
 	done
 }

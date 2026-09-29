@@ -960,6 +960,31 @@ function M.http_date(str)
 	return t + (now - utc)
 end
 
+--- The newest timestamp the image itself carries: a clock earlier than this is wrong.
+local function build_time()
+	local newest = 0
+	local ok, nfs = pcall(require, "nixio.fs")
+	if not ok or not nfs then return newest end
+	for _, path in ipairs({ "/rom/etc/openwrt_release", "/etc/openwrt_release" }) do
+		local st = nfs.stat(path)
+		if st and st.mtime and st.mtime > newest then newest = st.mtime end
+	end
+	return newest
+end
+M.build_time = build_time
+
+--- A Date header only moves the clock when the answer is plausible.  The probe is plain
+--- HTTP, so whoever answers it could otherwise set the clock years off and break TLS for
+--- opkg, the firmware updater and Telegram.  A board without NTP runs behind, never
+--- far ahead, so a large step backwards is refused, and so is anything outside the
+--- lifetime of this image.
+M.CLOCK_MAX_BACKWARDS = 3600
+M.CLOCK_MAX_YEARS = 10 * 366 * 86400
+function M.plausible_time(ts, now, built)
+	if built > 0 and (ts < built or ts > built + M.CLOCK_MAX_YEARS) then return false end
+	return ts >= now - M.CLOCK_MAX_BACKWARDS
+end
+
 --- If the probe came back with a Date header and the clock is more than 60 s out,
 --- set it.  This is the one thing that makes VMess usable on a board with no NTP.
 function M.sync_clock(date_header)
@@ -967,6 +992,9 @@ function M.sync_clock(date_header)
 	if not ts then return nil, "no usable Date header" end
 	local drift = ts - os.time()
 	if math.abs(drift) < 60 then return false, drift end
+	if not M.plausible_time(ts, os.time(), build_time()) then
+		return nil, "the Date header is not plausible; the clock was left alone"
+	end
 	os.execute("/bin/date -u -s " .. shq(os.date("!%Y-%m-%d %H:%M:%S", ts)) .. " >/dev/null 2>&1")
 	return true, drift
 end

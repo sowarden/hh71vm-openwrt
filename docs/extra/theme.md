@@ -14,6 +14,10 @@ installation. It is a theme written for this port, not a restyle of an existing 
   operator and connection state on every page. Without the modem daemon it simply stays
   hidden.
 - **Copy buttons** on the values worth copying — the IMEI, the release identity, and similar.
+- **One place for results.** Whatever a page has to tell you — a copy confirmation, a saved
+  setting, a failure — appears in the same tray at the top of the page. A confirmation clears
+  itself after a few seconds; a problem stays until you dismiss it, so a failure cannot scroll
+  past unnoticed.
 - **A phone layout.** Wide tables get their own scroll box instead of forcing the page
   sideways, and the active tab of a strip is scrolled into view.
 

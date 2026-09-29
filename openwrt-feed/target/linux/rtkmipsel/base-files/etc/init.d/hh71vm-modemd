@@ -38,6 +38,17 @@ service_triggers() {
 	procd_add_reload_interface_trigger wan
 }
 
+# The WAN coming up is when the Qualcomm side becomes reachable again, so a channel that
+# is down is retried at once instead of after its backoff.  A working channel is left
+# alone: restarting on every WAN event dropped whatever was in flight, including an SMS
+# submit that can legitimately take minutes.
 reload_service() {
-	restart
+	local status state
+	status=$("$PROG" --status 2>/dev/null)
+	state=$(jsonfilter -s "$status" -e '@.link.state' 2>/dev/null)
+	case "$state" in
+		ready) return 0 ;;
+		"") restart ;;
+		*) "$PROG" --call reconnect >/dev/null 2>&1 ;;
+	esac
 }

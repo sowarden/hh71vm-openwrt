@@ -24,8 +24,11 @@ TAG_V2 = re.compile(r"hh71vm-r[0-9]{20}-a[0-9]{6}-[0-9a-f]{12}\Z")
 TAG = re.compile(r"(?:hh71vm-[0-9a-f]{12}-r[1-9][0-9]*-a[1-9][0-9]*|"
                  r"hh71vm-r[0-9]{20}-a[0-9]{6}-[0-9a-f]{12})\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
-CHANGELOG_LIMIT = 12
-CHANGELOG_ITEM_LIMIT = 240
+# Generous rather than tight.  These exist only so a corrupt file cannot put an
+# unbounded blob into the release index and the updater page; they are not an editorial
+# limit on how much a release may change, which is what the old 12/240 pair became.
+CHANGELOG_LIMIT = 200
+CHANGELOG_ITEM_LIMIT = 2000
 
 
 def digest(data):
@@ -62,7 +65,7 @@ def read_json(path):
 
 def validate_changelog(value):
     if not isinstance(value, list) or not 1 <= len(value) <= CHANGELOG_LIMIT:
-        raise ValueError("changelog must contain between 1 and 12 entries")
+        raise ValueError(f"changelog must contain between 1 and {CHANGELOG_LIMIT} entries")
     result = []
     for entry in value:
         if (not isinstance(entry, str) or entry != entry.strip() or not entry or

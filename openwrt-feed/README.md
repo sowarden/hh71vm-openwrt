@@ -22,11 +22,21 @@ target/linux/rtkmipsel/
   patches-4.14/                                kernel integration patches
   rtl8197f/config-4.14                         target kernel configuration
 package/
-  luci/applications/luci-app-hh71vm-modem/
-  luci/themes/luci-theme-hh71vm/
-  network/utils/iwinfo/patches/
+  luci/applications/luci-app-hh71vm-modem/     the Modem menu (base image)
+  luci/applications/luci-app-modem-extra-tools/  TTL, LTE bands, IMEI, lock creation
+  luci/applications/luci-app-sms-to-telegram/  SMS forwarding page
+  luci/applications/luci-app-hh71vm-xray/      Xray VPN page (experimental)
+  luci/themes/luci-theme-hh71vm/               the default theme (base image)
+  net/xray-core/                               Xray build for this target
+  utils/hh71vm-simlock/                        carrier SIM lock backend (base image)
+  utils/hh71vm-ipt-ipopt/                      IP option netfilter modules (base image)
+  utils/modem-extra-tools/                     modem helper daemon and CLI
+  utils/sms-to-telegram/                       SMS-to-Telegram worker
+  network/utils/iwinfo/patches/                iwinfo patches for the vendor radios
+patches/                                       patches against upstream trees
 scripts/                                       host-tool build preflight
 build.config                                   captured OpenWrt build configuration
+config.buildinfo, feeds.buildinfo              captured upstream build inputs
 ```
 
 ## Verified hardware configuration

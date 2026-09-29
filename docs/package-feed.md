@@ -1,14 +1,21 @@
 # Installing optional packages
 
 Autobuild images include a signed package feed for that exact build. No feed setup
-or file transfer is needed on a clean installation.
+or file transfer is needed on a clean installation. The image also carries the upstream
+OpenWrt 19.07 feeds, so packages this project does not build itself still install normally
+when the router has working internet.
 
 ```sh
 opkg update
-opkg install luci-app-modem-extra-tools
-opkg install luci-app-sms-to-telegram
-opkg install luci-proto-wireguard
+opkg install luci-app-modem-extra-tools   # this project's signed feed
+opkg install luci-app-sms-to-telegram     # this project's signed feed
+opkg install wireguard wireguard-tools    # this project's signed feed
+opkg install luci-proto-wireguard         # upstream OpenWrt feed
 ```
+
+The last one is worth calling out: this project builds `wireguard` and `wireguard-tools`,
+but not the LuCI protocol page for them, so `luci-proto-wireguard` comes from the upstream
+OpenWrt feed rather than from the signed one.
 
 The experimental Xray VPN needs one extra step first, because its binary is larger than
 the overlay: `hh71vm-extern-pkg install xray-core`, then

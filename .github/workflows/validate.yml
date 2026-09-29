@@ -56,6 +56,7 @@ jobs:
           lua5.1 tests/test_modem_sms.lua openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/hh71vm-modemd
           lua5.1 tests/test_modem_apn.lua openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/hh71vm-modemd
           lua5.1 tests/test_modem_restart.lua openwrt-feed/target/linux/rtkmipsel/base-files/usr/sbin/hh71vm-modemd
+          lua5.1 tests/test_sms_to_telegram_engine.lua openwrt-feed/package/utils/sms-to-telegram/files/sms_to_telegram.lua
           node tests/test_sms_luci.js openwrt-feed/package/luci/applications/luci-app-hh71vm-modem/htdocs/luci-static/resources/view/hh71vm/sms.js
           cd openwrt-feed/package/utils/modem-extra-tools
           lua5.1 tests/unit.lua files

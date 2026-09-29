@@ -28,6 +28,7 @@ class FirmwareUpdaterTests(unittest.TestCase):
         self.fixtures.mkdir()
         self.fetch_log = self.root / "fetch.log"
         (self.root / "tmp/sysinfo").mkdir(parents=True)
+        (self.root / "var/run").mkdir(parents=True)
         (self.root / "rom/usr/share/hh71vm-feed").mkdir(parents=True)
         (self.root / "tmp/sysinfo/board_name").write_text("hh71vm\n")
         (self.root / "rom/usr/share/hh71vm-feed/release.pub").write_text("synthetic public key\n")
@@ -146,6 +147,7 @@ print(json.dumps(root))
             "/tmp/sysinfo/board_name": str(self.root / "tmp/sysinfo/board_name"),
             "/usr/share/libubox/jshn.sh": str(jshn),
             "lock=/tmp/autosysupgrade.lock": f"lock={self.root}/tmp/autosysupgrade.lock",
+            "/var/run/autosysupgrade": f"{self.root}/var/run/autosysupgrade",
             "mktemp -d /tmp/autosysupgrade.XXXXXX": f"mktemp -d {self.root}/tmp/autosysupgrade.XXXXXX",
         }
         for old, new in replacements.items():
@@ -420,6 +422,70 @@ print(json.dumps(root))
         self.assertEqual(len(calls), 2)
         self.assertTrue(calls[0].startswith("-T "))
         self.assertTrue(calls[1].startswith("-v "))
+
+    def job(self, deadline=15):
+        """Poll --job-json the way the page does, until the job settles."""
+        until = time.monotonic() + deadline
+        while True:
+            result = self.execute("--job-json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads(result.stdout)
+            if state["state"] in ("flashing", "failed", "idle") or time.monotonic() > until:
+                return state
+            time.sleep(0.2)
+
+    def test_job_json_is_idle_before_any_job(self):
+        self.assertEqual(self.job()["state"], "idle")
+
+    def test_start_job_returns_at_once_and_the_job_reaches_flashing(self):
+        self.environment["UPDATER_MOCK_DELAYS"] = json.dumps({f"/{ASSET}": 2})
+        started = time.monotonic()
+        result = self.execute("--start-job", "--expected", LATEST)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(json.loads(result.stdout), {"started": True, "expected": LATEST})
+        state = self.job()
+        self.assertEqual(state["state"], "flashing", state)
+        self.assertEqual(state["expected"], LATEST)
+        calls = self.log.read_text().splitlines()
+        self.assertTrue(calls[0].startswith("-T "))
+        self.assertTrue(calls[1].startswith("-v "))
+
+    def test_a_failing_job_reports_why_and_never_flashes(self):
+        (self.fixtures / "image.bin").write_bytes(b"tampered\n")
+        result = self.execute("--start-job", "--expected", LATEST)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.job()
+        self.assertEqual(state["state"], "failed", state)
+        self.assertIn("SHA-256 mismatch", state["error"])
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.root / "tmp/autosysupgrade.lock").exists())
+
+    def test_a_job_that_died_is_reported_as_failed(self):
+        (self.root / "var/run/autosysupgrade.json").write_text(
+            '{"state":"downloading","expected":"%s","error":"","updated":1}\n' % LATEST)
+        lock = self.root / "tmp/autosysupgrade.lock"
+        lock.mkdir()
+        (lock / "pid").write_text("999999\n")
+        state = self.job()
+        self.assertEqual(state["state"], "failed")
+        self.assertIn("nothing was written", state["error"])
+
+    def test_a_second_start_leaves_the_running_job_alone(self):
+        (self.root / "var/run/autosysupgrade.json").write_text(
+            '{"state":"downloading","expected":"%s","error":"","updated":1}\n' % LATEST)
+        lock = self.root / "tmp/autosysupgrade.lock"
+        lock.mkdir()
+        (lock / "pid").write_text(f"{os.getpid()}\n")
+        result = self.execute("--start-job", "--expected", LATEST)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already running", result.stderr)
+        self.assertEqual(self.job(deadline=0)["state"], "downloading")
+
+    def test_start_job_needs_the_checked_release(self):
+        result = self.execute("--start-job")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires --expected", result.stderr)
 
     def test_bad_image_checksum_never_reaches_sysupgrade(self):
         (self.fixtures / "image.bin").write_bytes(b"tampered\n")

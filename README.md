@@ -80,7 +80,8 @@ unrecoverable mistake.
 | Qualcomm USB mux and RNDIS WAN (`eth2`) | Working |
 | Mobile Internet through the Qualcomm modem | Working |
 | LuCI, HH71VM theme, modem-control pages | Working |
-| SMS reading, including multipart messages | Working |
+| SMS reading and sending, including multipart messages | Working |
+| Carrier SIM lock: read, set and remove | Working |
 | Firmware update with `sysupgrade` | Working |
 | Rollback to your own stock backup | Working |
 
@@ -132,7 +133,6 @@ credentials, and keys. Attach searchable text, not screenshots of text.
 | [`autobuild/`](autobuild/) | Unified firmware build and immutable signed feed |
 | [`tools/flash/`](tools/flash/) | Backup, installation, update, and rollback utilities |
 | [`tools/ram_boot.py`](tools/ram_boot.py) | RAM-only loader and UART capture tool |
-| [`CHANGELOG.md`](CHANGELOG.md) | Published snapshot history |
 
 ## Source and licenses
 

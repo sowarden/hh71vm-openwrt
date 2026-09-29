@@ -23,6 +23,8 @@ EXCLUDED_TEXT_SUFFIXES = {
 MODEM_HELPERS = {
     "openwrt-feed/package/utils/modem-extra-tools/files/hh71-nas-arm",
     "openwrt-feed/package/utils/modem-extra-tools/files/hh71-imei-arm",
+    "openwrt-feed/package/utils/modem-extra-tools/files/hh71-uim-arm",
+    "openwrt-feed/package/utils/hh71vm-simlock/files/hh71-uim-arm",
 }
 
 
@@ -128,6 +130,10 @@ class PublicationBoundaryTests(unittest.TestCase):
         self.assertIn("/usr/sbin/autosysupgrade", patch)
         self.assertIn("'require hh71vm.updater as updater';", patch)
         self.assertNotIn("--force", frontend)
+        # The install outlives any RPC, so the page starts a job and follows it.
+        self.assertIn("--start-job", frontend)
+        self.assertIn("--job-json", frontend)
+        self.assertNotIn("'--yes'", frontend)
         self.assertNotIn("innerHTML", frontend)
         self.assertIn("Firmware update check timed out", frontend)
         self.assertIn("firmwareUpdaterSafe", frontend)

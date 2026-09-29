@@ -52,10 +52,23 @@ get_magic_str() {
 	(get_image "$@" | dd bs=4 count=1) 2>/dev/null
 }
 
+# The partitions are split below by `dd` reading a pipe, and dd counts a short read as a
+# whole block.  `cat` of a plain file never produces one; a decompressor can, and one
+# short read would shift the kernel/rootfs boundary.  Nothing this port publishes is
+# compressed, so a gzip image is refused rather than split on trust.
+image_is_compressed() {
+	[ "$(dd if="$1" bs=2 count=1 2>/dev/null | hexdump -v -n 2 -e '2/1 "%02x"')" = "1f8b" ]
+}
+
 platform_check_image() {
 	local signature size
 
 	[ "$#" -gt 1 ] && return 1
+
+	if image_is_compressed "$1"; then
+		echo "Invalid image: compressed sysupgrade images are not supported; use the .bin as published."
+		return 1
+	fi
 
 	signature=$(get_magic_str "$1")
 
@@ -142,6 +155,11 @@ platform_do_upgrade() {
 	# The restart cannot be cancelled from here: do_stage2 does not look at the exit
 	# status and restarts the board anyway. But that is the safe outcome - the board
 	# goes into a restart with UNTOUCHED firmware.
+	if image_is_compressed "$image"; then
+		echo "Upgrade refused: compressed image; nothing was written, the current firmware is intact."
+		return 1
+	fi
+
 	size=$(get_image "$image" | wc -c)
 	if [ "$size" -gt "$IMAGE_MAX_SIZE" ]; then
 		echo "Upgrade refused: $size bytes, larger than kernel+rootfs ($IMAGE_MAX_SIZE bytes)."

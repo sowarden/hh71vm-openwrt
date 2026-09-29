@@ -61,7 +61,8 @@ hh71vm-extern-pkg install xray-core
 ```
 
 A normal reboot does not clean external packages. Reinstalling the same firmware with
-`sysupgrade` does, because the overlay and its package state are new again. Configuration
+`sysupgrade` does, because the overlay and its package state are new again. A factory reset
+(the RESET button or `firstboot`) cleans them for the same reason. Configuration
 preserved by sysupgrade remains under the normal `/etc` paths. Files placed inside the
 external `opkg` destination, including destination-local configuration files, are package
 payload and are removed. `sysupgrade -n` also discards the normal saved configuration.

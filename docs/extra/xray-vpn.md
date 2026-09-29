@@ -25,12 +25,21 @@ anything on the devices themselves.
 - **Proxy mode**, if you prefer: a SOCKS inbound on 1080 and an HTTP inbound on 1081, and
   clients point at them themselves. This mode needs no captured LAN interface and installs
   no traffic-redirection rules. Switching from VPN mode removes the old capture rules
-  before the proxy listeners start.
+  before the proxy listeners start. **Both inbounds listen on every interface with no
+  authentication, and they exist in VPN mode too**: that is where VPN mode's own probe and
+  API connect, and it is how a client deliberately left out of the transparent capture still
+  reaches the tunnel. Anything that can reach the router's LAN address can therefore use it
+  as an open proxy while Xray runs. The `wan` zone rejects input, so this does not face the
+  internet unless you forward a port.
 - **Connect automatically on power on**, and **reconnect automatically if the connection
   drops** — the second is a real request through the tunnel on a timer, not just a check
   that the process is alive.
-- **The clock is set from the connection.** This board has no working NTP, and VMess
-  refuses any handshake more than 90 seconds out.
+- **The clock can be set from the connection.** The board has no battery-backed clock, so
+  it boots years in the past; `sysntpd` fixes that once there is internet, but a tunnel may
+  have to come up before there is any. VMess refuses a handshake more than 90 seconds out,
+  so Xray can take the time from its own connection. That answer is only trusted within
+  sensible bounds: never before the firmware's build date, never more than an hour
+  backwards, and never a decade ahead.
 - **A small HTTP API**, off by default, for automation: list profiles, activate one,
   connect, disconnect. The page shows the exact `curl` commands with your token in them.
 
@@ -137,7 +146,7 @@ The page tells you which step failed. The common ones:
 
 | What you see | What it usually is |
 |---|---|
-| The router's clock is wrong | VMess only. The board has no NTP; connect once and the clock is set from the connection |
+| The router's clock is wrong | VMess only. The board has no battery-backed clock, so it boots in the past; give it internet so `sysntpd` can correct it, or connect once and let Xray set it |
 | The server does not want the flow / requires it | The `Flow` field must match the server exactly, in both directions |
 | The REALITY handshake failed | One of the public key, short id or server name does not match the server |
 | The server never answered | The router itself has no internet, or the address or port is wrong |

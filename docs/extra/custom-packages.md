@@ -9,7 +9,8 @@ installation and recovery material lives one directory up: [flash installation](
 
 | Package | What it gives you | Document |
 |---|---|---|
-| `luci-app-hh71vm-modem` | The **Modem** menu: signal, messages, network selection, profiles, SIM and PIN, phonebook, AT console | [Modem control](modem-control.md) |
+| `luci-app-hh71vm-modem` | The **Modem** menu: signal, messages, network selection, profiles, SIM and PIN, phonebook, AT console, and the carrier SIM lock state with its removal | [Modem control](modem-control.md) |
+| `hh71vm-simlock` | Reads and changes the modem's carrier lock. Pulled in by the modem app, so it is always present: a router that has started refusing its own SIM can be unlocked without installing anything first | [Extra modem tools](modem-extra-tools.md) |
 | `luci-theme-hh71vm` | The default look, light and dark, with the modem status strip in the header | [Theme](theme.md) |
 
 The modem pages talk to `hh71vm-modemd`, the daemon that owns the single control channel to
@@ -27,8 +28,8 @@ Install these with `opkg` from the feed that belongs to your exact firmware buil
 
 | Package | What it gives you | Document |
 |---|---|---|
-| `modem-extra-tools`, `luci-app-modem-extra-tools` | Persistent TTL / Hop Limit rewriting and transactional LTE band selection | [Extra modem tools](modem-extra-tools.md) |
-| `sms-to-telegram`, `luci-app-sms-to-telegram` | Forward incoming SMS to a Telegram chat | [SMS to Telegram](sms-to-telegram.md) |
+| `modem-extra-tools`, `luci-app-modem-extra-tools` | Persistent TTL / Hop Limit rewriting, transactional LTE band selection, IMEI restoration, and creating a carrier SIM lock | [Extra modem tools](modem-extra-tools.md) |
+| `sms-to-telegram`, `luci-app-sms-to-telegram` | Forward incoming SMS to a Telegram chat, with an editable message template and a choice of HTML, MarkdownV2 or plain text | [SMS to Telegram](sms-to-telegram.md) |
 | `xray-core`, `xray`, `luci-app-hh71vm-xray` | **Experimental.** An Xray VPN client with a page to drive it, and the firewall rules that send your devices through the tunnel | [Xray VPN](xray-vpn.md) |
 
 `kmod-hh71vm-ipt-ipopt` and `iptables-mod-ipopt` are no longer in this list: since

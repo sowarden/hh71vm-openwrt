@@ -25,9 +25,14 @@ stated in their source headers and package metadata; the license text is include
 [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0). The `hh71vm-ipt-ipopt` module package is
 GPL-2.0-only and is covered by the repository root [`LICENSE`](LICENSE).
 
-The `sms-to-telegram` Lua backend and LuCI package are Apache-2.0. Its minimal HTTPS
-transport is ISC-licensed and built against OpenWrt's ISC-licensed `libuclient`; the
-license text is included as [`LICENSE-ISC`](LICENSE-ISC).
+The `sms-to-telegram` Lua backend and LuCI package are Apache-2.0, and its minimal HTTPS
+transport (`src/http_transport.c`) is ISC-licensed, which is why the package declares
+`Apache-2.0 AND ISC`; the license text is included as [`LICENSE-ISC`](LICENSE-ISC). That
+transport links OpenWrt's `libcurl`, which carries the curl license, an MIT/X11-style
+license of its own.
+
+The `hh71vm-simlock` package, which reads and changes the modem's carrier lock, is
+Apache-2.0 as stated in its source headers and package metadata.
 
 ## Documentation and RAM boot tool
 
