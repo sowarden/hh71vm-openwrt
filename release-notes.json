@@ -1,8 +1,7 @@
 {
   "schema": 1,
   "changes": [
-    "Added optional NFQUEUE packages: kmod-ipt-nfqueue and iptables-mod-nfqueue.",
-    "Added optional connection tracking extensions: kmod-ipt-conntrack-extra and iptables-mod-conntrack-extra.",
-    "Added optional Netfilter queue dependencies: kmod-nfnetlink and kmod-nfnetlink-queue. All added packages are available from the package repository for separate installation and are not included in the base firmware."
+    "Added optional packages: ipset, kmod-ipt-ipset, iptables-mod-extra, iptables-mod-filter and iptables-mod-u32.",
+    "Added dependencies: libipset, kmod-ipt-extra, kmod-ipt-filter, kmod-ipt-u32 and kmod-lib-textsearch. All additions are available from the package repository for separate installation."
   ]
 }
