@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "changes": [
-    "Added optional packages: ipset, kmod-ipt-ipset, iptables-mod-extra, iptables-mod-filter and iptables-mod-u32.",
-    "Added dependencies: libipset, kmod-ipt-extra, kmod-ipt-filter, kmod-ipt-u32 and kmod-lib-textsearch. All additions are available from the package repository for separate installation."
+    "Added modules and packages: kmod-nft-queue, ip6tables-mod-nat and ip6tables-extra.",
+    "Added dependencies: kmod-nft-core, kmod-nf-nat6, kmod-ipt-nat6 and kmod-ip6tables-extra."
   ]
 }
